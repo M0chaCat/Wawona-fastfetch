@@ -38,6 +38,7 @@
 
 @end
 
+
 // App metadata
 @interface WaylandApp : NSObject
 @property (nonatomic, strong) NSString *appId;

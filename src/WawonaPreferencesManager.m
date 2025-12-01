@@ -15,6 +15,8 @@ NSString * const kWawonaPrefsEnableTCPListener = @"EnableTCPListener";
 NSString * const kWawonaPrefsTCPListenerPort = @"TCPListenerPort";
 NSString * const kWawonaPrefsWaylandSocketDir = @"WaylandSocketDir";
 NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
+NSString * const kWawonaPrefsEnableVulkanDrivers = @"EnableVulkanDrivers";
+NSString * const kWawonaPrefsEnableEGLDrivers = @"EnableEGLDrivers";
 
 @implementation WawonaPreferencesManager
 
@@ -84,6 +86,12 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
     if (![defaults objectForKey:kWawonaPrefsWaylandDisplayNumber]) {
         [defaults setInteger:0 forKey:kWawonaPrefsWaylandDisplayNumber];
     }
+    if (![defaults objectForKey:kWawonaPrefsEnableVulkanDrivers]) {
+        [defaults setBool:YES forKey:kWawonaPrefsEnableVulkanDrivers];
+    }
+    if (![defaults objectForKey:kWawonaPrefsEnableEGLDrivers]) {
+        [defaults setBool:YES forKey:kWawonaPrefsEnableEGLDrivers];
+    }
     
     [defaults synchronize];
 }
@@ -104,6 +112,8 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
     [defaults removeObjectForKey:kWawonaPrefsTCPListenerPort];
     [defaults removeObjectForKey:kWawonaPrefsWaylandSocketDir];
     [defaults removeObjectForKey:kWawonaPrefsWaylandDisplayNumber];
+    [defaults removeObjectForKey:kWawonaPrefsEnableVulkanDrivers];
+    [defaults removeObjectForKey:kWawonaPrefsEnableEGLDrivers];
     [defaults synchronize];
     [self setDefaultsIfNeeded];
 }
@@ -246,6 +256,25 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
 
 - (void)setWaylandDisplayNumber:(NSInteger)number {
     [[NSUserDefaults standardUserDefaults] setInteger:number forKey:kWawonaPrefsWaylandDisplayNumber];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Rendering Backend Flags
+- (BOOL)vulkanDriversEnabled {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kWawonaPrefsEnableVulkanDrivers];
+}
+
+- (void)setVulkanDriversEnabled:(BOOL)enabled {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWawonaPrefsEnableVulkanDrivers];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (BOOL)eglDriversEnabled {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kWawonaPrefsEnableEGLDrivers];
+}
+
+- (void)setEglDriversEnabled:(BOOL)enabled {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWawonaPrefsEnableEGLDrivers];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 

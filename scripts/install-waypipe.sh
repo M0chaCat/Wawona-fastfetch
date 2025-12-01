@@ -20,7 +20,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WAYPIPE_DIR="${ROOT_DIR}/dependencies/waypipe"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     
@@ -95,7 +95,7 @@ EOF
     BUILD_PATH="target/aarch64-apple-ios-sim/release/waypipe"
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     
     if [ -f "$HOME/.cargo/env" ]; then source "$HOME/.cargo/env"; fi
     export PATH="$HOME/.cargo/bin:$PATH"
@@ -105,6 +105,33 @@ elif [ "${PLATFORM}" == "macos" ]; then
     # Use local VK_ICD if available
     if [ -f "${INSTALL_DIR}/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json" ]; then
         export VK_ICD_FILENAMES="${INSTALL_DIR}/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
+    fi
+    
+    # Create Vulkan wrapper and static lib alias for macOS (no dynamic loader)
+    echo "Preparing static Vulkan wrapper for macOS..."
+    cat > "${INSTALL_DIR}/vk_wrapper.c" <<EOF
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char* pName);
+__attribute__((visibility("default")))
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+    return vk_icdGetInstanceProcAddr(instance, pName);
+}
+EOF
+    clang -c "${INSTALL_DIR}/vk_wrapper.c" -o "${INSTALL_DIR}/vk_wrapper.o" -I"${INSTALL_DIR}/include" -fPIC -std=c17
+    rm -f "${INSTALL_DIR}/lib/libvk_wrapper.a"
+    ar rcs "${INSTALL_DIR}/lib/libvk_wrapper.a" "${INSTALL_DIR}/vk_wrapper.o"
+    
+    # Provide libvulkan.a that points to KosmicKrisp static driver
+    if [ -f "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" ]; then
+        rm -f "${INSTALL_DIR}/lib/libvulkan.a"
+        cp "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" "${INSTALL_DIR}/lib/libvulkan.a"
+    fi
+    
+    # Force-load static Vulkan and link wrapper if available
+    export RUSTFLAGS="${RUSTFLAGS} -C link-arg=-L${INSTALL_DIR}/lib -C link-arg=-lvk_wrapper -C link-arg=-mmacosx-version-min=12.0"
+    if [ -f "${INSTALL_DIR}/lib/libvulkan.a" ]; then
+        export RUSTFLAGS="${RUSTFLAGS} -C link-arg=-Wl,-force_load,${INSTALL_DIR}/lib/libvulkan.a"
     fi
     
     TARGET_FLAG=""
@@ -123,6 +150,10 @@ cd "${WAYPIPE_DIR}"
 
 # Determine features
 FEATURES="dmabuf video lz4 zstd"
+if [ "${PLATFORM}" == "macos" ] && [ ! -f "${INSTALL_DIR}/lib/libvulkan.a" ]; then
+    echo "Vulkan driver not present; building Waypipe without dmabuf/video on macOS"
+    FEATURES="lz4 zstd"
+fi
 # if pkg-config --exists libavcodec libavformat libavutil libswscale 2>/dev/null || \
 #    [ -f "${INSTALL_DIR}/lib/libavcodec.a" ]; then
 #     echo "FFmpeg libraries found - enabling video feature..."

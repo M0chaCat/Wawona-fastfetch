@@ -22,7 +22,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRAMEWORK_NAME="Kosmickrisp"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     STATIC_LIB="${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a"
@@ -31,7 +31,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     CC="xcrun -sdk iphonesimulator clang"
     CFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0"
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
     STATIC_LIB="${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a"

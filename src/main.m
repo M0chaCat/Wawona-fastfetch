@@ -8,7 +8,9 @@
 #import "WawonaCompositor.h"
 #import "WawonaPreferences.h"
 #import "WawonaPreferencesManager.h"
+#import "WawonaUIHelpers.h"
 #import "WawonaAboutPanel.h"
+#import "logging.h"
 #include <wayland-server-core.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -58,6 +60,7 @@ static void signal_handler(int sig) {
 @property (nonatomic, strong) WawonaCompositor *compositor;
 @property (nonatomic, assign) struct wl_display *display;
 @property (nonatomic, assign) pthread_t launcher_thread; // Thread for launcher client
+@property (nonatomic, strong) UIButton *settingsButton;
 @end
 
 @implementation WawonaAppDelegate
@@ -343,29 +346,51 @@ static void signal_handler(int sig) {
         NSLog(@"ℹ️ Single-client mode: in-process launcher client disabled");
     }
     
-    // Settings button
-    UIButton *settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
-    UIImage *gearImage = [UIImage systemImageNamed:@"gearshape.fill"];
-    [settingsButton setImage:gearImage forState:UIControlStateNormal];
-    settingsButton.tintColor = [UIColor whiteColor];
-    settingsButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
-    settingsButton.layer.cornerRadius = 25.0;
-    [settingsButton addTarget:self action:@selector(showSettings:) forControlEvents:UIControlEventTouchUpInside];
-    // Use active root view controller (compositor might have replaced it)
-    UIViewController *activeRootVC = self.window.rootViewController;
-    [activeRootVC.view addSubview:settingsButton];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [settingsButton.topAnchor constraintEqualToAnchor:activeRootVC.view.safeAreaLayoutGuide.topAnchor constant:20],
-        [settingsButton.trailingAnchor constraintEqualToAnchor:activeRootVC.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-        [settingsButton.widthAnchor constraintEqualToConstant:50],
-        [settingsButton.heightAnchor constraintEqualToConstant:50],
-    ]];
-    
+    [self setupSettingsButtonIfNeeded];
     [self.window makeKeyAndVisible];
     
     return YES;
+}
+
+-(void)setupSettingsButtonIfNeeded {
+    NSLog(@"[MAIN] setupSettingsButtonIfNeeded called");
+    UIView *containerView = self.window.rootViewController.view;
+    if (!self.settingsButton) {
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular];
+         UIImage *gearImage = [UIImage systemImageNamed:@"gear" withConfiguration:config];
+         self.settingsButton = [WawonaUIHelpers createLiquidGlassButtonWithImage:gearImage
+                                                                           target:self
+                                                                           action:@selector(showSettings:)];
+         self.settingsButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
+         self.settingsButton.imageEdgeInsets = UIEdgeInsetsMake(6, 6, 6, 6);
+        [containerView addSubview:self.settingsButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.settingsButton.topAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.topAnchor constant:20],
+            [self.settingsButton.trailingAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.trailingAnchor constant:-20],
+            [self.settingsButton.widthAnchor constraintEqualToConstant:50],
+            [self.settingsButton.heightAnchor constraintEqualToConstant:50],
+        ]];
+        NSLog(@"[MAIN] Created settings button");
+    } else if (self.settingsButton.superview != containerView) {
+        [self.settingsButton removeFromSuperview];
+        [containerView addSubview:self.settingsButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.settingsButton.topAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.topAnchor constant:20],
+            [self.settingsButton.trailingAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.trailingAnchor constant:-20],
+            [self.settingsButton.widthAnchor constraintEqualToConstant:50],
+            [self.settingsButton.heightAnchor constraintEqualToConstant:50],
+        ]];
+        NSLog(@"[MAIN] Re-added settings button to containerView");
+    }
+    [containerView bringSubviewToFront:self.settingsButton];
+    
+    self.settingsButton.hidden = NO;
+    self.settingsButton.alpha = 1.0;
+    
+    [containerView layoutIfNeeded];
+    NSLog(@"[MAIN] Settings button frame: %@", NSStringFromCGRect(self.settingsButton.frame));
+    
+
 }
 
 - (void)showSettings:(id)sender {

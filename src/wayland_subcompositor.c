@@ -6,12 +6,14 @@
 static void
 subcompositor_destroy(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
 static void
 subcompositor_get_subsurface(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *surface, struct wl_resource *parent)
 {
+    (void)client; (void)surface; (void)parent;
     struct wl_resource *subsurface_resource = wl_resource_create(client, &wl_subsurface_interface, wl_resource_get_version(resource), id);
     if (!subsurface_resource) {
         wl_resource_post_no_memory(resource);
@@ -37,7 +39,7 @@ bind_subcompositor(struct wl_client *client, void *data, uint32_t version, uint3
     struct wl_subcompositor_impl *subcompositor = data;
     struct wl_resource *resource;
 
-    resource = wl_resource_create(client, &wl_subcompositor_interface, version, id);
+    resource = wl_resource_create(client, &wl_subcompositor_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;

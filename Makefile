@@ -3,7 +3,7 @@
 
 .PHONY: help compositor stop-compositor clean-compositor \
         deps-macos ios-compositor ios-compositor-fast clean-ios-compositor \
-        clean macos-compositor
+        clean clean-deps macos-compositor android-compositor Wawona
 
 # Default target
 .DEFAULT_GOAL := help
@@ -22,6 +22,7 @@ ROOT_DIR := $(shell pwd)
 # Binaries
 COMPOSITOR_BIN := $(BUILD_DIR)/Wawona
 IOS_COMPOSITOR_BIN := $(BUILD_DIR)/build-ios/Wawona.app/Wawona
+MACOS_COMPOSITOR_BIN := $(BUILD_DIR)/Wawona.app/Contents/MacOS/Wawona
 
 help:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
@@ -34,6 +35,8 @@ help:
 	@echo "  $(YELLOW)make ios-compositor$(NC)    - Build and run Wawona for iOS Simulator (includes deps)"
 	@echo "  $(YELLOW)make ios-compositor-fast$(NC) - Rebuild iOS compositor only (skips deps if already built)"
 	@echo "  $(YELLOW)make clean$(NC)             - Clean all build artifacts"
+	@echo "  $(YELLOW)make android-compositor$(NC) - Build and run Wawona for Android (uses emulator)"
+	@echo "  $(YELLOW)make Wawona$(NC)             - Build iOS, macOS, and Android in parallel with combined logs"
 	@echo ""
 
 # --- Shared Dependency Logic ---
@@ -50,8 +53,10 @@ build-deps:
 	@./scripts/install-wayland-protocols.sh --platform $(PLATFORM)
 	@./scripts/install-pixman.sh --platform $(PLATFORM)
 	@./scripts/install-xkbcommon.sh --platform $(PLATFORM)
-	@# Build KosmicKrisp (Vulkan)
-	@./scripts/install-kosmickrisp.sh --platform $(PLATFORM)
+	@if [ "$(PLATFORM)" = "macos" ] || [ "$(PLATFORM)" = "ios" ]; then \
+		./scripts/install-kosmickrisp.sh --platform $(PLATFORM); \
+		./scripts/install-angle.sh --platform $(PLATFORM); \
+	fi
 	@# Build Waypipe
 	@./scripts/install-ffmpeg.sh --platform $(PLATFORM)
 	@./scripts/install-lz4.sh --platform $(PLATFORM)
@@ -69,23 +74,56 @@ macos-compositor:
 	@cd $(BUILD_DIR) && cmake .. && make -j$(shell sysctl -n hw.ncpu)
 	@echo "$(GREEN)✓$(NC) Build complete"
 	@echo "$(BLUE)▶$(NC) Running Compositor"
-	@$(COMPOSITOR_BIN) 2>&1 | tee $(BUILD_DIR)/macos-run.log
+	@if [ -f "$(MACOS_COMPOSITOR_BIN)" ]; then \
+	  $(MACOS_COMPOSITOR_BIN) 2>&1 | tee $(BUILD_DIR)/macos-run.log; \
+	else \
+	  echo "$(RED)✗$(NC) macOS app bundle binary not found at $(MACOS_COMPOSITOR_BIN)"; \
+	  exit 1; \
+	fi
 
 # Alias for backward compatibility
 compositor: macos-compositor
+
+# Build iOS and macOS in parallel with tagged, combined stdout
+Wawona:
+	@echo "$(BLUE)▶$(NC) Building iOS, macOS, and Android in parallel..."
+	@mkdir -p $(BUILD_DIR)/parallel-logs
+	@IOS_LOG=$(BUILD_DIR)/parallel-logs/ios.log; MAC_LOG=$(BUILD_DIR)/parallel-logs/macos.log; AND_LOG=$(BUILD_DIR)/parallel-logs/android.log; \
+	 echo "$(BLUE)▶$(NC) Starting iOS build..."; \
+	 $(MAKE) ios-compositor > $$IOS_LOG 2>&1 & IOS_PID=$$!; \
+	 echo "$(BLUE)▶$(NC) Starting macOS build..."; \
+	 $(MAKE) macos-compositor > $$MAC_LOG 2>&1 & MAC_PID=$$!; \
+	 echo "$(BLUE)▶$(NC) Starting Android build..."; \
+	 $(MAKE) android-compositor > $$AND_LOG 2>&1 & AND_PID=$$!; \
+	 ( tail -f -n +1 $$IOS_LOG | sed -e 's/^/[iOS] /' ) & IOS_TAIL=$$!; \
+	 ( tail -f -n +1 $$MAC_LOG | sed -e 's/^/[macOS] /' ) & MAC_TAIL=$$!; \
+	 ( tail -f -n +1 $$AND_LOG | sed -e 's/^/[Android] /' ) & AND_TAIL=$$!; \
+	 wait $$IOS_PID; IOS_STATUS=$$?; \
+	 wait $$MAC_PID; MAC_STATUS=$$?; \
+	 wait $$AND_PID; AND_STATUS=$$?; \
+	 kill $$IOS_TAIL $$MAC_TAIL $$AND_TAIL >/dev/null 2>&1 || true; \
+	 echo "$(BLUE)▶$(NC) iOS build exit code: $$IOS_STATUS"; \
+	 echo "$(BLUE)▶$(NC) macOS build exit code: $$MAC_STATUS"; \
+	 echo "$(BLUE)▶$(NC) Android build exit code: $$AND_STATUS"; \
+	 if [ $$IOS_STATUS -ne 0 ] || [ $$MAC_STATUS -ne 0 ] || [ $$AND_STATUS -ne 0 ]; then \
+	   echo "$(RED)✗$(NC) One or more builds failed. See logs in $(BUILD_DIR)/parallel-logs"; \
+	   exit 2; \
+	 else \
+	   echo "$(GREEN)✓$(NC) All builds completed successfully"; \
+	 fi
 
 # --- iOS Targets ---
 
 # Check if iOS dependencies are already built
 # Returns 0 if deps exist, 1 if they need to be built
 check-ios-deps:
-	@if [ -d "$(BUILD_DIR)/ios-install/lib" ] && [ -f "$(BUILD_DIR)/ios-install/lib/libwayland-server.a" ] && [ -f "$(BUILD_DIR)/ios-install/lib/libvulkan_kosmickrisp.a" ]; then \
-		echo "$(GREEN)✓$(NC) iOS dependencies already built"; \
-		exit 0; \
-	else \
-		echo "$(YELLOW)ℹ$(NC) iOS dependencies not found, will build them"; \
-		exit 1; \
-	fi
+	@if [ -d "ios-dependencies/lib" ] && [ -f "ios-dependencies/lib/libwayland-server.a" ] && [ -f "ios-dependencies/lib/libvulkan_kosmickrisp.a" ]; then \
+		 echo "$(GREEN)✓$(NC) iOS dependencies already built"; \
+		 exit 0; \
+	 else \
+		 echo "$(YELLOW)ℹ$(NC) iOS dependencies not found, will build them"; \
+		 exit 1; \
+	 fi
 
 # Build iOS dependencies (if not already built)
 build-ios-deps:
@@ -160,3 +198,28 @@ clean:
 	@echo "$(YELLOW)ℹ$(NC) Cleaning build directory..."
 	@rm -rf $(BUILD_DIR)
 	@echo "$(GREEN)✓$(NC) Cleaned"
+
+# Remove all dependency build and install artifacts for a from-scratch build
+clean-deps:
+	@echo "$(YELLOW)ℹ$(NC) Cleaning dependency build artifacts..."
+	@rm -rf \
+		ios-dependencies \
+		macos-dependencies \
+		android-dependencies \
+		$(BUILD_DIR)/ios-bootstrap \
+		$(BUILD_DIR)/macos-bootstrap
+	@rm -rf dependencies/*/build-* dependencies/*/build \
+		dependencies/*/meson-* dependencies/*/target \
+		dependencies/*/out \
+		dependencies/kosmickrisp/build-* \
+		dependencies/waypipe/target
+	@echo "$(GREEN)✓$(NC) Dependency artifacts cleaned"
+
+# Alias: full clean removes both project build and dependencies
+clean-all: clean clean-deps
+# Android build and run via the android_make subproject
+android-compositor:
+	@echo "$(BLUE)▶$(NC) Building and running Android compositor..."
+	@mkdir -p $(BUILD_DIR)
+	@bash -c 'set -o pipefail; ./scripts/android-compositor.sh | tee $(BUILD_DIR)/android-run.log'
+	@echo "$(GREEN)✓$(NC) Android build complete"

@@ -21,7 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIBFFI_DIR="${ROOT_DIR}/dependencies/libffi"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     
@@ -39,7 +39,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="aarch64-apple-darwin"
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     
     # macOS-specific configure options
     export CFLAGS="-Wall -Wextra -Wpedantic -Werror -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition -Wmissing-declarations -Wuninitialized -Winit-self -Wpointer-arith -Wcast-qual -Wwrite-strings -Wconversion -Wsign-conversion -Wformat=2 -Wformat-security -Wundef -Wshadow -Wstrict-overflow=5 -Wswitch-default -Wswitch-enum -Wunreachable-code -Wfloat-equal -Wstack-protector -fstack-protector-strong -fPIC -std=c17 -Wno-deprecated-declarations -fexceptions"
@@ -150,4 +150,3 @@ if [ "${PLATFORM}" == "ios" ]; then
         
     echo "Success! FFI framework created at ${INSTALL_DIR}/Frameworks/FFI.framework"
 fi
-

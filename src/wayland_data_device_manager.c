@@ -34,7 +34,7 @@ bind_data_device_manager(struct wl_client *client, void *data, uint32_t version,
     struct wl_data_device_manager_impl *manager = data;
     struct wl_resource *resource;
 
-    resource = wl_resource_create(client, &wl_data_device_manager_interface, version, id);
+    resource = wl_resource_create(client, &wl_data_device_manager_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;

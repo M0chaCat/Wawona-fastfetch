@@ -1,7 +1,9 @@
 #import "metal_renderer.h"
 #import "metal_dmabuf.h"
 #import "metal_waypipe.h"
+#if HAVE_VULKAN
 #import "vulkan_renderer.h"
+#endif
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -67,6 +69,9 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
     if (_colorSpace) {
         CGColorSpaceRelease(_colorSpace);
     }
+#if !__has_feature(objc_arc)
+    [super dealloc];
+#endif
 }
 @end
 
@@ -85,13 +90,23 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         _metalView.device = _device;
         _metalView.delegate = self;
         
-        // Initialize Vulkan renderer
-        _vulkanRenderer = [[VulkanRenderer alloc] initWithMetalDevice:_device];
-        if (_vulkanRenderer) {
-            NSLog(@"✅ Vulkan renderer initialized inside Metal renderer");
+        // Initialize Vulkan renderer if enabled and available
+#if HAVE_VULKAN
+        BOOL vkEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"EnableVulkanDrivers"];
+        if (vkEnabled) {
+            _vulkanRenderer = [[VulkanRenderer alloc] initWithMetalDevice:_device];
+            if (_vulkanRenderer) {
+                NSLog(@"✅ Vulkan renderer initialized inside Metal renderer");
+            } else {
+                NSLog(@"⚠️ Failed to initialize Vulkan renderer inside Metal renderer");
+            }
         } else {
-            NSLog(@"⚠️ Failed to initialize Vulkan renderer inside Metal renderer");
+            _vulkanRenderer = nil;
+            NSLog(@"ℹ️ Vulkan drivers disabled via settings; using Cocoa renderer");
         }
+#else
+        _vulkanRenderer = nil;
+#endif
 
         // Enable continuous rendering for nested compositors (like Weston)
         // With enableSetNeedsDisplay=NO, MTKView uses its internal display link for continuous rendering
@@ -274,7 +289,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         _surfaceTextures = nil;
     }
     
-#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#if !__has_feature(objc_arc)
     [super dealloc];
 #endif
 }
@@ -330,8 +345,10 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // Neither SHM buffer nor custom buffer_data - likely an EGL buffer
             
             // Try using Vulkan renderer
+            // Render via Vulkan bridge if available
+#if HAVE_VULKAN
             if (self.vulkanRenderer) {
-                id<MTLTexture> vulkanTexture = [self.vulkanRenderer renderEGLSurface:surface];
+                id<MTLTexture> vulkanTexture = [(VulkanRenderer *)self.vulkanRenderer renderEGLSurface:surface];
                 if (vulkanTexture) {
                     // We got a texture from Vulkan!
                     // Update MetalSurface and return
@@ -366,8 +383,9 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
                 }
             }
 
-            // EGL buffers are not yet supported for rendering on macOS
-            NSLog(@"[METAL RENDERER] ⚠️ EGL buffer detected but Vulkan render failed - skipping render");
+            // EGL buffers are not yet supported without Vulkan bridge
+            NSLog(@"[METAL RENDERER] ⚠️ EGL buffer detected but Vulkan render unavailable - skipping render");
+#endif
             
             // Still send buffer release to client
             if (!surface->buffer_release_sent) {

@@ -22,7 +22,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRAMEWORK_NAME="Wayland"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     ARCH="arm64"
@@ -31,7 +31,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     LIBTOOL_FLAGS="-static -arch_only arm64 -syslibroot ${SDK_PATH}"
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
     ARCH="arm64" # Assuming arm64 for modern macs, or universal? Let's default to host arch or arm64

@@ -22,7 +22,7 @@ FFMPEG_DIR="${ROOT_DIR}/dependencies/ffmpeg"
 
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${FFMPEG_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     # export PKG_CONFIG_PATH="${ROOT_DIR}/build/ios-bootstrap/lib/pkgconfig:${ROOT_DIR}/build/ios-bootstrap/share/pkgconfig"
@@ -41,7 +41,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     )
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${FFMPEG_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/share/pkgconfig:$PKG_CONFIG_PATH"
     
     CONFIGURE_ARGS=(
@@ -140,4 +140,3 @@ if [ "${PLATFORM}" == "ios" ]; then
         echo "Warning: No FFmpeg static libraries found to create framework."
     fi
 fi
-

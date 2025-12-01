@@ -11,7 +11,7 @@ static struct wl_client *nested_compositor_client = NULL;
 
 // --- Forward Declarations ---
 static void xdg_surface_destroy_resource(struct wl_resource *resource);
-static void xdg_toplevel_destroy_resource(struct wl_resource *resource);
+static void xdg_toplevel_destroy_resource(struct wl_resource *resource) __attribute__((unused));
 
 // --- XDG Toplevel ---
 
@@ -24,31 +24,37 @@ xdg_toplevel_destroy(struct wl_client *client, struct wl_resource *resource)
 static void
 xdg_toplevel_set_parent(struct wl_client *client, struct wl_resource *resource, struct wl_resource *parent)
 {
+    (void)client; (void)resource; (void)parent;
 }
 
 static void
 xdg_toplevel_set_title(struct wl_client *client, struct wl_resource *resource, const char *title)
 {
+    (void)client; (void)resource; (void)title;
 }
 
 static void
 xdg_toplevel_set_app_id(struct wl_client *client, struct wl_resource *resource, const char *app_id)
 {
+    (void)client; (void)resource; (void)app_id;
 }
 
 static void
 xdg_toplevel_show_window_menu(struct wl_client *client, struct wl_resource *resource, struct wl_resource *seat, uint32_t serial, int32_t x, int32_t y)
 {
+    (void)client; (void)resource; (void)seat; (void)serial; (void)x; (void)y;
 }
 
 static void
 xdg_toplevel_move(struct wl_client *client, struct wl_resource *resource, struct wl_resource *seat, uint32_t serial)
 {
+    (void)client; (void)resource; (void)seat; (void)serial;
 }
 
 static void
 xdg_toplevel_resize(struct wl_client *client, struct wl_resource *resource, struct wl_resource *seat, uint32_t serial, uint32_t edges)
 {
+    (void)client; (void)resource; (void)seat; (void)serial; (void)edges;
 }
 
 static void
@@ -72,26 +78,31 @@ xdg_toplevel_set_min_size(struct wl_client *client, struct wl_resource *resource
 static void
 xdg_toplevel_set_maximized(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client; (void)resource;
 }
 
 static void
 xdg_toplevel_unset_maximized(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client; (void)resource;
 }
 
 static void
 xdg_toplevel_set_fullscreen(struct wl_client *client, struct wl_resource *resource, struct wl_resource *output)
 {
+    (void)client; (void)resource; (void)output;
 }
 
 static void
 xdg_toplevel_unset_fullscreen(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client; (void)resource;
 }
 
 static void
 xdg_toplevel_set_minimized(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client; (void)resource;
 }
 
 static const struct xdg_toplevel_interface xdg_toplevel_implementation = {
@@ -116,6 +127,7 @@ static const struct xdg_toplevel_interface xdg_toplevel_implementation = {
 static void
 xdg_surface_destroy(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
@@ -163,10 +175,16 @@ xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource,
     uint32_t *fullscreen = wl_array_add(&states, sizeof(uint32_t));
     if (fullscreen) *fullscreen = XDG_TOPLEVEL_STATE_FULLSCREEN;
     
-    // Send 0x0 initially to let client pick size, OR send output size if we know it?
-    // For now keep 0x0 for initial to let client adapt to output mode it sees.
-    log_printf("[XDG-SHELL] ", "Sending initial configure to toplevel %p (size: 0x0)\n", toplevel_resource);
-    xdg_toplevel_send_configure(toplevel_resource, 0, 0, &states);
+    // Choose a non-zero initial size to ensure clients render promptly
+    // Prefer the wm_base's output size if known; otherwise fall back to 1024x768
+    int32_t cfg_width = 1024;
+    int32_t cfg_height = 768;
+    if (xdg_surface && xdg_surface->wm_base) {
+        if (xdg_surface->wm_base->output_width > 0) cfg_width = xdg_surface->wm_base->output_width;
+        if (xdg_surface->wm_base->output_height > 0) cfg_height = xdg_surface->wm_base->output_height;
+    }
+    log_printf("[XDG-SHELL] ", "Sending initial configure to toplevel %p (size: %dx%d)\n", toplevel_resource, cfg_width, cfg_height);
+    xdg_toplevel_send_configure(toplevel_resource, cfg_width, cfg_height, &states);
     wl_array_release(&states);
     
     xdg_surface_send_configure(resource, 1); // Serial 1
@@ -175,17 +193,19 @@ xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource,
 static void
 xdg_surface_get_popup(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *parent, struct wl_resource *positioner)
 {
-    // Stub
+    (void)client; (void)resource; (void)id; (void)parent; (void)positioner;
 }
 
 static void
 xdg_surface_set_window_geometry(struct wl_client *client, struct wl_resource *resource, int32_t x, int32_t y, int32_t width, int32_t height)
 {
+    (void)client; (void)resource; (void)x; (void)y; (void)width; (void)height;
 }
 
 static void
 xdg_surface_ack_configure(struct wl_client *client, struct wl_resource *resource, uint32_t serial)
 {
+    (void)client; (void)serial;
     struct xdg_surface_impl *xdg_surface = wl_resource_get_user_data(resource);
     xdg_surface->configured = true;
 }
@@ -201,13 +221,14 @@ static const struct xdg_surface_interface xdg_surface_implementation = {
 static void
 wm_base_destroy_resource(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
 static void
 wm_base_create_positioner(struct wl_client *client, struct wl_resource *resource, uint32_t id)
 {
-    // Stub
+    (void)client; (void)resource; (void)id;
 }
 
 static void
@@ -238,7 +259,7 @@ wm_base_get_xdg_surface(struct wl_client *client, struct wl_resource *resource, 
 static void
 wm_base_pong(struct wl_client *client, struct wl_resource *resource, uint32_t serial)
 {
-    // Handle pong
+    (void)client; (void)resource; (void)serial;
 }
 
 static const struct xdg_wm_base_interface wm_base_interface = {
@@ -320,21 +341,17 @@ xdg_wm_base_send_configure_to_all_toplevels(struct xdg_wm_base_impl *wm_base, in
                            toplevel_version, wm_base_version);
             }
             
+            // Send configure with a concrete size hint to ensure clients render
+            // Use provided width/height if non-zero; else fallback to wm_base stored size; else 1024x768
             struct wl_array states;
             wl_array_init(&states);
             uint32_t *activated = wl_array_add(&states, sizeof(uint32_t));
             if (activated) *activated = XDG_TOPLEVEL_STATE_ACTIVATED;
             
-            // Force maximized and fullscreen state to ensure client fills the screen
-            uint32_t *maximized = wl_array_add(&states, sizeof(uint32_t));
-            if (maximized) *maximized = XDG_TOPLEVEL_STATE_MAXIMIZED;
-            
-            uint32_t *fullscreen = wl_array_add(&states, sizeof(uint32_t));
-            if (fullscreen) *fullscreen = XDG_TOPLEVEL_STATE_FULLSCREEN;
-            
-            // Send explicit size to force resize (0x0 means client choice, but explicit forces it)
-            log_printf("[XDG-SHELL] ", "Sending resize configure to toplevel %p (size: %dx%d)\n", toplevel_resource, width, height);
-            xdg_toplevel_send_configure(toplevel_resource, width, height, &states);
+            int32_t cfg_w = width > 0 ? width : (wm_base->output_width > 0 ? wm_base->output_width : 1024);
+            int32_t cfg_h = height > 0 ? height : (wm_base->output_height > 0 ? wm_base->output_height : 768);
+            log_printf("[XDG-SHELL] ", "Sending configure %dx%d to toplevel %p\n", cfg_w, cfg_h, toplevel_resource);
+            xdg_toplevel_send_configure(toplevel_resource, cfg_w, cfg_h, &states);
             wl_array_release(&states);
             
             xdg_surface_send_configure(surface->resource, ++surface->configure_serial);

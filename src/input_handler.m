@@ -168,7 +168,7 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     return self;
 }
 
-static uint32_t getWaylandTime() {
+static uint32_t getWaylandTime(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
@@ -257,20 +257,30 @@ static uint32_t getWaylandTime() {
         
         if (!surface || !surface->resource) {
             // No surface found - can't send event
+            NSLog(@"⚠️ No surface found at touch location (%.1f, %.1f)", location.x, location.y);
             return;
         }
         
         // Convert view points to surface-local coordinates (pixels)
-        // Assume surface covers the window/view 1:1 (or scaled)
-        // If using fullscreen shell, output size matches surface size (in pixels)
-        // Location is in points. We need pixels.
+        // Location is already relative to targetView (CompositorView's metalView)
+        // We need to convert from points to pixels using the screen scale
+        UIView *targetView = self.targetView ? self.targetView : _window;
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-        CGFloat scale = _window.screen.scale;
+        CGFloat scale = targetView.window.screen.scale;
+        if (scale <= 0) {
+            scale = [UIScreen mainScreen].scale; // Fallback
+        }
 #else
         CGFloat scale = _window.backingScaleFactor;
 #endif
+        
+        // Location is in points relative to targetView
+        // Convert to pixels for Wayland (which uses pixel coordinates)
         wl_fixed_t x = wl_fixed_from_double(location.x * scale);
         wl_fixed_t y = wl_fixed_from_double(location.y * scale);
+        
+        NSLog(@"📱 Touch down: view coords (%.1f, %.1f) points, scale %.0fx = Wayland (%.1f, %.1f) pixels",
+              location.x, location.y, scale, wl_fixed_to_double(x), wl_fixed_to_double(y));
         
         wl_seat_send_touch_down(seat_impl, 
                                wl_seat_get_serial(seat_impl),
@@ -291,7 +301,7 @@ static uint32_t getWaylandTime() {
         wl_seat_send_pointer_button(seat_impl, wl_seat_get_serial(seat_impl), getWaylandTime(), 272, 1); // BTN_LEFT down
         wl_seat_send_pointer_frame(seat_impl);
         
-        NSLog(@"📱 Touch down at (%.1f, %.1f) on surface %p", location.x, location.y, surface);
+        NSLog(@"📱 Touch down at (%.1f, %.1f) on surface %p", location.x, location.y, (void *)surface);
     }
 }
 
@@ -299,9 +309,13 @@ static uint32_t getWaylandTime() {
     if (_seat) {
         struct wl_seat_impl *seat_impl = _seat;
         
-        // Convert to pixels
+        // Convert to pixels (location is already relative to targetView)
+        UIView *targetView = self.targetView ? self.targetView : _window;
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-        CGFloat scale = _window.screen.scale;
+        CGFloat scale = targetView.window.screen.scale;
+        if (scale <= 0) {
+            scale = [UIScreen mainScreen].scale; // Fallback
+        }
 #else
         CGFloat scale = _window.backingScaleFactor;
 #endif

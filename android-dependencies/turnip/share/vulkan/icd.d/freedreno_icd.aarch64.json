@@ -1,0 +1,8 @@
+{
+    "ICD": {
+        "api_version": "1.4.333",
+        "library_arch": "64",
+        "library_path": "/Users/alex/Wawona/android-dependencies/turnip/lib/libvulkan_freedreno.so"
+    },
+    "file_format_version": "1.0.1"
+}

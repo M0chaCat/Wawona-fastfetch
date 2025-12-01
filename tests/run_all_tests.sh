@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 COMPOSITOR_BIN="$BUILD_DIR/Wawona"
+MACOS_APP_BIN="$BUILD_DIR/Wawona.app/Contents/MacOS/Wawona"
 
 # Colors
 RED='\033[0;31m'
@@ -48,6 +49,9 @@ echo ""
 echo "Test 1: Compositor Binary"
 if [ -f "$COMPOSITOR_BIN" ]; then
     test_result PASS "Compositor Binary" "Found at $COMPOSITOR_BIN"
+elif [ -f "$MACOS_APP_BIN" ]; then
+    COMPOSITOR_BIN="$MACOS_APP_BIN"
+    test_result PASS "Compositor Binary" "Found app bundle binary at $COMPOSITOR_BIN"
 else
     test_result FAIL "Compositor Binary" "Not found at $COMPOSITOR_BIN"
     exit 1
@@ -138,4 +142,3 @@ else
     echo -e "${RED}Some tests failed!${NC}"
     exit 1
 fi
-

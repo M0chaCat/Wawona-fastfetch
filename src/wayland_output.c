@@ -7,6 +7,7 @@
 static void
 output_release(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
@@ -56,7 +57,7 @@ bind_output(struct wl_client *client, void *data, uint32_t version, uint32_t id)
     struct wl_output_impl *output = data;
     struct wl_resource *resource;
 
-    resource = wl_resource_create(client, &wl_output_interface, version, id);
+    resource = wl_resource_create(client, &wl_output_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;

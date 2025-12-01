@@ -21,7 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIBPNG_DIR="${ROOT_DIR}/dependencies/libpng"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     
@@ -37,7 +37,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     export PKG_CONFIG_PATH="${ROOT_DIR}/build/ios-bootstrap/lib/pkgconfig:${ROOT_DIR}/build/ios-bootstrap/share/pkgconfig"
     
     elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export CFLAGS="-fPIC"
     CONFIGURE_ARGS=()
     BUILD_DIR="${LIBPNG_DIR}/build-macos"
@@ -86,4 +86,3 @@ echo "Installing libpng..."
 make install
 
 echo "Success! libpng installed to ${INSTALL_DIR}"
-

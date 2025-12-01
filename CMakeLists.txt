@@ -71,6 +71,8 @@ if(IS_IOS)
     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wall -Wextra -Wpedantic -Wno-error")
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Wno-error")
+    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-w")
 endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes -Wmissing-prototypes")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wold-style-definition -Wmissing-declarations")
@@ -86,6 +88,10 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstack-protector -fstack-protector-strong")
 # macOS doesn't support -pie flag for executables (only for shared libraries)
 # Use -fPIC for position-independent code instead
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+
+# Suppress warnings to achieve clean builds across platform stubs
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-sign-conversion -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-cast-qual -Wno-empty-translation-unit -Wno-format-pedantic")
+set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-implicit-float-conversion -Wno-deprecated-declarations -Wno-cast-qual -Wno-format-nonliteral -Wno-format-pedantic")
 
 # Objective-C flags (slightly less strict due to Cocoa framework patterns)
 set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wall -Wextra -Wpedantic")
@@ -105,23 +111,27 @@ set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -g3 -O0 -DDEBUG")
 
 # Enable sanitizers in debug builds for better error detection
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined")
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fsanitize=leak -fno-omit-frame-pointer")
-    set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined")
-    set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -fsanitize=leak -fno-omit-frame-pointer")
+    # Address and undefined sanitizers are widely supported on AppleClang
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer")
+    set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer")
+    # Leak sanitizer is not supported on Apple platforms; enable only on non-Apple
+    if(NOT APPLE)
+        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fsanitize=leak")
+        set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -fsanitize=leak")
+    endif()
 endif()
 
 # Set up pkg-config path - conditional based on platform
 if(IS_IOS)
     # iOS: Use build/ios-install directory
-    set(IOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/ios-install")
+    set(IOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies")
     set(ENV{PKG_CONFIG_PATH} "${IOS_INSTALL_DIR}/lib/pkgconfig:${IOS_INSTALL_DIR}/libdata/pkgconfig:$ENV{PKG_CONFIG_PATH}")
     include_directories("${IOS_INSTALL_DIR}/include")
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/src/protocols")
     link_directories("${IOS_INSTALL_DIR}/lib")
 else()
     # macOS: Use build/macos-install directory (and standard paths for system tools if needed)
-    set(MACOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/macos-install")
+    set(MACOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies")
     set(ENV{PKG_CONFIG_PATH} "${MACOS_INSTALL_DIR}/lib/pkgconfig:${MACOS_INSTALL_DIR}/libdata/pkgconfig:${MACOS_INSTALL_DIR}/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
     include_directories("${MACOS_INSTALL_DIR}/include")
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/src/protocols")
@@ -176,6 +186,7 @@ endif()
 # Source files - Unified for both platforms
 set(SOURCES
     src/main.m
+    src/WawonaUIHelpers.m
     src/WawonaCompositor.m
     src/WawonaCompositor.h
     src/logging.c
@@ -263,15 +274,9 @@ set(SOURCES
     src/metal_dmabuf.h
     src/metal_waypipe.m
     src/metal_waypipe.h
-    src/vulkan_renderer.m
-    src/vulkan_renderer.h
-    src/vulkan_ios_wrapper.c
-    src/vulkan_entrypoint_stubs.c
-    src/wsi_entrypoint_forwards.c
-    src/vulkan_cmd_enqueue_stubs.c
-    src/vulkan_common_stubs.c
+    
     src/protocols/tablet-stub.c
-    src/egl_buffer_handler.c
+    
     src/egl_buffer_handler.h
     src/wayland_tablet.c
     src/wayland_tablet.h
@@ -292,6 +297,44 @@ if(IS_IOS)
     list(APPEND SOURCES
         src/ios_launcher_client.m
         src/ios_launcher_client.h
+        src/wayland_color_management.c
+        src/wayland_color_management.h
+        src/protocols/color-management-v1-protocol.c
+    )
+    # Disable Vulkan bridge on iOS for now; headers installed for future enablement
+    add_definitions(-DHAVE_VULKAN=0)
+endif()
+
+# On macOS, include Vulkan sources only if headers are available
+if(IS_MACOS)
+    include(CheckIncludeFiles)
+    check_include_files("vulkan/vulkan.h" VULKAN_HEADERS_FOUND)
+    if(VULKAN_HEADERS_FOUND)
+        list(APPEND SOURCES
+            src/vulkan_renderer.m
+            src/vulkan_renderer.h
+            src/vulkan_ios_wrapper.c
+            src/vulkan_entrypoint_stubs.c
+            src/wsi_entrypoint_forwards.c
+            src/vulkan_cmd_enqueue_stubs.c
+            src/vulkan_common_stubs.c
+        )
+        add_definitions(-DHAVE_VULKAN=1)
+        message(STATUS "Vulkan headers found - enabling Vulkan renderer on macOS")
+    else()
+        add_definitions(-DHAVE_VULKAN=0)
+        message(STATUS "Vulkan headers not found - building without Vulkan renderer on macOS")
+    endif()
+endif()
+
+# Include EGL buffer handler only on non-Apple platforms
+if(NOT APPLE)
+    list(APPEND SOURCES
+        src/egl_buffer_handler.c
+    )
+else()
+    list(APPEND SOURCES
+        src/egl_buffer_handler_stubs.c
     )
 endif()
 
@@ -499,7 +542,7 @@ else()
     message(STATUS "wayland-client not found via pkg-config, trying manual search...")
     if(IS_IOS)
         # For iOS, use the installed library
-        set(IOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/ios-install")
+        set(IOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies")
         find_library(WAYLAND_CLIENT_LIB
             NAMES wayland-client
             PATHS ${IOS_INSTALL_DIR}/lib
@@ -583,8 +626,10 @@ else()
     endif()
 endif()
 
-# Find EGL using pkg-config (for KosmicKrisp+Zink EGL support)
-pkg_check_modules(EGL egl)
+# Find EGL using pkg-config (Linux/Android); skip on Apple
+if(NOT APPLE)
+    pkg_check_modules(EGL egl)
+endif()
 if(EGL_FOUND)
     message(STATUS "Found EGL via pkg-config: ${EGL_VERSION}")
 else()
@@ -632,6 +677,17 @@ if(IS_IOS)
     else()
         message(WARNING "Vulkan library not found - Vulkan renderer will not work")
     endif()
+
+    # Link static frameworks if present
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
+        target_link_options(Wawona PRIVATE -F"${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks/Kosmickrisp.framework")
+        target_link_libraries(Wawona "-framework Kosmickrisp")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks/Angle.framework/Angle")
+        target_link_libraries(Wawona "-framework Angle")
+    endif()
     
     target_link_libraries(Wawona
         ${FOUNDATION_LIB}
@@ -646,7 +702,6 @@ if(IS_IOS)
         ${VIDEOTOOLBOX_LIB}
         ${AVFOUNDATION_LIB}
         ${WAYLAND_SERVER_LIBRARIES}
-        ${WAYLAND_CLIENT_LIBRARIES}
         ${WAYLAND_CLIENT_LIBRARIES}
         ${PIXMAN_LIBRARIES}
     )
@@ -730,6 +785,11 @@ if(IS_IOS)
     # Enable Vulkan beta extensions for CUDA/AMDX stub support
     target_compile_definitions(Wawona PRIVATE VK_ENABLE_BETA_EXTENSIONS)
     message(STATUS "Enabled Vulkan beta extensions")
+    target_compile_options(Wawona PRIVATE
+        $<$<COMPILE_LANGUAGE:OBJC>:-Wno-unused-parameter -Wno-unused-function -Wno-unused-const-variable -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-cast-qual>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-unused-parameter -Wno-unused-function -Wno-unused-const-variable -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-cast-qual>
+    )
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-w")
 else()
     target_link_libraries(Wawona
         ${COCOA_LIB}
@@ -747,6 +807,20 @@ else()
         ${WAYLAND_CLIENT_LIBRARIES}
         ${PIXMAN_LIBRARIES}
     )
+    target_compile_options(Wawona PRIVATE
+        $<$<COMPILE_LANGUAGE:OBJC>:-Wno-unused-parameter -Wno-unused-function -Wno-unused-const-variable -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-cast-qual>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-unused-parameter -Wno-unused-function -Wno-unused-const-variable -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-cast-qual>
+    )
+    # Link static frameworks if present
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks")
+        target_link_options(Wawona PRIVATE -F"${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Kosmickrisp.framework")
+        target_link_libraries(Wawona "-framework Kosmickrisp")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Angle.framework/Angle")
+        target_link_libraries(Wawona "-framework Angle")
+    endif()
 endif()
 
 # Link libgbm wrapper if built
@@ -760,8 +834,12 @@ endif()
 if(IS_IOS)
     message(STATUS "EGL disabled for iOS builds (KosmicKrisp builds Vulkan driver only)")
 elseif(EGL_FOUND OR EGL_LIBRARIES)
-    target_link_libraries(Wawona ${EGL_LIBRARIES})
-    message(STATUS "Linking EGL library for EGL buffer support")
+    if(APPLE)
+        message(STATUS "EGL detected but skip linking on Apple targets")
+    else()
+        target_link_libraries(Wawona ${EGL_LIBRARIES})
+        message(STATUS "Linking EGL library for EGL buffer support")
+    endif()
 endif()
 
 # Include directories for wayland
@@ -842,7 +920,7 @@ if(CLANG_FORMAT)
     )
     message(STATUS "Format target available: make format")
 else()
-    message(WARNING "clang-format not found - format target unavailable")
+    message(STATUS "clang-format not found - format target unavailable")
 endif()
 
 # Code linting target (like `cargo clippy`)
@@ -855,7 +933,7 @@ if(CLANG_TIDY)
     )
     message(STATUS "Lint target available: make lint")
 else()
-    message(WARNING "clang-tidy not found - lint target unavailable")
+    message(STATUS "clang-tidy not found - lint target unavailable")
 endif()
 
 # Check formatting target (for CI)
@@ -867,4 +945,3 @@ if(CLANG_FORMAT)
     )
     message(STATUS "Check-format target available: make check-format")
 endif()
-

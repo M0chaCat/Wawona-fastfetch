@@ -21,7 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ZLIB_DIR="${ROOT_DIR}/dependencies/zlib"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     
@@ -33,7 +33,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${ZLIB_DIR}/build-ios"
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export CFLAGS="-fPIC"
     BUILD_DIR="${ZLIB_DIR}/build-macos"
 else
@@ -64,4 +64,3 @@ echo "Installing zlib..."
 make install
 
 echo "Success! zlib installed to ${INSTALL_DIR}"
-

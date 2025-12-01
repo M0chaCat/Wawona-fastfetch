@@ -22,7 +22,7 @@ GDK_PIXBUF_DIR="${ROOT_DIR}/dependencies/gdk-pixbuf"
 
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${GDK_PIXBUF_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     CROSS_FILE="${ROOT_DIR}/dependencies/wayland/cross-ios.txt"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
@@ -30,7 +30,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     MESON_EXTRA_ARGS=("--cross-file" "${CROSS_FILE}")
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${GDK_PIXBUF_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:$PKG_CONFIG_PATH"
     MESON_EXTRA_ARGS=()
 else
@@ -66,4 +66,3 @@ echo "Installing GDK-Pixbuf..."
 ninja -C "${BUILD_DIR}" install
 
 echo "Success! GDK-Pixbuf installed to ${INSTALL_DIR}"
-

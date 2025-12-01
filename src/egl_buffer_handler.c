@@ -2,6 +2,8 @@
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 
 #include "egl_buffer_handler.h"
+#include <stdbool.h>
+extern bool wawona_is_egl_enabled(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,7 @@
 #ifndef EGL_PLATFORM_SURFACELESS_MESA
 #define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
 #endif
+static void egl_buffer_handler_translation_unit_silence(void) {}
 
 // Helper to check extensions
 static bool has_extension(const char *extensions, const char *ext) {
@@ -34,6 +37,9 @@ static bool has_extension(const char *extensions, const char *ext) {
 }
 
 int egl_buffer_handler_init(struct egl_buffer_handler *handler, struct wl_display *display) {
+    if (!wawona_is_egl_enabled()) {
+        return -1;
+    }
     if (!handler || !display) return -1;
     
     handler->initialized = false;
@@ -57,7 +63,7 @@ int egl_buffer_handler_init(struct egl_buffer_handler *handler, struct wl_displa
 
     if (getPlatformDisplay) {
         // Try surfaceless
-        handler->egl_display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+        handler->egl_display = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL);
         
         // If that fails, try device platform
         if (handler->egl_display == EGL_NO_DISPLAY) {
@@ -145,15 +151,8 @@ void egl_buffer_handler_cleanup(struct egl_buffer_handler *handler) {
         }
         
         if (handler->display_bound) {
-            PFNEGLUNBINDWAYLANDDISPLAYWL unbindWaylandDisplay = 
-                (PFNEGLUNBINDWAYLANDDISPLAYWL)eglGetProcAddress("eglUnbindWaylandDisplayWL");
-            if (unbindWaylandDisplay) {
-                unbindWaylandDisplay(handler->egl_display, handler->display_bound); // Second arg is 'display' usually? 
-                // Wait, prototype is EGLBoolean eglUnbindWaylandDisplayWL(EGLDisplay dpy, struct wl_display *display);
-                // We need to store the wl_display? 
-                // The handler struct doesn't store wl_display.
-                // Assuming we don't strictly need to unbind on cleanup if we terminate display.
-            }
+            // Optional: unbind Wayland display. We don't store wl_display in handler,
+            // and unbinding is not strictly required during teardown.
         }
         
         eglTerminate(handler->egl_display);
@@ -181,15 +180,19 @@ int egl_buffer_handler_query_buffer(struct egl_buffer_handler *handler, struct w
 }
 
 EGLImageKHR egl_buffer_handler_create_image(struct egl_buffer_handler *handler, struct wl_resource *buffer_resource) {
+    if (!wawona_is_egl_enabled()) {
+        return (EGLImageKHR)NULL;
+    }
     if (!handler || !handler->initialized || !handler->display_bound) return EGL_NO_IMAGE_KHR;
     
     // EGL_WAYLAND_BUFFER_WL = 0x31D5
     // We create image from the buffer resource
     EGLint attribs[] = { EGL_NONE };
     
-    EGLImageKHR image = eglCreateImageKHR(handler->egl_display, EGL_NO_CONTEXT, 
-                                          EGL_WAYLAND_BUFFER_WL, 
-                                          buffer_resource, attribs);
+    EGLImage image_core = eglCreateImage(handler->egl_display, EGL_NO_CONTEXT,
+                                         EGL_WAYLAND_BUFFER_WL,
+                                         buffer_resource, (const EGLAttrib*)attribs);
+    EGLImageKHR image = (EGLImageKHR)image_core;
                                           
     return image;
 }

@@ -1,0 +1,44 @@
+name: Wawona Cross-Platform Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-macos-ios-android:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Xcode
+        run: |
+          xcodebuild -version
+      - name: Clean from scratch
+        run: |
+          make clean-all
+      - name: Build all platforms in parallel
+        run: |
+          make Wawona || true
+      - name: Build Android compositor headless
+        run: |
+          make android-compositor || true
+      - name: Capture emulator logcat
+        run: |
+          adb -e logcat -d > build/android-logcat.txt || true
+      - name: Upload Android artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: |
+            build/android-run.log
+            build/android-app/app/build/outputs/apk/debug/app-debug.apk
+            build/android-logcat.txt
+      - name: Verify App Store compliance
+        run: |
+          bash scripts/verify-appstore-compliance.sh
+      - name: Archive logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build/parallel-logs

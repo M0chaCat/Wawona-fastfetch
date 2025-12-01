@@ -422,7 +422,7 @@ void *gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint
     #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     IOReturn ret = IOSurfaceLock(iosurface, kIOSurfaceLockReadOnly, NULL);
     #else
-    IOReturn ret = IOSurfaceLock(iosurface, kIOSurfaceLockReadWrite, NULL);
+    IOReturn ret = IOSurfaceLock(iosurface, 0, NULL);
     #endif
     if (ret != kIOReturnSuccess) {
         if (stride) *stride = 0;
@@ -455,7 +455,7 @@ void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
     #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     IOSurfaceUnlock(iosurface, kIOSurfaceLockReadOnly, NULL);
     #else
-    IOSurfaceUnlock(iosurface, kIOSurfaceLockReadWrite, NULL);
+    IOSurfaceUnlock(iosurface, 0, NULL);
     #endif
 }
 
@@ -649,4 +649,3 @@ uint32_t gbm_device_get_patch(struct gbm_device *gbm) {
 }
 
 #endif // __APPLE__
-

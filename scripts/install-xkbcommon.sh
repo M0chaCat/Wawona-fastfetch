@@ -22,7 +22,7 @@ XKBCOMMON_DIR="${ROOT_DIR}/dependencies/xkbcommon"
 
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${XKBCOMMON_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     CROSS_FILE="${ROOT_DIR}/dependencies/wayland/cross-ios.txt"
     MESON_EXTRA_ARGS=("--cross-file" "${CROSS_FILE}")
     
@@ -34,7 +34,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     export PATH="${ROOT_DIR}/build/ios-bootstrap/bin:${PATH}"
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${XKBCOMMON_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     MESON_EXTRA_ARGS=()
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:${INSTALL_DIR}/share/pkgconfig:$PKG_CONFIG_PATH"
     
@@ -85,4 +85,3 @@ if [ "${PLATFORM}" == "ios" ]; then
         
     echo "Success! Xkbcommon framework created at ${INSTALL_DIR}/Frameworks/Xkbcommon.framework"
 fi
-

@@ -10,12 +10,13 @@ pointer_set_cursor(struct wl_client *client, struct wl_resource *resource,
                    uint32_t serial, struct wl_resource *surface,
                    int32_t hotspot_x, int32_t hotspot_y)
 {
-    // TODO: Implement cursor surface handling
+    (void)client; (void)resource; (void)serial; (void)surface; (void)hotspot_x; (void)hotspot_y;
 }
 
 static void
 pointer_release(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
@@ -28,6 +29,7 @@ static const struct wl_pointer_interface pointer_implementation = {
 static void
 keyboard_release(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
@@ -39,6 +41,7 @@ static const struct wl_keyboard_interface keyboard_implementation = {
 static void
 touch_release(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
@@ -109,7 +112,7 @@ bind_seat(struct wl_client *client, void *data, uint32_t version, uint32_t id)
     struct wl_seat_impl *seat = data;
     struct wl_resource *resource;
 
-    resource = wl_resource_create(client, &wl_seat_interface, version, id);
+    resource = wl_resource_create(client, &wl_seat_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;

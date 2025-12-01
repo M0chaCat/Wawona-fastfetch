@@ -32,7 +32,7 @@ WAYLAND_DIR="${ROOT_DIR}/dependencies/wayland"
 # Platform-specific settings
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${WAYLAND_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     CROSS_FILE="${WAYLAND_DIR}/cross-ios.txt"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
@@ -85,7 +85,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${WAYLAND_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     
     # Use macOS-specific PKG_CONFIG_PATH (local only, no homebrew)
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:$PKG_CONFIG_PATH"
@@ -153,4 +153,3 @@ echo "Success! Wayland installed to ${INSTALL_DIR}"
 # Create framework (Platform specific)
 echo "Creating Wayland framework for ${PLATFORM}..."
 "${ROOT_DIR}/scripts/create-wayland-framework.sh" --platform "${PLATFORM}"
-

@@ -31,7 +31,7 @@
         CGImageRelease(_image);
         _image = NULL;
     }
-#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#if !__has_feature(objc_arc)
     [super dealloc];
 #endif
 }
@@ -177,7 +177,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;  // Clear image but keep entry
         }
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
         return;
     }
@@ -195,7 +199,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
         return;
     }
@@ -212,7 +220,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
         return;
     }
@@ -355,7 +367,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
                             }
                             
                             if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
                                 [self.compositorView setNeedsDisplay];
+#else
+                                [self.compositorView setNeedsDisplay:YES];
+#endif
                             }
                             return;
                         }
@@ -391,7 +407,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             wl_shm_buffer_end_access(shm_buffer);
         }
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
         return;
     }
@@ -520,7 +540,11 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         
         // Trigger redraw
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
     } else {
         NSLog(@"[RENDER] Failed to create CGImage from buffer data: width=%d, height=%d, stride=%d, format=0x%x",
@@ -544,12 +568,20 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+#else
+            [self.compositorView setNeedsDisplay:YES];
+#endif
         }
     }
 }
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 - (void)drawSurfacesInRect:(CGRect)dirtyRect {
+#else
+- (void)drawSurfacesInRect:(NSRect)dirtyRect {
+#endif
     // Draw all surfaces using CoreGraphics (like OWL compositor)
     // This is called from CompositorView's drawRect: method
     
@@ -622,5 +654,19 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         CGContextRestoreGState(cgContext);
     }
 }
+
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (void)setNeedsDisplay {
+    if (self.compositorView) {
+        [self.compositorView setNeedsDisplay];
+    }
+}
+#else
+- (void)setNeedsDisplay {
+    if (self.compositorView) {
+        [self.compositorView setNeedsDisplay:YES];
+    }
+}
+#endif
 
 @end

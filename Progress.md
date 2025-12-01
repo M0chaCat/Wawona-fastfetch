@@ -1,10 +1,10 @@
-# Wawona iOS Compositor - Progress Report
+# Wawona Compositor - Progress Report
 
 **Last Updated**: November 30, 2025
 
 ## Overview
 
-Wawona is a Wayland compositor for iOS and macOS. This document tracks the progress of the iOS implementation, which presents unique challenges due to iOS sandboxing restrictions and App Store compliance requirements.
+Wawona is a Wayland compositor for iOS, macOS, and Android. This document tracks cross‑platform progress, including recent Android emulator bring‑up with Vulkan (SwiftShader fallback) and optional Freedreno/Turnip builds.
 
 ## Completed Features
 
@@ -76,11 +76,57 @@ Wawona is a Wayland compositor for iOS and macOS. This document tracks the progr
 7. ✅ **Touch Input**: Touch events are detected and processed (Crash fixed, Frame events added)
 8. ✅ **External Connections**: TCP listener supports remote clients
 9. ✅ **Rotation/Resizing**: Thread-safe output resizing implemented (Weston integration pending verification)
+10. ✅ **Android Emulator App Launch**: JNI app builds, installs, launches; Vulkan instance/Surface created
+11. ✅ **Android Vulkan Fallback**: SwiftShader ICD selected on Apple Silicon emulator; present loop clears frames
 
 ### In Progress
 
 1. **Weston Resizing**: Verify Weston properly resizes its surface on screen rotation (Possible `arbitrary resolutions` flag issue).
 2. **Performance**: Evaluate frame rate and responsiveness
+3. **Android Compositor Frames**: Wire Wawona compositor frames into Vulkan swapchain (copy/blit, then textured pipeline)
+
+## Android Progress
+
+### Overview
+
+- Minimal Android app via Gradle with JNI Vulkan renderer:
+  - Creates `VkInstance` with fallback to SwiftShader ICD
+  - Creates `VkSurfaceKHR` from `ANativeWindow`
+  - Picks graphics queue, creates swapchain and render pass
+  - Records per‑image command buffers to clear and present
+
+### Emulator Bring‑Up (Apple Silicon)
+
+- AVD: `pixel3_arm64` using `system-images;android-35;google_apis;arm64-v8a`
+- Emulator booted headless with SwiftShader Vulkan ICD configured by emulator
+- App installs and starts via `adb`; logs confirm Vulkan device enumeration and surface creation
+
+### Driver Separation & Gating
+
+- Apple (macOS/iOS): Angle (EGL) + KosmicKrisp (Vulkan); EGL compilation stubs on Apple where needed
+- Android: Freedreno/Turnip (Vulkan) + Gallium freedreno (EGL)
+- Environment gating in `scripts/android-compositor.sh`:
+  - `BUILD_FREEDRENO=1` builds libdrm+Mesa and pushes Freedreno ICD; default skips to SwiftShader/emulator Vulkan
+
+### Build Script Improvements
+
+- Meson cross file uses built‑in options for target/sysroot
+- Stubbed Android pkg-config entries: `cutils`, `hardware`, `log`, `sync`, `nativewindow`
+- Added header stubs used by Mesa (`cutils/trace.h`, `log/log.h`, `cutils/properties.h`, `sync/sync.h`)
+- Removed duplicate `ETIME` definitions from cross file to avoid macro redefinition warnings; rely on Mesa patch to add `-DETIME=ETIMEDOUT`
+
+### Commands
+
+```bash
+# Build and run Android emulator app (headless)
+make android-compositor
+
+# Optional: build and push Freedreno Vulkan driver (if supported)
+BUILD_FREEDRENO=1 make android-compositor
+
+# Inspect logs
+adb -e logcat -d | grep -i WawonaJNI | tail -n 50
+```
 
 ## Technical Details
 
@@ -115,6 +161,9 @@ Wawona is a Wayland compositor for iOS and macOS. This document tracks the progr
 - `src/resources/Settings.bundle/Root.plist`: iOS Settings app configuration
 - `src/WawonaPreferencesManager.m`: Settings handling
 - `src/wayland_seat.c`: Input handling and device resource management
+ - `scripts/android-compositor.sh`: Android SDK/NDK provisioning, AVD boot, app build/install, driver gating
+ - `scripts/create-android-app.sh`: Gradle project generator and JNI wiring
+ - `src/android_jni.c`: Vulkan instance/surface/swapchain and present loop
 
 ## Build Commands
 
@@ -124,6 +173,9 @@ make ios-compositor
 
 # Fast rebuild (skip dependencies if already built)
 make ios-compositor-fast
+
+# Android build and run (emulator)
+make android-compositor
 ```
 
 ## Environment Variables

@@ -21,7 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LZ4_DIR="${ROOT_DIR}/dependencies/lz4"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     echo "Using SDK: ${SDK_PATH}"
     
@@ -30,7 +30,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     export LDFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0"
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export CFLAGS="-Wall -Wextra -Wpedantic -Werror -fPIC"
 else
     echo "Error: Unsupported platform '${PLATFORM}'"
@@ -66,4 +66,3 @@ if [ "${PLATFORM}" == "ios" ]; then
         
     echo "Success! Lz4 framework created at ${INSTALL_DIR}/Frameworks/Lz4.framework"
 fi
-

@@ -1,0 +1,10 @@
+prefix=/Users/alex/Wawona/android-dependencies/turnip
+exec_prefix=/Users/alex/Wawona/android-dependencies/turnip
+libdir=/Users/alex/Wawona/android-dependencies/turnip/lib
+includedir=/Users/alex/Wawona/android-dependencies/turnip/include
+
+Name: cutils
+Description: Android cutils stub
+Version: 1.0
+Libs: 
+Cflags: 

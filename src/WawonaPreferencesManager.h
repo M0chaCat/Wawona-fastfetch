@@ -17,6 +17,8 @@ extern NSString * const kWawonaPrefsEnableTCPListener;
 extern NSString * const kWawonaPrefsTCPListenerPort;
 extern NSString * const kWawonaPrefsWaylandSocketDir;
 extern NSString * const kWawonaPrefsWaylandDisplayNumber;
+extern NSString * const kWawonaPrefsEnableVulkanDrivers;
+extern NSString * const kWawonaPrefsEnableEGLDrivers;
 
 @interface WawonaPreferencesManager : NSObject
 
@@ -70,10 +72,15 @@ extern NSString * const kWawonaPrefsWaylandDisplayNumber;
 - (NSInteger)waylandDisplayNumber;
 - (void)setWaylandDisplayNumber:(NSInteger)number;
 
+// Rendering Backend Flags
+- (BOOL)vulkanDriversEnabled;
+- (void)setVulkanDriversEnabled:(BOOL)enabled;
+- (BOOL)eglDriversEnabled;
+- (void)setEglDriversEnabled:(BOOL)enabled;
+
 // Reset to defaults
 - (void)resetToDefaults;
 
 @end
 
 NS_ASSUME_NONNULL_END
-

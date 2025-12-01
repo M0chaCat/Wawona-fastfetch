@@ -307,9 +307,9 @@
 // Network / Remote Access
 @property (nonatomic, strong) NSButton *enableTCPListenerCheckbox;
 @property (nonatomic, strong) NSTextField *tcpListenerPortField;
-
-// Waypipe
 @property (nonatomic, strong) NSButton *waypipeRSSupportCheckbox;
+@property (nonatomic, strong) NSButton *enableVulkanDriversCheckbox;
+@property (nonatomic, strong) NSButton *enableEGLDriversCheckbox;
 
 // Wayland Config
 @property (nonatomic, strong) NSTextField *waylandSocketDirField;
@@ -386,6 +386,7 @@
     [self createNestedCompositorsView];
     [self createInputView]; // Input now includes Clipboard
     [self createClientManagementView];
+    [self createRenderingBackendsView];
     [self createWaylandConfigView];
     
     // Show input view by default
@@ -427,6 +428,29 @@
     
     NSTextField *desc2 = [self createDescription:@"Automatically scale content for Retina displays."];
     [stack addArrangedSubview:desc2];
+}
+
+- (void)createRenderingBackendsView {
+    NSView *view = [[NSView alloc] init];
+    NSStackView *stack = [[NSStackView alloc] init];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.spacing = 15;
+    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [view addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:view.topAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:view.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:view.trailingAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:view.bottomAnchor]
+    ]];
+    NSTextField *title = [self createSectionTitle:@"Rendering Backends"];
+    [stack addArrangedSubview:title];
+    self.enableVulkanDriversCheckbox = [self createCheckbox:@"Enable Vulkan Drivers" action:@selector(enableVulkanDriversChanged:)];
+    [stack addArrangedSubview:self.enableVulkanDriversCheckbox];
+    self.enableEGLDriversCheckbox = [self createCheckbox:@"Enable EGL Drivers" action:@selector(enableEGLDriversChanged:)];
+    [stack addArrangedSubview:self.enableEGLDriversCheckbox];
+    [self.contentStackView addArrangedSubview:view];
 }
 
 - (void)createColorManagementView {
@@ -758,6 +782,8 @@
     self.enableTCPListenerCheckbox.state = prefs.enableTCPListener ? NSControlStateValueOn : NSControlStateValueOff;
     self.tcpListenerPortField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.tcpListenerPort];
     self.waypipeRSSupportCheckbox.state = prefs.waypipeRSSupportEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.enableVulkanDriversCheckbox.state = [prefs vulkanDriversEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
+    self.enableEGLDriversCheckbox.state = [prefs eglDriversEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
     
     self.waylandSocketDirField.stringValue = prefs.waylandSocketDir;
     self.waylandDisplayNumberField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.waylandDisplayNumber];
@@ -816,6 +842,14 @@
 - (void)waylandDisplayNumberChanged:(NSTextField *)sender {
     NSInteger number = [sender.stringValue integerValue];
     [[WawonaPreferencesManager sharedManager] setWaylandDisplayNumber:number];
+}
+
+- (void)enableVulkanDriversChanged:(NSButton *)sender {
+    [[WawonaPreferencesManager sharedManager] setVulkanDriversEnabled:(sender.state == NSControlStateValueOn)];
+}
+
+- (void)enableEGLDriversChanged:(NSButton *)sender {
+    [[WawonaPreferencesManager sharedManager] setEglDriversEnabled:(sender.state == NSControlStateValueOn)];
 }
 
 - (void)showPreferences:(id)sender {
@@ -940,11 +974,6 @@
     [self showView:self.waylandConfigView];
 }
 
-- (void)showPreferences:(id)sender {
-    [self showWindow:sender];
-    [self.window makeKeyAndOrderFront:sender];
-    [NSApp activateIgnoringOtherApps:YES];
-}
 
 @end
 #endif

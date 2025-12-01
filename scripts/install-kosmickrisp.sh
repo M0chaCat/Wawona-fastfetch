@@ -23,12 +23,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "Target Platform: ${PLATFORM}"
+# Platform gating: KosmicKrisp supports only iOS and macOS
+if [ "${PLATFORM}" == "android" ]; then
+    echo "Error: KosmicKrisp is supported only on iOS and macOS. Android is not supported."
+    exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KOSMICKRISP_DIR="${ROOT_DIR}/dependencies/kosmickrisp"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     BUILD_DIR="build-ios"
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
     CROSS_FILE="${ROOT_DIR}/dependencies/wayland/cross-ios.txt"
@@ -163,13 +168,13 @@ EOF
         "--cross-file" "${CROSS_FILE}"
         "-Dplatforms=macos,wayland"
         "-Dvulkan-drivers=kosmickrisp"
-        "-Dgallium-drivers=zink"
+        "-Dgallium-drivers=[]"
         "-Dglx=disabled"
         "-Dgbm=disabled"
-        "-Degl=enabled"
-        "-Dopengl=true"
-        "-Dgles1=enabled"
-        "-Dgles2=enabled"
+        "-Degl=disabled"
+        "-Dopengl=false"
+        "-Dgles1=disabled"
+        "-Dgles2=disabled"
         "-Dglvnd=disabled"
         "-Dllvm=disabled"
         "-Dshared-llvm=disabled"
@@ -183,23 +188,41 @@ EOF
     )
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     BUILD_DIR="build-macos"
     
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:$PKG_CONFIG_PATH"
+    # Ensure llvm-config is available for mesa-clc detection
+    if command -v brew >/dev/null 2>&1; then
+        if [ -d "$(brew --prefix llvm@17 2>/dev/null)" ]; then
+            export PATH="$(brew --prefix llvm@17)/bin:$PATH"
+        elif [ -d "$(brew --prefix llvm@15 2>/dev/null)" ]; then
+            export PATH="$(brew --prefix llvm@15)/bin:$PATH"
+        elif [ -d "$(brew --prefix llvm 2>/dev/null)" ]; then
+            export PATH="$(brew --prefix llvm)/bin:$PATH"
+        fi
+    fi
     
     MESON_EXTRA_ARGS=(
         "-Dplatforms=macos,wayland"
         "-Dvulkan-drivers=kosmickrisp"
-        "-Dgallium-drivers=zink"
-        "-Degl=enabled"
-        "-Dopengl=true"
-        "-Dgles1=enabled"
-        "-Dgles2=enabled"
+        "-Dgallium-drivers=[]"
+        "-Degl=disabled"
+        "-Dopengl=false"
+        "-Dgles1=disabled"
+        "-Dgles2=disabled"
         "-Dglx=disabled"
-        "-Dgbm=enabled"
+        "-Dgbm=disabled"
+        "-Dllvm=enabled"
+        "-Dshared-llvm=enabled"
+        "-Dmesa-clc=auto"
+        "-Dbuild-tests=false"
+        "-Dwerror=false"
         "-Dvulkan-layers=[]"
         "-Dtools=[]"
+        "-Db_lto=false"
+        "-Dc_link_args=-L${INSTALL_DIR}/lib"
+        "-Dcpp_link_args=-L${INSTALL_DIR}/lib"
     )
 else
     echo "Error: Unsupported platform '${PLATFORM}'"
@@ -245,9 +268,14 @@ ninja -C "${BUILD_DIR}"
 echo "Installing KosmicKrisp..."
 ninja -C "${BUILD_DIR}" install
 
-# Copy Vulkan video headers (not installed by meson)
+# Install Vulkan headers and vk_video headers into INSTALL_DIR for downstream builds
+echo "Installing Vulkan headers..."
+mkdir -p "${INSTALL_DIR}/include/vulkan"
+if [ -d "${KOSMICKRISP_DIR}/include/vulkan" ]; then
+    cp -r "${KOSMICKRISP_DIR}/include/vulkan/"* "${INSTALL_DIR}/include/vulkan/"
+fi
 if [ -d "${KOSMICKRISP_DIR}/include/vk_video" ]; then
-    echo "Copying Vulkan video headers..."
+    echo "Installing Vulkan video headers..."
     mkdir -p "${INSTALL_DIR}/include/vulkan/vk_video"
     cp -r "${KOSMICKRISP_DIR}/include/vk_video/"* "${INSTALL_DIR}/include/vulkan/vk_video/"
 fi
@@ -270,6 +298,20 @@ if [ -f "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" ]; then
     rm -rf "${TMP_DIR}"
 fi
 
+if [ ! -f "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" ]; then
+    echo "Creating static libvulkan_kosmickrisp.a from build objects..."
+    TMP_AR_DIR=$(mktemp -d)
+    find "${BUILD_DIR}/src/kosmickrisp/vulkan" -type f -name "*.o" -print0 | xargs -0 -I{} cp {} "${TMP_AR_DIR}" 2>/dev/null || true
+    if ls "${TMP_AR_DIR}"/*.o >/dev/null 2>&1; then
+        rm -f "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a"
+        ar rcs "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" "${TMP_AR_DIR}"/*.o || true
+        echo "Created ${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a"
+    else
+        echo "Warning: No build objects found for KosmicKrisp Vulkan; static archive not created"
+    fi
+    rm -rf "${TMP_AR_DIR}"
+fi
+
 if [ -f "${INSTALL_DIR}/lib/libvulkan_kosmickrisp.a" ]; then
     echo "Packaging KosmicKrisp as framework..."
     "${ROOT_DIR}/scripts/create-kosmickrisp-framework.sh" --platform "${PLATFORM}"
@@ -282,26 +324,6 @@ if [ -f "${INSTALL_DIR}/lib/libEGL.a" ]; then
 fi
 
 # Create GLESv2 framework
-if [ -f "${INSTALL_DIR}/lib/libGLESv2.a" ]; then
-    echo "Creating GLESv2 framework..."
-    "${ROOT_DIR}/scripts/create-static-framework.sh" --platform "${PLATFORM}" --name "GLESv2" --libs "libGLESv2.a" --include-subdir "" --recursive-headers
-fi
-
-# Create OpenGL framework (desktop OpenGL via Zink)
-if [ -f "${INSTALL_DIR}/lib/libGL.a" ] || [ -f "${INSTALL_DIR}/lib/libOpenGL.a" ]; then
-    echo "Creating OpenGL framework..."
-    # Mesa may create libGL.a or libOpenGL.a depending on configuration
-    if [ -f "${INSTALL_DIR}/lib/libGL.a" ]; then
-        "${ROOT_DIR}/scripts/create-static-framework.sh" --platform "${PLATFORM}" --name "OpenGL" --libs "libGL.a" --include-subdir "" --recursive-headers
-    elif [ -f "${INSTALL_DIR}/lib/libOpenGL.a" ]; then
-        "${ROOT_DIR}/scripts/create-static-framework.sh" --platform "${PLATFORM}" --name "OpenGL" --libs "libOpenGL.a" --include-subdir "" --recursive-headers
-    fi
-fi
-
-# Create GBM framework
-if [ -f "${INSTALL_DIR}/lib/libgbm.a" ]; then
-    echo "Creating GBM framework..."
-    "${ROOT_DIR}/scripts/create-static-framework.sh" --platform "${PLATFORM}" --name "GBM" --libs "libgbm.a" --include-subdir "" --recursive-headers
-fi
+:
 
 echo "Success! KosmicKrisp installed to ${INSTALL_DIR}"

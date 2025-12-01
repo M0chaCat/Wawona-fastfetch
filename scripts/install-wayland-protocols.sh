@@ -23,13 +23,13 @@ WAYLAND_PROTOCOLS_DIR="${ROOT_DIR}/dependencies/wayland-protocols"
 
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${WAYLAND_PROTOCOLS_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     CROSS_FILE="${ROOT_DIR}/dependencies/wayland/cross-ios.txt"
     MESON_EXTRA_ARGS=("--cross-file" "${CROSS_FILE}")
     export PKG_CONFIG_PATH="${ROOT_DIR}/build/ios-bootstrap/lib/pkgconfig:${ROOT_DIR}/build/ios-bootstrap/share/pkgconfig"
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${WAYLAND_PROTOCOLS_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     MESON_EXTRA_ARGS=()
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:$PKG_CONFIG_PATH"
 else
@@ -60,4 +60,3 @@ echo "Installing..."
 ninja -C "${BUILD_DIR}" install
 
 echo "Success! wayland-protocols installed to ${INSTALL_DIR}"
-

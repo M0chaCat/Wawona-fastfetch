@@ -32,7 +32,7 @@ PIXMAN_DIR="${ROOT_DIR}/dependencies/pixman"
 # Platform-specific settings
 if [ "${PLATFORM}" == "ios" ]; then
     BUILD_DIR="${PIXMAN_DIR}/build-ios"
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     CROSS_FILE="${ROOT_DIR}/dependencies/wayland/cross-ios.txt"
     HOST_TOOLS_DIR="${ROOT_DIR}/build/ios-bootstrap" # Use host tools
     SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
@@ -96,7 +96,7 @@ if os.path.exists('${MESON_BUILD}'):
 
 elif [ "${PLATFORM}" == "macos" ]; then
     BUILD_DIR="${PIXMAN_DIR}/build-macos"
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:$PKG_CONFIG_PATH"
     MESON_EXTRA_ARGS=()
 else
@@ -152,4 +152,3 @@ if [ "${PLATFORM}" == "ios" ]; then
         
     echo "Success! Pixman framework created at ${INSTALL_DIR}/Frameworks/Pixman.framework"
 fi
-

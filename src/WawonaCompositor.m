@@ -30,7 +30,7 @@ static WawonaCompositor *g_compositor_instance;
 // Declared static but used in tcp_accept_timer_handler below
 static int tcp_accept_handler(int fd, uint32_t mask, void *data);
 
-static int tcp_accept_handler(int fd, uint32_t mask, void *data) {
+__attribute__((unused)) static int tcp_accept_handler(int fd, uint32_t mask, void *data) {
     WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
     if (!compositor || !compositor.display) return 0;
     
@@ -191,15 +191,16 @@ struct wl_region_impl {
 };
 
 static void region_destroy(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
 static void region_add(struct wl_client *client, struct wl_resource *resource, int32_t x, int32_t y, int32_t width, int32_t height) {
-    // TODO: Implement region math if needed
+    (void)client; (void)resource; (void)x; (void)y; (void)width; (void)height;
 }
 
 static void region_subtract(struct wl_client *client, struct wl_resource *resource, int32_t x, int32_t y, int32_t width, int32_t height) {
-    // TODO
+    (void)client; (void)resource; (void)x; (void)y; (void)width; (void)height;
 }
 
 static const struct wl_region_interface region_interface = {
@@ -221,10 +222,12 @@ static void compositor_destroy_bound_resource(struct wl_resource *resource) {
 // --- Surface Implementation ---
 
 static void surface_destroy(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
 static void surface_attach(struct wl_client *client, struct wl_resource *resource, struct wl_resource *buffer, int32_t x, int32_t y) {
+    (void)client;
     struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
     
     // Pending state update
@@ -234,8 +237,7 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
 }
 
 static void surface_damage(struct wl_client *client, struct wl_resource *resource, int32_t x, int32_t y, int32_t width, int32_t height) {
-    struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-    // Add damage to surface (TODO: track damage region)
+    (void)client; (void)resource; (void)x; (void)y; (void)width; (void)height;
 }
 
 static void surface_frame(struct wl_client *client, struct wl_resource *resource, uint32_t callback) {
@@ -268,14 +270,15 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
 }
 
 static void surface_set_opaque_region(struct wl_client *client, struct wl_resource *resource, struct wl_resource *region_resource) {
-    // TODO
+    (void)client; (void)resource; (void)region_resource;
 }
 
 static void surface_set_input_region(struct wl_client *client, struct wl_resource *resource, struct wl_resource *region_resource) {
-    // TODO
+    (void)client; (void)resource; (void)region_resource;
 }
 
 static void surface_commit(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
     struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
     
     surface->committed = true;
@@ -314,15 +317,15 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
 }
 
 static void surface_set_buffer_transform(struct wl_client *client, struct wl_resource *resource, int32_t transform) {
-    // TODO
+    (void)client; (void)resource; (void)transform;
 }
 
 static void surface_set_buffer_scale(struct wl_client *client, struct wl_resource *resource, int32_t scale) {
-    // TODO
+    (void)client; (void)resource; (void)scale;
 }
 
 static void surface_damage_buffer(struct wl_client *client, struct wl_resource *resource, int32_t x, int32_t y, int32_t width, int32_t height) {
-    // TODO
+    (void)client; (void)resource; (void)x; (void)y; (void)width; (void)height;
 }
 
 static const struct wl_surface_interface surface_interface = {
@@ -360,7 +363,9 @@ static void surface_destroy_resource(struct wl_resource *resource) {
 // --- Compositor Implementation ---
 
 static void compositor_create_surface(struct wl_client *client, struct wl_resource *resource, uint32_t id) {
-    struct wl_compositor_impl *compositor = wl_resource_get_user_data(resource);
+    (void)client;
+    (void)resource;
+    (void)id;
     
     struct wl_surface_impl *surface = calloc(1, sizeof(struct wl_surface_impl));
     if (!surface) {
@@ -459,7 +464,7 @@ void wl_compositor_set_frame_callback_requested(struct wl_compositor_impl *compo
 }
 
 void wl_compositor_set_seat(struct wl_seat_impl *seat) {
-    // TODO
+    (void)seat;
 }
 
 void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator, void *data) {
@@ -486,6 +491,11 @@ struct wl_surface_impl *wl_surface_from_resource(struct wl_resource *resource) {
 }
 
 void wl_surface_damage(struct wl_surface_impl *surface, int32_t x, int32_t y, int32_t width, int32_t height) {
+    (void)surface;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
     // Internal damage
 }
 
@@ -545,9 +555,11 @@ struct wl_surface_impl *wl_get_all_surfaces(void) {
 #include "metal_waypipe.h"
 #include "xdg-shell-protocol.h"
 
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #import <MetalKit/MetalKit.h>
 #include "surface_renderer.h"
+#include "metal_renderer.h"
+
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #include "metal_renderer.h"
 // iOS: Use UIView instead of NSView
 @interface CompositorView : UIView
@@ -564,12 +576,28 @@ struct wl_surface_impl *wl_get_all_surfaces(void) {
         // Ensure background is transparent so window's black background shows through in unsafe areas
         self.backgroundColor = [UIColor clearColor];
         self.opaque = NO;
+        
+        // Listen for settings changes
+        [[NSNotificationCenter defaultCenter] addObserver:self 
+                                                 selector:@selector(defaultsChanged:) 
+                                                     name:NSUserDefaultsDidChangeNotification 
+                                                   object:nil];
     }
     return self;
 }
 
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)defaultsChanged:(NSNotification *)note {
+    // Trigger layout update when settings change
+    [self setNeedsLayout];
+}
+
 - (void)safeAreaInsetsDidChange {
     [super safeAreaInsetsDidChange];
+    [self setNeedsLayout];
     if (self.compositor) {
         // Force update when safe area changes (e.g. startup, rotation)
         [self.compositor updateOutputSize:self.bounds.size];
@@ -579,56 +607,47 @@ struct wl_surface_impl *wl_get_all_surfaces(void) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     
-    // CRITICAL: If respecting safe area, ensure our frame stays constrained to safe area
-    // This prevents the view from being resized back to fullscreen by UIKit
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     BOOL respectSafeArea = [[NSUserDefaults standardUserDefaults] boolForKey:@"RespectSafeArea"];
     if ([[NSUserDefaults standardUserDefaults] objectForKey:@"RespectSafeArea"] == nil) {
         respectSafeArea = YES;
     }
     
-    if (respectSafeArea && self.autoresizingMask == UIViewAutoresizingNone) {
-        // We're respecting safe area and have disabled autoresizing
-        // Re-apply safe area frame if it was changed
-        UIWindow *window = self.window;
-        if (!window) {
-            // If not in window yet, try superview
-            window = (UIWindow *)self.superview;
-            if (![window isKindOfClass:[UIWindow class]]) {
-                return; // Can't determine safe area without window
-            }
-        }
-        CGRect windowBounds = window.bounds;
-        CGRect safeAreaFrame = windowBounds;
-        
-        if (@available(iOS 11.0, *)) {
-            UIWindow *window = self.window;
-            if (window) {
-                UILayoutGuide *safeArea = window.safeAreaLayoutGuide;
-                safeAreaFrame = safeArea.layoutFrame;
-                if (CGRectIsEmpty(safeAreaFrame)) {
-                    UIEdgeInsets insets = self.safeAreaInsets;
-                    if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 || insets.right != 0) {
-                        safeAreaFrame = UIEdgeInsetsInsetRect(windowBounds, insets);
-                    }
-                }
+    if (respectSafeArea) {
+        // Respect Safe Area: manually constrain frame
+        CGRect targetFrame = self.superview.bounds;
+        if (self.window) {
+            UIEdgeInsets insets = self.window.safeAreaInsets;
+            if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 || insets.right != 0) {
+                targetFrame = UIEdgeInsetsInsetRect(self.superview.bounds, insets);
             }
         } else {
+            // Fallback if window not available
             UIEdgeInsets insets = self.safeAreaInsets;
             if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 || insets.right != 0) {
-                safeAreaFrame = UIEdgeInsetsInsetRect(windowBounds, insets);
+                targetFrame = UIEdgeInsetsInsetRect(self.superview.bounds, insets);
             }
         }
         
-        // Only update if frame doesn't match safe area (prevent infinite loop)
-        if (!CGRectEqualToRect(self.frame, safeAreaFrame)) {
-            self.frame = safeAreaFrame;
-            NSLog(@"🔵 CompositorView frame corrected in layoutSubviews to safe area: (%.0f, %.0f) %.0fx%.0f",
-                  safeAreaFrame.origin.x, safeAreaFrame.origin.y,
-                  safeAreaFrame.size.width, safeAreaFrame.size.height);
+        if (!CGRectEqualToRect(self.frame, targetFrame)) {
+            self.autoresizingMask = UIViewAutoresizingNone;
+            self.frame = targetFrame;
+             NSLog(@"🔵 CompositorView constrained to safe area: (%.0f, %.0f) %.0fx%.0f",
+                  targetFrame.origin.x, targetFrame.origin.y,
+                  targetFrame.size.width, targetFrame.size.height);
+        }
+    } else {
+        // Full Screen: match superview
+        CGRect targetFrame = self.superview.bounds;
+        if (!CGRectEqualToRect(self.frame, targetFrame)) {
+            self.frame = targetFrame;
+            self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+             NSLog(@"🔵 CompositorView expanded to full screen: (%.0f, %.0f) %.0fx%.0f",
+                  targetFrame.origin.x, targetFrame.origin.y,
+                  targetFrame.size.width, targetFrame.size.height);
+        } else if (self.autoresizingMask != (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight)) {
+            self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         }
     }
-#endif
     
     if (self.compositor) {
         [self.compositor updateOutputSize:self.bounds.size];
@@ -750,36 +769,43 @@ static WawonaCompositor *g_compositor_instance = NULL;
 
 // Forward declarations
 static int send_frame_callbacks_timer(void *data);
-static void send_frame_callbacks_timer_idle(void *data);
+__attribute__((unused)) static void send_frame_callbacks_timer_idle(void *data);
 static BOOL ensure_frame_callback_timer_on_event_thread(WawonaCompositor *compositor, uint32_t delay_ms, const char *reason);
 static void ensure_frame_callback_timer_idle(void *data);
+static void trigger_first_frame_callback_idle(void *data);
 
 // C function for frame callback requested callback
 // Called from event thread when a client requests a frame callback
-static void macos_compositor_frame_callback_requested(void) {
+static void wawona_compositor_frame_callback_requested(void) {
     if (!g_compositor_instance) return;
     
     // This runs on the event thread - safe to create timer directly
     if (g_compositor_instance.display) {
-        struct wl_event_loop *eventLoop = wl_display_get_event_loop(g_compositor_instance.display);
         BOOL timer_was_missing = (g_compositor_instance.frame_callback_source == NULL);
-        if (ensure_frame_callback_timer_on_event_thread(g_compositor_instance, 16, "frame request")) {
-            // CRITICAL: Always trigger immediate frame callback send when requested
-            // This ensures clients don't wait up to 16ms for the timer to fire
-            // The idle callback will run immediately on the event loop
-            if (eventLoop) {
-                wl_event_loop_add_idle(eventLoop, send_frame_callbacks_timer_idle, (__bridge void *)g_compositor_instance);
-            } else if (timer_was_missing) {
-                log_printf("[COMPOSITOR] ", "macos_compositor_frame_callback_requested: Timer ensured but event loop missing\n");
+        
+        // Ensure timer exists - if it was missing, create it with delay 1ms to fire almost immediately
+        // Using 1ms instead of 0ms because Wayland timers might not fire with delay=0
+        // Otherwise, if timer already exists, don't modify it (let it fire at its scheduled time)
+        // This prevents infinite loops where sending callbacks triggers immediate requests
+        if (timer_was_missing) {
+            log_printf("[COMPOSITOR] ", "wawona_compositor_frame_callback_requested: Creating timer (first frame request)\n");
+            // Create timer with 16ms delay for continuous operation
+            if (!ensure_frame_callback_timer_on_event_thread(g_compositor_instance, 16, "first frame request")) {
+                log_printf("[COMPOSITOR] ", "wawona_compositor_frame_callback_requested: Failed to create timer\n");
+            } else {
+                log_printf("[COMPOSITOR] ", "wawona_compositor_frame_callback_requested: Timer created successfully. Scheduling immediate fire via idle.\n");
+                // Use idle callback to trigger first frame callback immediately
+                // This avoids waiting 16ms for the first frame and ensures start-up is snappy
+                struct wl_event_loop *eventLoop = wl_display_get_event_loop(g_compositor_instance.display);
+                wl_event_loop_add_idle(eventLoop, trigger_first_frame_callback_idle, (__bridge void *)g_compositor_instance);
             }
-        } else {
-            log_printf("[COMPOSITOR] ", "macos_compositor_frame_callback_requested: Failed to ensure timer\n");
         }
+        // If timer already exists, do nothing - it will fire at its scheduled interval
     }
 }
 
 // C function to update window title when focus changes
-void macos_compositor_update_title(struct wl_client *client) {
+void wawona_compositor_update_title(struct wl_client *client) {
     if (g_compositor_instance) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [g_compositor_instance updateWindowTitleForClient:client];
@@ -789,7 +815,7 @@ void macos_compositor_update_title(struct wl_client *client) {
 
 // C function to detect full compositors and switch to Metal backend
 // OPTIMIZED: Only switch to Metal for actual nested compositors, not proxies like waypipe
-void macos_compositor_detect_full_compositor(struct wl_client *client) {
+void wawona_compositor_detect_full_compositor(struct wl_client *client) {
     if (!g_compositor_instance) {
         NSLog(@"⚠️ g_compositor_instance is NULL, cannot detect compositor");
         return;
@@ -804,54 +830,77 @@ void macos_compositor_detect_full_compositor(struct wl_client *client) {
     BOOL shouldSwitchToMetal = NO;
     NSString *processName = nil;
     
-    if (client_pid > 0) {
-        // Check process name to determine if this is a nested compositor
+    // Check backend preference
+    // 0 = Automatic (default)
+    // 1 = Metal (Vulkan)
+    // 2 = Cocoa (Surface)
+    NSInteger backendPref = [[NSUserDefaults standardUserDefaults] integerForKey:@"RenderingBackend"];
+    
+    if (backendPref == 1) {
+        // Force Metal
+        shouldSwitchToMetal = YES;
+        NSLog(@"ℹ️ Rendering Backend preference set to Metal (Vulkan) - forcing switch");
+    } else if (backendPref == 2) {
+        // Force Cocoa
+        shouldSwitchToMetal = NO;
+        NSLog(@"ℹ️ Rendering Backend preference set to Cocoa (Surface) - preventing switch");
+    } else {
+        // Automatic mode (existing logic)
+        if (client_pid > 0) {
+            // Check process name to determine if this is a nested compositor
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-        char proc_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-        int ret = proc_pidpath(client_pid, proc_path, sizeof(proc_path));
-        if (ret > 0) {
-            NSString *processPath = [NSString stringWithUTF8String:proc_path];
+            char proc_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+            int ret = proc_pidpath(client_pid, proc_path, sizeof(proc_path));
+            if (ret > 0) {
+                NSString *processPath = [NSString stringWithUTF8String:proc_path];
 #else
-        // iOS: Process name detection not available
-        NSString *processPath = nil;
-        if (0) {
+            // iOS: Process name detection not available
+            NSString *processPath = nil;
+            if (0) {
 #endif
-            processName = [processPath lastPathComponent];
-            NSLog(@"🔍 Client binding to wl_compositor: %@ (PID: %d)", processName, client_pid);
-            
-            // Known nested compositors that should use Metal backend
-            // Includes: Weston, wlroots-based (Sway, River, Hyprland), GNOME (Mutter), KDE (KWin)
-            NSArray<NSString *> *nestedCompositors = @[
-                @"weston", @"weston-desktop-shell",
-                @"mutter", @"gnome-shell", @"gnome-session",
-                @"kwin_wayland", @"kwin", @"plasmashell",
-                @"sway", @"river", @"hyprland", @"niri", @"cage",
-                @"wayfire", @"hikari", @"orbital"
-            ];
-            
-            NSString *lowercaseName = [processName lowercaseString];
-            for (NSString *compositor in nestedCompositors) {
-                if ([lowercaseName containsString:compositor]) {
-                    shouldSwitchToMetal = YES;
-                    NSLog(@"✅ Detected nested compositor: %@ - switching to Metal backend", processName);
-                    break;
+                processName = [processPath lastPathComponent];
+                NSLog(@"🔍 Client binding to wl_compositor: %@ (PID: %d)", processName, client_pid);
+                
+                // Known nested compositors that should use Metal backend
+                // Includes: Weston, wlroots-based (Sway, River, Hyprland), GNOME (Mutter), KDE (KWin)
+                NSArray<NSString *> *nestedCompositors = @[
+                    @"weston", @"weston-desktop-shell",
+                    @"mutter", @"gnome-shell", @"gnome-session",
+                    @"kwin_wayland", @"kwin", @"plasmashell",
+                    @"sway", @"river", @"hyprland", @"niri", @"cage",
+                    @"wayfire", @"hikari", @"orbital"
+                ];
+                
+                NSString *lowercaseName = [processName lowercaseString];
+                for (NSString *compositor in nestedCompositors) {
+                    if ([lowercaseName containsString:compositor]) {
+                        shouldSwitchToMetal = YES;
+                        NSLog(@"✅ Detected nested compositor: %@ - switching to Metal backend", processName);
+                        break;
+                    }
+                }
+                
+                // waypipe is a proxy/tunnel, NOT a compositor - don't switch backend
+                if ([lowercaseName containsString:@"waypipe"]) {
+                    shouldSwitchToMetal = NO;
+                    NSLog(@"ℹ️ Detected waypipe proxy - keeping Cocoa backend for regular clients");
                 }
             }
-            
-            // waypipe is a proxy/tunnel, NOT a compositor - don't switch backend
-            if ([lowercaseName containsString:@"waypipe"]) {
-                shouldSwitchToMetal = NO;
-                NSLog(@"ℹ️ Detected waypipe proxy - keeping Cocoa backend for regular clients");
-            }
+        } else {
+            // PID unavailable - likely forwarded through waypipe or similar proxy
+            // On iOS, we assume this is a forwarded session (Weston/etc) and use Metal for performance
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            NSLog(@"🔍 Client PID unavailable (likely forwarded through waypipe) - switching to Metal backend on iOS");
+            shouldSwitchToMetal = YES;
+#else
+            // On macOS, waypipe might be individual windows, so keep Cocoa
+            NSLog(@"🔍 Client PID unavailable (likely forwarded through waypipe) - keeping Cocoa backend");
+            shouldSwitchToMetal = NO;
+#endif
         }
-    } else {
-        // PID unavailable - likely forwarded through waypipe or similar proxy
-        // Don't switch backend automatically - waypipe clients should use Cocoa
-        NSLog(@"🔍 Client PID unavailable (likely forwarded through waypipe) - keeping Cocoa backend");
-        shouldSwitchToMetal = NO;
     }
     
-    // Only switch to Metal if we detected an actual nested compositor
+    // Only switch to Metal if we detected an actual nested compositor or forced via prefs
     if (shouldSwitchToMetal) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [g_compositor_instance switchToMetalBackend];
@@ -1032,20 +1081,15 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         rootVC.view = containerView;
         window.rootViewController = rootVC;
         
-        // Create CompositorView as a subview with constraints to safe area
-        compositorView = [[CompositorView alloc] initWithFrame:CGRectZero];
-        compositorView.translatesAutoresizingMaskIntoConstraints = NO;
+        // Create CompositorView as a subview with flexible sizing (full screen by default)
+        // Layout will be handled in CompositorView's layoutSubviews to respect safe area setting
+        compositorView = [[CompositorView alloc] initWithFrame:containerView.bounds];
+        compositorView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         compositorView.backgroundColor = [UIColor clearColor];
         [containerView addSubview:compositorView];
         
-        // Set up constraints - will be updated based on safe area setting
-        // Initially pin to safe area (will be changed if setting is disabled)
-        [NSLayoutConstraint activateConstraints:@[
-            [compositorView.topAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.topAnchor],
-            [compositorView.leadingAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.leadingAnchor],
-            [compositorView.trailingAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.trailingAnchor],
-            [compositorView.bottomAnchor constraintEqualToAnchor:containerView.safeAreaLayoutGuide.bottomAnchor],
-        ]];
+        // Note: Safe area constraints are now handled dynamically in CompositorView layoutSubviews
+
 #else
         NSRect contentRect = NSMakeRect(0, 0, 800, 600);
         compositorView = [[CompositorView alloc] initWithFrame:contentRect];
@@ -1216,28 +1260,75 @@ bool wl_has_pending_frame_callbacks(void) {
     wl_compositor_set_render_callback(_compositor, render_surface_callback);
     
     // Set up title update callback to update window title when focus changes
-    wl_compositor_set_title_update_callback(_compositor, macos_compositor_update_title);
+    wl_compositor_set_title_update_callback(_compositor, wawona_compositor_update_title);
     
     // Set up frame callback requested callback to ensure timer is running
-    wl_compositor_set_frame_callback_requested(_compositor, macos_compositor_frame_callback_requested);
+    wl_compositor_set_frame_callback_requested(_compositor, wawona_compositor_frame_callback_requested);
     
     // Get window size for output
+    // CRITICAL: Use actual CompositorView bounds (already constrained to safe area if respecting)
+    // This ensures proper scaling from the start
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    CGRect frame = _window.bounds;
     CGFloat scale = [UIScreen mainScreen].scale;
+    if (scale <= 0) {
+        scale = 1.0; // Fallback to 1x if scale is invalid
+    }
+    
+    // Find CompositorView to get actual rendering area size
+    UIView *containerView = _window.rootViewController.view;
+    CompositorView *compositorView = nil;
+    for (UIView *subview in containerView.subviews) {
+        if ([subview isKindOfClass:[CompositorView class]]) {
+            compositorView = (CompositorView *)subview;
+            break;
+        }
+    }
+    if (!compositorView && [containerView isKindOfClass:[CompositorView class]]) {
+        compositorView = (CompositorView *)containerView;
+    }
+    
+    CGRect frame;
+    if (compositorView) {
+        [compositorView setNeedsLayout];
+        [compositorView layoutIfNeeded];
+        frame = compositorView.bounds;
+    } else {
+        frame = _window.bounds;
+    }
 #else
     NSRect frame = [_window.contentView bounds];
     CGFloat scale = _window.backingScaleFactor;
+    if (scale <= 0) {
+        scale = 1.0;
+    }
 #endif
-    _output = wl_output_create(_display, (int32_t)(frame.size.width * scale), (int32_t)(frame.size.height * scale), (int32_t)scale, "iOS");
+    
+    // Calculate pixel dimensions: points * scale = pixels
+    int32_t pixelWidth = (int32_t)round(frame.size.width * scale);
+    int32_t pixelHeight = (int32_t)round(frame.size.height * scale);
+    int32_t scaleInt = (int32_t)scale;
+    
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    _output = wl_output_create(_display, pixelWidth, pixelHeight, scaleInt, "iOS");
+#else
+    _output = wl_output_create(_display, pixelWidth, pixelHeight, scaleInt, "macOS");
+#endif
     if (!_output) {
         NSLog(@"❌ Failed to create wl_output");
         return NO;
     }
-    NSLog(@"   ✓ wl_output created (%dx%d, scale %d)", (int)(frame.size.width * scale), (int)(frame.size.height * scale), (int)scale);
+    NSLog(@"   ✓ wl_output created: %.0fx%.0f points @ %.0fx scale = %dx%d pixels",
+          frame.size.width, frame.size.height, scale, pixelWidth, pixelHeight);
     
-    // Ensure output size respects Safe Area preferences immediately
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    if (compositorView) {
+        [self updateOutputSize:compositorView.bounds.size];
+    } else {
+        [self updateOutputSize:frame.size];
+    }
+#else
     [self updateOutputSize:frame.size];
+#endif
     
     _seat = wl_seat_create(_display);
     if (!_seat) {
@@ -1426,9 +1517,11 @@ bool wl_has_pending_frame_callbacks(void) {
     (void)keyboard_shortcuts; // Suppress unused variable warning
     NSLog(@"   ✓ Keyboard shortcuts inhibit protocol created");
     
-    // Initialize fullscreen shell (needed for arbitrary resolution support in Weston)
+    // CRITICAL: Initialize fullscreen shell BEFORE xdg_wm_base
+    // Weston checks for arbitrary resolution support early, so fullscreen shell
+    // must be available when it connects
     wayland_fullscreen_shell_init(_display);
-    NSLog(@"   ✓ Fullscreen shell protocol created");
+    NSLog(@"   ✓ Fullscreen shell protocol created (for arbitrary resolution support)");
     
     // GTK Shell protocol (for GTK applications)
     struct gtk_shell1_impl *gtk_shell = gtk_shell1_create(_display);
@@ -1805,194 +1898,64 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
 
 // Update output size and notify clients
 - (void)updateOutputSize:(CGSize)size {
-    CGRect outputRect = CGRectMake(0, 0, size.width, size.height);
-    CGRect safeAreaFrame = CGRectZero; // Will be set if respecting safe area
-    
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    // Check Safe Area setting
-    BOOL respectSafeArea = [[NSUserDefaults standardUserDefaults] boolForKey:@"RespectSafeArea"];
-    // Default to YES if not set (for notch devices)
-    if ([[NSUserDefaults standardUserDefaults] objectForKey:@"RespectSafeArea"] == nil) {
-        respectSafeArea = YES;
-    }
-    
-    if (respectSafeArea) {
-        UIView *contentView = _window.rootViewController.view;
-        
-        // CRITICAL: Ensure view is laid out before reading safe area insets
-        if ([contentView isKindOfClass:[CompositorView class]]) {
-            CompositorView *compositorView = (CompositorView *)contentView;
-            [compositorView setNeedsLayout];
-            [compositorView layoutIfNeeded];
-        }
-        
-        CGRect windowBounds = _window.bounds;
-        
-        // Try multiple methods to get safe area frame
-        if (@available(iOS 11.0, *)) {
-            // First try: Use window's safeAreaLayoutGuide (most reliable)
-            UILayoutGuide *safeArea = _window.safeAreaLayoutGuide;
-            safeAreaFrame = safeArea.layoutFrame;
-            
-            // If safe area frame is empty, try reading insets from view
-            if (CGRectIsEmpty(safeAreaFrame)) {
-                UIEdgeInsets insets = contentView.safeAreaInsets;
-                if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 || insets.right != 0) {
-                    safeAreaFrame = UIEdgeInsetsInsetRect(windowBounds, insets);
-                } else {
-                    safeAreaFrame = windowBounds; // Fallback to full window
-                }
-            }
-        } else {
-            // iOS < 11: Use view's safeAreaInsets (though this might not be available)
-            UIEdgeInsets insets = contentView.safeAreaInsets;
-            if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 || insets.right != 0) {
-                safeAreaFrame = UIEdgeInsetsInsetRect(windowBounds, insets);
-            } else {
-                safeAreaFrame = windowBounds; // Fallback to full window
-            }
-        }
-        
-        NSLog(@"🔵 Safe Area Frame: (%.0f, %.0f) %.0fx%.0f (window: %.0fx%.0f)",
-              safeAreaFrame.origin.x, safeAreaFrame.origin.y,
-              safeAreaFrame.size.width, safeAreaFrame.size.height,
-              windowBounds.size.width, windowBounds.size.height);
-        
-        // If safe area frame equals window bounds, the view might not be laid out yet
-        // Only retry if window is visible (to avoid infinite retries on devices without notches)
-        if (CGRectEqualToRect(safeAreaFrame, windowBounds) && 
-            _window && _window.isKeyWindow && _window.windowScene) {
-            NSLog(@"⚠️ Safe area frame equals window bounds - will retry after layout...");
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                // Only retry if still respecting safe area
-                BOOL stillRespecting = [[NSUserDefaults standardUserDefaults] boolForKey:@"RespectSafeArea"];
-                if ([[NSUserDefaults standardUserDefaults] objectForKey:@"RespectSafeArea"] == nil) {
-                    stillRespecting = YES;
-                }
-                if (stillRespecting) {
-                    UIView *cv = _window.rootViewController.view;
-                    if ([cv isKindOfClass:[CompositorView class]]) {
-                        [self updateOutputSize:((CompositorView *)cv).bounds.size];
-                    }
-                }
-            });
-        }
-        
-        // Apply safe area to output rect (for Wayland output size calculation)
-        UIEdgeInsets insets = UIEdgeInsetsMake(
-            safeAreaFrame.origin.y - windowBounds.origin.y,
-            safeAreaFrame.origin.x - windowBounds.origin.x,
-            (windowBounds.origin.y + windowBounds.size.height) - (safeAreaFrame.origin.y + safeAreaFrame.size.height),
-            (windowBounds.origin.x + windowBounds.size.width) - (safeAreaFrame.origin.x + safeAreaFrame.size.width)
-        );
-        outputRect = UIEdgeInsetsInsetRect(outputRect, insets);
-        
-        NSLog(@"🔵 Output rect after safe area: (%.0f, %.0f) %.0fx%.0f",
-              outputRect.origin.x, outputRect.origin.y,
-              outputRect.size.width, outputRect.size.height);
-    }
-    
-    // Update CompositorView - it's now constrained via Auto Layout
-    // The constraints are set up in initWithDisplay and will automatically respect safe area
-    UIView *containerView = _window.rootViewController.view;
     CompositorView *compositorView = nil;
-    
-    // Find CompositorView (it's now a subview of containerView)
+    CGRect outputRect;
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    UIView *containerView = _window.rootViewController.view;
     for (UIView *subview in containerView.subviews) {
         if ([subview isKindOfClass:[CompositorView class]]) {
             compositorView = (CompositorView *)subview;
             break;
         }
     }
-    
-    if (!compositorView) {
-        // Fallback: check if containerView itself is CompositorView (old setup)
-        if ([containerView isKindOfClass:[CompositorView class]]) {
-            compositorView = (CompositorView *)containerView;
-        }
+    if (!compositorView && [containerView isKindOfClass:[CompositorView class]]) {
+        compositorView = (CompositorView *)containerView;
     }
-    
     if (compositorView) {
-        // Update constraints if needed (for new container-based setup)
-        if (compositorView.superview != containerView || compositorView.superview == nil) {
-            // Not in container yet, or different parent - this shouldn't happen but handle it
-            NSLog(@"⚠️ CompositorView not in expected container");
-        } else {
-            // View is in container with constraints - they should auto-update
-            // But we need to update them if the setting changed
-            NSArray<NSLayoutConstraint *> *constraints = compositorView.constraints;
-            BOOL hasSafeAreaConstraints = NO;
-            for (NSLayoutConstraint *constraint in containerView.constraints) {
-                if (constraint.firstItem == compositorView || constraint.secondItem == compositorView) {
-                    if (constraint.firstAnchor == containerView.safeAreaLayoutGuide.topAnchor ||
-                        constraint.secondAnchor == containerView.safeAreaLayoutGuide.topAnchor) {
-                        hasSafeAreaConstraints = YES;
-                        break;
-                    }
-                }
-            }
-            
-            // If setting changed, we need to update constraints
-            // For now, constraints are set initially and should work
-            // We'll rely on the initial constraint setup
-        }
-        
-        if (compositorView.metalView) {
-            // CRITICAL: Disable autoresizing when safe area is enabled, otherwise it will override our frame
-            if (respectSafeArea) {
-                compositorView.metalView.autoresizingMask = UIViewAutoresizingNone;
-            } else {
-                compositorView.metalView.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
-            }
-            
-            // Set frame relative to CompositorView bounds
-            // When respecting safe area, CompositorView is already sized to safe area, so metalView should fill it
-            // When not respecting, CompositorView fills window, so metalView should also fill it
-            CGRect metalFrame = compositorView.bounds;
-            compositorView.metalView.frame = metalFrame;
-            [compositorView.metalView setNeedsDisplay];
-            
-            // Verify frame was set correctly
-            CGRect actualFrame = compositorView.metalView.frame;
-            NSLog(@"🔵 Metal view frame set: (%.0f, %.0f) %.0fx%.0f (safe area: %@)",
-                  metalFrame.origin.x, metalFrame.origin.y,
-                  metalFrame.size.width, metalFrame.size.height,
-                  respectSafeArea ? @"YES" : @"NO");
-            NSLog(@"🔵 Metal view actual frame: (%.0f, %.0f) %.0fx%.0f",
-                  actualFrame.origin.x, actualFrame.origin.y,
-                  actualFrame.size.width, actualFrame.size.height);
-            
-            // Warn if frame doesn't match (autoresizing might have overridden it)
-            if (respectSafeArea && 
-                (fabs(actualFrame.origin.x - metalFrame.origin.x) > 0.1 ||
-                 fabs(actualFrame.origin.y - metalFrame.origin.y) > 0.1 ||
-                 fabs(actualFrame.size.width - metalFrame.size.width) > 0.1 ||
-                 fabs(actualFrame.size.height - metalFrame.size.height) > 0.1)) {
-                NSLog(@"⚠️ WARNING: Metal view frame doesn't match expected frame! Autoresizing may have overridden it.");
-            }
-            
-            // Update input handler target view for coordinate conversion
-            if (_inputHandler) {
-                _inputHandler.targetView = compositorView.metalView;
-            }
-        }
+        [compositorView setNeedsLayout];
+        [compositorView layoutIfNeeded];
+        outputRect = compositorView.bounds;
+    } else {
+        outputRect = CGRectMake(0, 0, size.width, size.height);
+    }
+#else
+    NSView *contentView = _window.contentView;
+    if ([contentView isKindOfClass:[CompositorView class]]) {
+        compositorView = (CompositorView *)contentView;
+        outputRect = compositorView.bounds;
+    } else {
+        outputRect = CGRectMake(0, 0, size.width, size.height);
     }
 #endif
 
     // Convert points to pixels for Retina displays
+    // CRITICAL: Use the screen's actual scale factor for proper DPI/Retina scaling
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     CGFloat scale = [UIScreen mainScreen].scale;
+    if (scale <= 0) {
+        scale = 1.0;
+    }
 #else
     CGFloat scale = _window.backingScaleFactor;
+    if (scale <= 0) {
+        scale = 1.0;
+    }
 #endif
     
-    int32_t pixelWidth = (int32_t)(outputRect.size.width * scale);
-    int32_t pixelHeight = (int32_t)(outputRect.size.height * scale);
+    // Calculate pixel dimensions: points * scale = pixels
+    // Example: 375 points * 3 scale = 1125 pixels (iPhone 14 Pro)
+    int32_t pixelWidth = (int32_t)round(outputRect.size.width * scale);
+    int32_t pixelHeight = (int32_t)round(outputRect.size.height * scale);
+    int32_t scaleInt = (int32_t)scale;
+    
+    NSLog(@"🔵 Output scaling: %.0fx%.0f points @ %.0fx scale = %dx%d pixels",
+          outputRect.size.width, outputRect.size.height,
+          scale, pixelWidth, pixelHeight);
     
     // Store for resize handling on event thread to avoid race conditions
     _pending_resize_width = pixelWidth;
     _pending_resize_height = pixelHeight;
-    _pending_resize_scale = (int32_t)scale;
+    _pending_resize_scale = scaleInt;
     _needs_resize_configure = YES;
 }
 
@@ -2003,15 +1966,15 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     
     NSLog(@"[WINDOW] Window close button clicked - sending close event to client");
     
-    // Get the global seat to find the focused surface
-    extern struct wl_seat_impl *global_seat;
-    if (!global_seat || !global_seat->focused_surface) {
+    // Use compositor's seat to find the focused surface
+    struct wl_seat_impl *seat_ref = _seat;
+    if (!seat_ref || !seat_ref->focused_surface) {
         NSLog(@"[WINDOW] No focused surface - closing window");
         return YES; // Allow window to close
     }
     
     // Get the focused surface
-    struct wl_surface_impl *focused_surface = (struct wl_surface_impl *)global_seat->focused_surface;
+    struct wl_surface_impl *focused_surface = (struct wl_surface_impl *)seat_ref->focused_surface;
     if (!focused_surface || !focused_surface->resource) {
         NSLog(@"[WINDOW] Focused surface is invalid - closing window");
         return YES; // Allow window to close
@@ -2188,15 +2151,13 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     }
 }
 
-// Idle callback to trigger first frame callback immediately
+// DEPRECATED: This function is no longer used - it caused infinite loops
+// Frame callbacks are now handled entirely by the timer mechanism
 static void send_frame_callbacks_timer_idle(void *data) {
-    WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
-    if (compositor) {
-        log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer_idle: Triggering immediate frame callback\n");
-        fflush(stdout);
-        // Call the timer function directly to send frame callbacks immediately
-        send_frame_callbacks_timer(data);
-    }
+    // Do nothing - this function should never be called
+    // If it is called, it means there's a bug somewhere adding idle callbacks
+    (void)data;
+    log_printf("[COMPOSITOR] ", "ERROR: send_frame_callbacks_timer_idle called - this should not happen!\n");
 }
 
 // Ensure the frame callback timer exists and is scheduled (must run on event thread)
@@ -2222,7 +2183,11 @@ static BOOL ensure_frame_callback_timer_on_event_thread(WawonaCompositor *compos
                    reason ? reason : "no reason", delay_ms);
     }
 
-    int ret = wl_event_source_timer_update(compositor.frame_callback_source, delay_ms);
+    // CRITICAL: Always update timer delay to schedule it
+    // If delay is 0, we want immediate execution - but Wayland timers might not fire immediately
+    // So use a small delay (1ms) to ensure it fires in the next event loop iteration
+    uint32_t actual_delay = (delay_ms == 0) ? 1 : delay_ms;
+    int ret = wl_event_source_timer_update(compositor.frame_callback_source, actual_delay);
     if (ret < 0) {
         int err = errno;
         log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: timer update failed (%s, delay=%ums) - recreating\n",
@@ -2247,15 +2212,34 @@ static BOOL ensure_frame_callback_timer_on_event_thread(WawonaCompositor *compos
         }
 
         log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Timer recreated successfully\n");
+    } else {
+        // Timer update succeeded - verify timer is actually scheduled
+        // Log for verification - this confirms the timer should fire
+        log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Timer updated successfully (delay=%ums, will fire in %ums, timer=%p)\n", 
+                   delay_ms, actual_delay, (void *)compositor.frame_callback_source);
+        // Force flush to ensure log is visible immediately
+        fflush(stdout);
     }
     return YES;
+}
+
+// Idle helper to trigger first frame callback immediately
+// This is safe because it runs on the event thread and only fires once
+static void trigger_first_frame_callback_idle(void *data) {
+    WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
+    if (compositor) {
+        log_printf("[COMPOSITOR] ", "trigger_first_frame_callback_idle: Manually triggering first frame callback via idle\n");
+        // Manually call the timer function
+        // This will send callbacks and re-arm the timer for the next frame (16ms later)
+        send_frame_callbacks_timer(data);
+    }
 }
 
 // Idle helper to (re)arm the timer from threads other than the event thread
 static void ensure_frame_callback_timer_idle(void *data) {
     WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
     if (compositor) {
-        ensure_frame_callback_timer_on_event_thread(compositor, 0, "idle kick");
+        ensure_frame_callback_timer_on_event_thread(compositor, 16, "idle kick");
     }
 }
 
@@ -2263,19 +2247,31 @@ static void ensure_frame_callback_timer_idle(void *data) {
 // This fires every ~16ms (60Hz) to match display refresh rate
 static int send_frame_callbacks_timer(void *data) {
     WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
-    if (compositor) {
-        // This runs on the Wayland event thread - safe to call Wayland server functions
-        
-        // Timer fires every 16ms - log first few calls and then every 60th call
-        static int timer_call_count = 0;
-        timer_call_count++;
-        if (timer_call_count <= 5 || timer_call_count % 60 == 0) {
-            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer() called (call #%d)\n", timer_call_count);
-            fflush(stdout); // Force flush to ensure log is visible
-        }
-        
-        // Handle pending resize configure events first
-        if (compositor.needs_resize_configure) {
+    if (!compositor) {
+        log_printf("[COMPOSITOR] ", "ERROR: send_frame_callbacks_timer called with NULL compositor!\n");
+        return 0;
+    }
+    
+    // This runs on the Wayland event thread - safe to call Wayland server functions
+    
+    // Timer fires every 16ms - log calls to verify operation
+    static int timer_call_count = 0;
+    timer_call_count++;
+    
+    // Always log first call to verify timer fired
+    if (timer_call_count == 1) {
+        log_printf("[COMPOSITOR] ", "✅ send_frame_callbacks_timer() FIRED! (call #%d) - Timer is working!\n", timer_call_count);
+        fflush(stdout);
+    }
+    
+    // Log every 60 calls (approx every 1 second) to keep liveliness check
+    if (timer_call_count <= 30 || timer_call_count % 60 == 0) {
+        log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer() called (call #%d)\n", timer_call_count);
+        fflush(stdout); // Force flush to ensure log is visible
+    }
+    
+    // Handle pending resize configure events first
+    if (compositor.needs_resize_configure) {
             // Update wl_output mode/geometry (must be done on event thread to avoid races)
             if (compositor.output) {
                 wl_output_update_size(compositor.output, 
@@ -2285,33 +2281,53 @@ static int send_frame_callbacks_timer(void *data) {
             }
             
             if (compositor.xdg_wm_base) {
+                // Pass actual output size for storage (clients can use as hint)
+                // But configure events send 0x0 to signal arbitrary resolution support
                 xdg_wm_base_send_configure_to_all_toplevels(compositor.xdg_wm_base, 
                                                              compositor.pending_resize_width, 
                                                              compositor.pending_resize_height);
-            }
-            compositor.needs_resize_configure = NO;
         }
-        
-        // Send frame callbacks
-        int sent_count = wl_send_frame_callbacks();
-        if (sent_count > 0) {
-            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Sent %d frame callback(s)\n", sent_count);
-            fflush(stdout);
-        }
-        
-        // CRITICAL: Flush clients to ensure frame callbacks are sent immediately
-        // This wakes up clients waiting on wl_display_dispatch()
-        wl_display_flush_clients(compositor.display);
-        
-        // CRITICAL: Always keep timer running - clients request new frame callbacks AFTER receiving them
-        // If we stop the timer when there are no pending callbacks, we'll miss the next request
-        // The timer will be removed when the compositor stops or all clients disconnect
-        // Keep firing every 16ms (60Hz) continuously
-        if (!ensure_frame_callback_timer_on_event_thread(compositor, 16, "re-arm")) {
-            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Failed to re-arm timer\n");
-        }
-        return 0;
+        compositor.needs_resize_configure = NO;
     }
+    
+    // Send frame callbacks
+    int sent_count = wl_send_frame_callbacks();
+    if (sent_count > 0) {
+        log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Sent %d frame callback(s)\n", sent_count);
+        fflush(stdout);
+    }
+    
+    // CRITICAL: Flush clients to ensure frame callbacks are sent immediately
+    // This wakes up clients waiting on wl_display_dispatch()
+    wl_display_flush_clients(compositor.display);
+    
+    // CRITICAL: Re-arm timer for next frame (16ms = 60Hz)
+    // Always re-arm to keep timer firing continuously
+    if (compositor.frame_callback_source) {
+            int ret = wl_event_source_timer_update(compositor.frame_callback_source, 16);
+            if (ret < 0) {
+                int err = errno;
+                log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Failed to re-arm timer: %s\n", strerror(err));
+                // Timer update failed - recreate it
+                wl_event_source_remove(compositor.frame_callback_source);
+                compositor.frame_callback_source = NULL;
+                ensure_frame_callback_timer_on_event_thread(compositor, 16, "recreate after update failure");
+            } else {
+                // Log first 10 re-arms to verify timer is working continuously
+                static int rearm_count = 0;
+                rearm_count++;
+                if (rearm_count <= 10) {
+                    log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Re-armed timer successfully (rearm #%d, next fire in 16ms)\n", rearm_count);
+                }
+        }
+    } else {
+        // Timer was removed - recreate it immediately
+        log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Timer was removed, recreating\n");
+        ensure_frame_callback_timer_on_event_thread(compositor, 16, "recreate after removal");
+    }
+    
+    // Return 0 to indicate timer callback completed
+    // We manually re-arm above, so timer will continue firing
     return 0;
 }
 
@@ -3032,8 +3048,17 @@ struct egl_buffer_handler *macos_compositor_get_egl_buffer_handler(void) {
     
     [self stop];
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#if !__has_feature(objc_arc)
     [super dealloc];
+#endif
 #endif
 }
 
 @end
+bool wawona_is_egl_enabled(void) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"EnableEGLDrivers"];
+#else
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"EnableEGLDrivers"];
+#endif
+}

@@ -72,7 +72,7 @@ static void viewporter_get_viewport(struct wl_client *client, struct wl_resource
 // Bind function for wp_viewporter global
 static void bind_viewporter(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
     struct wp_viewporter_impl *viewporter = data;
-    struct wl_resource *res = wl_resource_create(client, &wp_viewporter_interface, version, id);
+    struct wl_resource *res = wl_resource_create(client, &wp_viewporter_interface, (int)version, id);
     if (!res) {
         wl_client_post_no_memory(client);
         return;
@@ -131,10 +131,10 @@ static void viewport_set_source(struct wl_client *client, struct wl_resource *re
     struct wl_viewport_impl *vp = wl_resource_get_user_data(resource);
     if (!vp) return;
     // Convert from wl_fixed to float
-    vp->src_x = wl_fixed_to_double(x);
-    vp->src_y = wl_fixed_to_double(y);
-    vp->src_width = wl_fixed_to_double(width);
-    vp->src_height = wl_fixed_to_double(height);
+    vp->src_x = (float)wl_fixed_to_double(x);
+    vp->src_y = (float)wl_fixed_to_double(y);
+    vp->src_width = (float)wl_fixed_to_double(width);
+    vp->src_height = (float)wl_fixed_to_double(height);
     vp->has_source = (vp->src_width > 0.0f && vp->src_height > 0.0f);
 }
 

@@ -9,8 +9,8 @@ set -e
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WAYLAND_DIR="${ROOT_DIR}/dependencies/wayland"
 CROSS_FILE="${WAYLAND_DIR}/cross-ios.txt"
-INSTALL_DIR="${ROOT_DIR}/build/ios-install"
-MACOS_INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
+MACOS_INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
 HOST_TOOLS_DIR="${ROOT_DIR}/build/ios-bootstrap"
 
 # SDK Path
@@ -102,4 +102,3 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
 
 echo "Generated CMake toolchain file at ${CMAKE_TOOLCHAIN_FILE}"
-

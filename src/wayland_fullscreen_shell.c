@@ -93,10 +93,13 @@ bind_fullscreen_shell(struct wl_client *client, void *data, uint32_t version, ui
 
     wl_resource_set_implementation(resource, &fullscreen_shell_interface, shell, NULL);
 
-    // Advertise ARBITRARY_MODES capability!
-    // This is what Weston checks for.
-    log_printf("[FULLSCREEN-SHELL] ", "Sending ARBITRARY_MODES capability to client\n");
+    // CRITICAL: Advertise ARBITRARY_MODES capability immediately upon binding!
+    // This is what Weston checks for to determine arbitrary resolution support.
+    // Must be sent before client queries capabilities.
+    log_printf("[FULLSCREEN-SHELL] ", "Binding client %p, sending ARBITRARY_MODES capability (value=%u)\n", 
+               (void *)client, ZWP_FULLSCREEN_SHELL_V1_CAPABILITY_ARBITRARY_MODES);
     zwp_fullscreen_shell_v1_send_capability(resource, ZWP_FULLSCREEN_SHELL_V1_CAPABILITY_ARBITRARY_MODES);
+    log_printf("[FULLSCREEN-SHELL] ", "ARBITRARY_MODES capability sent successfully\n");
 }
 
 void

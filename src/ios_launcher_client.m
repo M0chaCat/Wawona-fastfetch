@@ -54,6 +54,7 @@ struct launcher_client_state {
 static void launcher_registry_handle_global(void *data, struct wl_registry *registry,
                                            uint32_t name, const char *interface, uint32_t version) {
     struct launcher_client_state *state = (struct launcher_client_state *)data;
+    (void)state;
     
     NSLog(@"🎯 Launcher: Found global interface: %s (version %u, name %u)", interface, version, name);
     
@@ -117,9 +118,9 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 };
 
 static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
-    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    (void)data;
     xdg_surface_ack_configure(xdg_surface, serial);
-    
+}
     // If we have a buffer and we are configured, we might want to commit
     // But usually we wait for toplevel configure
 }
@@ -684,4 +685,3 @@ void disconnectLauncherClient(WawonaAppDelegate *delegate) {
         setClientDisplay(delegate, NULL);
     }
 }
-

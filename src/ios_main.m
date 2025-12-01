@@ -31,6 +31,9 @@ static void signal_handler(int sig) {
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) MacOSCompositor *compositor;
 @property (nonatomic, assign) struct wl_display *display;
+@property (nonatomic, strong) UIButton *settingsButton;
+@property (nonatomic, strong) UIView *chromeOverlay;
+@property (nonatomic, strong) UIWindow *chromeWindow;
 @end
 
 @implementation WawonaAppDelegate
@@ -178,33 +181,71 @@ static void signal_handler(int sig) {
     rootViewController.view.backgroundColor = [UIColor clearColor];
     self.window.rootViewController = rootViewController;
     
-    // Add floating settings button (always accessible)
-    UIButton *settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
-    UIImage *gearImage = [UIImage systemImageNamed:@"gearshape.fill"];
-    [settingsButton setImage:gearImage forState:UIControlStateNormal];
-    settingsButton.tintColor = [UIColor whiteColor];
-    settingsButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
-    settingsButton.layer.cornerRadius = 25.0;
-    settingsButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    settingsButton.layer.shadowOffset = CGSizeMake(0, 2);
-    settingsButton.layer.shadowOpacity = 0.5;
-    settingsButton.layer.shadowRadius = 4.0;
-    [settingsButton addTarget:self action:@selector(showSettings:) forControlEvents:UIControlEventTouchUpInside];
-    [rootViewController.view addSubview:settingsButton];
-    
-    // Position settings button in top-right corner
-    [NSLayoutConstraint activateConstraints:@[
-        [settingsButton.topAnchor constraintEqualToAnchor:rootViewController.view.safeAreaLayoutGuide.topAnchor constant:20],
-        [settingsButton.trailingAnchor constraintEqualToAnchor:rootViewController.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-        [settingsButton.widthAnchor constraintEqualToConstant:50],
-        [settingsButton.heightAnchor constraintEqualToConstant:50],
-    ]];
+    [self teardownChromeWindowIfPresent];
+    [self setupChromeOverlayIfNeeded];
+    [self setupSettingsButtonIfNeeded];
     
     // Make window key and visible
     [self.window makeKeyAndVisible];
     
     return YES;
+}
+
+-(void)setupSettingsButtonIfNeeded {
+    if (!self.chromeOverlay) {
+        [self setupChromeOverlayIfNeeded];
+    }
+    if (!self.settingsButton) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        UIImage *gearImage = [UIImage systemImageNamed:@"gearshape.fill"];
+        [button setImage:gearImage forState:UIControlStateNormal];
+        button.tintColor = [UIColor whiteColor];
+        button.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+        button.layer.cornerRadius = 25.0;
+        button.layer.shadowColor = [UIColor blackColor].CGColor;
+        button.layer.shadowOffset = CGSizeMake(0, 2);
+        button.layer.shadowOpacity = 0.5;
+        button.layer.shadowRadius = 4.0;
+        [button addTarget:self action:@selector(showSettings:) forControlEvents:UIControlEventTouchUpInside];
+        self.settingsButton = button;
+        [self.chromeOverlay addSubview:self.settingsButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.settingsButton.topAnchor constraintEqualToAnchor:self.chromeOverlay.safeAreaLayoutGuide.topAnchor constant:20],
+            [self.settingsButton.trailingAnchor constraintEqualToAnchor:self.chromeOverlay.safeAreaLayoutGuide.trailingAnchor constant:-20],
+            [self.settingsButton.widthAnchor constraintEqualToConstant:50],
+            [self.settingsButton.heightAnchor constraintEqualToConstant:50],
+        ]];
+    } else if (self.settingsButton.superview != self.chromeOverlay) {
+        [self.settingsButton removeFromSuperview];
+        [self.chromeOverlay addSubview:self.settingsButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.settingsButton.topAnchor constraintEqualToAnchor:self.chromeOverlay.safeAreaLayoutGuide.topAnchor constant:20],
+            [self.settingsButton.trailingAnchor constraintEqualToAnchor:self.chromeOverlay.safeAreaLayoutGuide.trailingAnchor constant:-20],
+            [self.settingsButton.widthAnchor constraintEqualToConstant:50],
+            [self.settingsButton.heightAnchor constraintEqualToConstant:50],
+        ]];
+    }
+}
+
+- (void)teardownChromeWindowIfPresent {
+    if (self.chromeWindow) {
+        self.chromeWindow.hidden = YES;
+        self.chromeWindow.rootViewController = nil;
+        self.chromeWindow = nil;
+    }
+}
+
+- (void)setupChromeOverlayIfNeeded {
+    UIView *targetView = self.window.rootViewController ? self.window.rootViewController.view : nil;
+    if (targetView) {
+        if (self.chromeOverlay && self.chromeOverlay != targetView) {
+            [self.chromeOverlay removeFromSuperview];
+        }
+        self.chromeOverlay = targetView;
+    } else {
+        self.chromeOverlay = self.window;
+    }
 }
 
 - (void)showSettings:(id)sender {
@@ -276,4 +317,3 @@ int main(int argc, char *argv[]) {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([WawonaAppDelegate class]));
     }
 }
-

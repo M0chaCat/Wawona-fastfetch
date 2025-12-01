@@ -12,18 +12,21 @@ static void
 wp_color_manager_destroy_resource(struct wl_resource *resource)
 {
     struct wp_color_manager_impl *manager = wl_resource_get_user_data(resource);
+    (void)manager;
     // Don't free manager here as it's owned by the compositor
 }
 
 static void
 wp_color_manager_destroy_request(struct wl_client *client, struct wl_resource *resource)
 {
+    (void)client;
     wl_resource_destroy(resource);
 }
 
 static void
 wp_color_manager_get_output(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *output)
 {
+    (void)client; (void)resource; (void)id; (void)output;
     // Implementation for get_output
     // TODO: Connect output to color management
 }
@@ -31,6 +34,7 @@ wp_color_manager_get_output(struct wl_client *client, struct wl_resource *resour
 static void
 wp_color_manager_get_surface(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *surface)
 {
+    (void)client; (void)resource; (void)id; (void)surface;
     // Implementation for get_surface
     // TODO: Connect surface to color management
 }
@@ -38,12 +42,14 @@ wp_color_manager_get_surface(struct wl_client *client, struct wl_resource *resou
 static void
 wp_color_manager_create_icc_creator(struct wl_client *client, struct wl_resource *resource, uint32_t id)
 {
+    (void)client; (void)resource; (void)id;
     // Implementation for create_icc_creator
 }
 
 static void
 wp_color_manager_create_parametric_creator(struct wl_client *client, struct wl_resource *resource, uint32_t id)
 {
+    (void)client; (void)resource; (void)id;
     // Implementation for create_parametric_creator
 }
 
@@ -55,28 +61,30 @@ static const struct wp_color_manager_v1_interface color_manager_impl = {
     .create_parametric_creator = wp_color_manager_create_parametric_creator,
 };
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 static void
 bind_color_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id)
 {
     struct wp_color_manager_impl *manager = data;
-    struct wl_resource *resource = wl_resource_create(client, &wp_color_manager_v1_interface, version, id);
+    struct wl_resource *resource = wl_resource_create(client, &wp_color_manager_v1_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
     }
     wl_resource_set_implementation(resource, &color_manager_impl, manager, wp_color_manager_destroy_resource);
 }
+#endif
 
 struct wp_color_manager_impl *
 wp_color_manager_create(struct wl_display *display, struct wl_output_impl *output)
 {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     struct wp_color_manager_impl *manager = calloc(1, sizeof(struct wp_color_manager_impl));
     if (!manager) return NULL;
 
     manager->display = display;
     manager->output = output;
     
-    // Initialize ColorSync
     manager->display_color_space = get_display_color_space();
     manager->hdr_supported = detect_hdr_support();
     
@@ -85,18 +93,21 @@ wp_color_manager_create(struct wl_display *display, struct wl_output_impl *outpu
         free(manager);
         return NULL;
     }
-    
     return manager;
+#else
+    (void)display; (void)output;
+    return NULL;
+#endif
 }
 
 void
 wp_color_manager_destroy(struct wp_color_manager_impl *manager)
 {
     if (!manager) return;
-    
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     if (manager->global) wl_global_destroy(manager->global);
+#endif
     if (manager->display_color_space) CGColorSpaceRelease(manager->display_color_space);
-    
     free(manager);
 }
 
@@ -137,14 +148,11 @@ CGColorSpaceRef
 create_colorspace_from_image_description(struct wp_image_description_impl *desc)
 {
     if (!desc) return NULL;
-    
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     if (desc->is_icc && desc->icc_data) {
         return CGColorSpaceCreateWithICCProfile(desc->icc_data);
     }
-    
     if (desc->is_parametric) {
-        // Create generic color space based on primaries and transfer function
-        // This is a simplified mapping
         if (desc->tf_named == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
              return CGColorSpaceCreateWithName(kCGColorSpaceITUR_2020_PQ_EOTF);
         } else if (desc->primaries_named == WP_COLOR_MANAGER_V1_PRIMARIES_BT2020) {
@@ -153,7 +161,6 @@ create_colorspace_from_image_description(struct wp_image_description_impl *desc)
              return CGColorSpaceCreateWithName(kCGColorSpaceDCIP3);
         }
     }
-    
-    // Default to sRGB
+#endif
     return CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 }

@@ -38,7 +38,7 @@ echo "Creating $FRAMEWORK_NAME.framework for $PLATFORM..."
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "${PLATFORM}" == "ios" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/ios-install"
+    INSTALL_DIR="${ROOT_DIR}/ios-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_NAME="iphonesimulator"
     SDK_PATH=$(xcrun --sdk "${SDK_NAME}" --show-sdk-path)
@@ -48,7 +48,7 @@ if [ "${PLATFORM}" == "ios" ]; then
     LIBTOOL_FLAGS=(-static -arch_only arm64 -syslibroot "${SDK_PATH}")
     
 elif [ "${PLATFORM}" == "macos" ]; then
-    INSTALL_DIR="${ROOT_DIR}/build/macos-install"
+    INSTALL_DIR="${ROOT_DIR}/macos-dependencies"
     FRAMEWORK_DIR="${INSTALL_DIR}/Frameworks/${FRAMEWORK_NAME}.framework"
     SDK_NAME="macosx"
     SDK_PATH=$(xcrun --sdk "${SDK_NAME}" --show-sdk-path)
@@ -167,4 +167,3 @@ xcrun --sdk "${SDK_NAME}" libtool \
     "${LIBS_ARRAY[@]}"
 
 echo "Success! Created ${FRAMEWORK_DIR}"
-

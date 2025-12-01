@@ -3,5 +3,6 @@
 void
 register_plasma_shell(struct wl_display *display)
 {
+    (void)display;
     // Stub
 }
