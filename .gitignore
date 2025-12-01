@@ -62,6 +62,9 @@ containerization-build/
 
 # Dependencies (cloned git repos - scripts will generate these from scratch)
 dependencies/
+macos-dependencies/
+ios-dependencies/
+android-dependencies/
 
 # IDE files
 .cursor/
