@@ -49,7 +49,12 @@ in
           ] ++ buildFlags;
         }
       else if buildSystem == "meson" then
-        androidPkgs.stdenv.mkDerivation {
+        # Use androidPkgs.stdenv - it handles Android cross-compilation properly
+        # Access through let binding to delay evaluation and avoid recursion
+        let
+          stdenv' = androidPkgs.stdenv;
+        in
+        stdenv'.mkDerivation {
           name = "${name}-android";
           src = src;
           patches = lib.filter (p: p != null && builtins.pathExists (toString p)) patches;
@@ -71,7 +76,6 @@ in
             meson setup build \
               --prefix=$out \
               --libdir=$out/lib \
-              --cross-file=${androidPkgs.stdenv.cc.targetPrefix} \
               ${lib.concatMapStringsSep " \\\n  " (flag: flag) buildFlags}
             runHook postConfigure
           '';
