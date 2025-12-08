@@ -1,13 +1,10 @@
 # Android-specific dependency builds
 
-{ lib, pkgs, common }:
+{ lib, pkgs, buildPackages, common }:
 
 let
   getBuildSystem = common.getBuildSystem;
   fetchSource = common.fetchSource;
-  
-  # Android cross-compilation setup (aarch64-android-prebuilt)
-  androidPkgs = pkgs.pkgsCross.aarch64-android-prebuilt;
 in
 
 {
@@ -15,6 +12,9 @@ in
   # Note: Android NDK cross-compilation from macOS may not be fully supported
   buildForAndroid = name: entry:
     let
+      # Android cross-compilation setup - defined inside function to avoid top-level evaluation
+      androidPkgs = pkgs.pkgsCross.aarch64-android-prebuilt;
+      
       src = fetchSource entry;
       
       buildSystem = getBuildSystem entry;
@@ -22,9 +22,13 @@ in
       patches = entry.patches.android or [];
       
       # Determine build inputs based on dependency name
-      waylandDeps = with androidPkgs; [ expat libffi libxml2 ];
-      defaultDeps = [];
-      depInputs = if name == "wayland" then waylandDeps else defaultDeps;
+      # For wayland, we need expat, libffi, libxml2
+      # These are target packages (built for Android)
+      depInputs = if name == "wayland" then [
+        androidPkgs.expat
+        androidPkgs.libffi
+        androidPkgs.libxml2
+      ] else [];
     in
       if buildSystem == "cmake" then
         androidPkgs.stdenv.mkDerivation {
