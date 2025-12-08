@@ -11,7 +11,7 @@ let
     sha256 = "sha256-tvNdhpUnOvWoC5bpezUJv+EScnowhURI7XEtYF/EnQw=";
   };
   src = fetchSource libffiSource;
-  buildFlags = [ "--disable-docs" ];
+  buildFlags = [ "--disable-docs" "--disable-shared" "--enable-static" ];
   patches = [];
 in
 pkgs.stdenv.mkDerivation {
@@ -23,17 +23,18 @@ pkgs.stdenv.mkDerivation {
     if [ ! -f ./configure ]; then
       autoreconf -fi || autogen.sh || true
     fi
-    export CC="${androidToolchain.androidCC} --target=${androidToolchain.androidTarget}"
-    export CXX="${androidToolchain.androidCXX} --target=${androidToolchain.androidTarget}"
+    export CC="${androidToolchain.androidCC}"
+    export CXX="${androidToolchain.androidCXX}"
     export AR="${androidToolchain.androidAR}"
     export STRIP="${androidToolchain.androidSTRIP}"
     export RANLIB="${androidToolchain.androidRANLIB}"
-    export CFLAGS="-fPIC"
-    export CXXFLAGS="-fPIC"
+    export CFLAGS="--target=${androidToolchain.androidTarget} -fPIC"
+    export CXXFLAGS="--target=${androidToolchain.androidTarget} -fPIC"
+    export LDFLAGS="--target=${androidToolchain.androidTarget}"
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=/usr --host=${androidToolchain.androidTarget} ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --host=aarch64-linux-android ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
     runHook postConfigure
   '';
   buildPhase = ''
@@ -43,32 +44,18 @@ pkgs.stdenv.mkDerivation {
   '';
   installPhase = ''
     runHook preInstall
-    make install DESTDIR=$out || make install-data-am install-exec-am DESTDIR=$out || true
-    if [ -d "$out/usr" ]; then
-      if [ -d "$out/usr/lib" ]; then
-        mkdir -p $out/lib
-        cp -r $out/usr/lib/* $out/lib/ 2>/dev/null || true
-      fi
-      if [ -d "$out/usr/lib/pkgconfig" ]; then
-        mkdir -p $out/lib/pkgconfig
-        cp -r $out/usr/lib/pkgconfig/* $out/lib/pkgconfig/ || true
-      fi
-      if [ -d "$out/usr/include" ]; then
-        mkdir -p $out/include
-        cp -r $out/usr/include/* $out/include/ || true
-      fi
+    make install
+    # Ensure library files are in the right place
+    if [ -d "$out/lib" ]; then
+      echo "Library files installed to $out/lib:"
+      ls -la "$out/lib/" || true
     fi
-    if [ -d .libs ]; then
+    # Also check .libs directory as fallback
+    if [ -d .libs ] && [ ! -f "$out/lib/libffi.a" ]; then
       mkdir -p $out/lib
-      for lib in .libs/*.a; do
-        if [ -f "$lib" ]; then
-          libname=$(basename "$lib" .a)
-          cp "$lib" $out/lib/ || true
-          if [ ! -f "$out/lib/''${libname}.so" ] && [ -f "$lib" ]; then
-            cp "$lib" "$out/lib/''${libname}.so" || true
-          fi
-        fi
-      done
+      find .libs -name "*.a" -exec cp {} $out/lib/ \;
+      echo "Copied libraries from .libs:"
+      ls -la "$out/lib/" || true
     fi
     runHook postInstall
   '';

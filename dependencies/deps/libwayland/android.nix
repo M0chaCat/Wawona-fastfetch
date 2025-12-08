@@ -11,7 +11,8 @@ let
     sha256 = "sha256-oK0Z8xO2ILuySGZS0m37ZF0MOyle2l8AXb0/6wai0/w=";
   };
   src = fetchSource waylandSource;
-  buildFlags = [ "-Dlibraries=false" "-Ddocumentation=false" "-Dtests=false" ];
+  # Enable libraries for Android - we need libwayland-client and libwayland-server
+  buildFlags = [ "-Dlibraries=true" "-Ddocumentation=false" "-Dtests=false" ];
   patches = [];
   getDeps = depNames:
     map (depName:
@@ -21,16 +22,59 @@ let
       else throw "Unknown dependency: ${depName}"
     ) depNames;
   depInputs = getDeps [ "expat" "libffi" "libxml2" ];
+  
+  # Build wayland-scanner for the build architecture (host)
+  # We need a native wayland-scanner to generate headers for the target
+  waylandScanner = pkgs.stdenv.mkDerivation {
+    name = "wayland-scanner-host";
+    inherit src;
+    nativeBuildInputs = with pkgs; [ meson ninja pkg-config expat libxml2 ];
+    configurePhase = ''
+      meson setup build \
+        --prefix=$out \
+        -Dlibraries=false \
+        -Ddocumentation=false \
+        -Dtests=false
+    '';
+    buildPhase = ''
+      meson compile -C build wayland-scanner
+    '';
+    installPhase = ''
+      mkdir -p $out/bin
+      SCANNER_BIN=$(find build -name wayland-scanner -type f | head -n 1)
+      if [ -z "$SCANNER_BIN" ]; then
+        echo "Error: wayland-scanner binary not found"
+        exit 1
+      fi
+      cp "$SCANNER_BIN" $out/bin/wayland-scanner
+      
+      mkdir -p $out/share/pkgconfig
+      cat > $out/share/pkgconfig/wayland-scanner.pc <<EOF
+prefix=$out
+exec_prefix=$out
+bindir=$out/bin
+datarootdir=$out/share
+pkgdatadir=$out/share/wayland
+
+Name: Wayland Scanner
+Description: Wayland scanner
+Version: 1.23.0
+variable=wayland_scanner
+wayland_scanner=$out/bin/wayland-scanner
+EOF
+    '';
+  };
 in
 pkgs.stdenv.mkDerivation {
   name = "libwayland-android";
   inherit src patches;
-  nativeBuildInputs = with buildPackages; [ meson ninja pkg-config python3 bison flex libxml2 expat gcc ];
+  nativeBuildInputs = with buildPackages; [ meson ninja pkg-config python3 bison flex libxml2 expat gcc waylandScanner ];
   depsTargetTarget = depInputs;
-  buildInputs = [];
+  buildInputs = depInputs;
   propagatedBuildInputs = [];
   depsBuildBuild = with buildPackages; [ libxml2 expat ];
   postPatch = ''
+    # Meson build patches for cross-compilation
     substituteInPlace src/meson.build \
       --replace "scanner_deps += dependency('libxml-2.0')" "scanner_deps += dependency('libxml-2.0', native: true)" \
       --replace "scanner_deps = [ dependency('expat') ]" "scanner_deps = [ dependency('expat', native: true) ]" \
@@ -118,31 +162,187 @@ while i < len(lines):
 with open('src/meson.build', 'w') as f:
     f.writelines(new_lines)
 PYTHONPATCH
-    echo "=== Checking patched meson.build ==="
-    grep -A 10 "wayland_scanner = executable\|wayland_util" src/meson.build | head -20
+    
+    echo "=== Applying Android syscall compatibility patches ==="
+    
+    # Disable Meson checks for signalfd and timerfd (not available in Bionic)
+    # Remove the lines from the check array
+    sed -i "/sys\/signalfd.h/d" meson.build
+    sed -i "/sys\/timerfd.h/d" meson.build
+    
+    # Also try to comment out direct error calls if they exist
+    sed -i "s/error.*SFD_CLOEXEC.*/message('Skipped SFD_CLOEXEC check for Android')/g" meson.build
+    sed -i "s/error.*TFD_CLOEXEC.*/message('Skipped TFD_CLOEXEC check for Android')/g" meson.build
     
     # Android syscall compatibility: Remove signalfd/timerfd usage
     # These syscalls don't exist in Android's Bionic libc
-    # Note: Only needed if building libraries (-Dlibraries=true)
+    # We need to provide stub implementations that return appropriate values
     if [ -f src/event-loop.c ]; then
-      echo "=== Applying Android syscall compatibility patches ==="
-      # Replace signalfd with alternative signal handling
-      substituteInPlace src/event-loop.c \
-        --replace "#include <sys/signalfd.h>" "/* Android: signalfd not available in Bionic */" \
-        --replace "signalfd(" "/* signalfd removed for Android */ (void)0; /* signalfd(" \
-        --replace "SFD_CLOEXEC\|SFD_NONBLOCK" "0"
+      echo "=== Patching event-loop.c for Android ==="
       
-      # Replace timerfd with alternative timer handling  
-      substituteInPlace src/event-loop.c \
-        --replace "#include <sys/timerfd.h>" "/* Android: timerfd not available in Bionic */" \
-        --replace "timerfd_create(" "/* timerfd_create removed for Android */ (void)0; /* timerfd_create(" \
-        --replace "timerfd_settime(" "/* timerfd_settime removed for Android */ (void)0; /* timerfd_settime(" \
-        --replace "TFD_CLOEXEC\|TFD_NONBLOCK\|TFD_TIMER_ABSTIME" "0"
+      # Add stub functions and defines at the very beginning of the file
+      # This ensures they're available before any code tries to use them
+      sed -i '1i\
+/* Android Bionic compatibility: stubs for missing signalfd/timerfd */\
+#include <errno.h>\
+#include <signal.h>\
+#include <time.h>\
+#include <sys/types.h>\
+#include <stdint.h>\
+\
+/* Stub struct for signalfd_siginfo */\
+struct signalfd_siginfo {\
+        uint32_t ssi_signo;\
+        int32_t ssi_errno;\
+        int32_t ssi_code;\
+        uint32_t ssi_pid;\
+        uint32_t ssi_uid;\
+        int32_t ssi_fd;\
+        uint32_t ssi_tid;\
+        uint32_t ssi_band;\
+        uint32_t ssi_overrun;\
+        uint32_t ssi_trapno;\
+        int32_t ssi_status;\
+        int32_t ssi_int;\
+        uint64_t ssi_ptr;\
+        uint64_t ssi_utime;\
+        uint64_t ssi_stime;\
+        uint64_t ssi_addr;\
+        uint16_t ssi_addr_lsb;\
+        uint16_t __pad2;\
+        int32_t ssi_syscall;\
+        uint64_t ssi_call_addr;\
+        uint32_t ssi_arch;\
+};\
+\
+/* Stub implementations that return errors */\
+static inline int android_signalfd(int fd, const sigset_t *mask, int flags) {\
+        (void)fd; (void)mask; (void)flags;\
+        errno = ENOSYS;\
+        return -1;\
+}\
+static inline int android_timerfd_create(int clockid, int flags) {\
+        (void)clockid; (void)flags;\
+        errno = ENOSYS;\
+        return -1;\
+}\
+static inline int android_timerfd_settime(int fd, int flags, const struct itimerspec *new_value, struct itimerspec *old_value) {\
+        (void)fd; (void)flags; (void)new_value; (void)old_value;\
+        errno = ENOSYS;\
+        return -1;\
+}\
+\
+/* Redirect calls to our stubs */\
+#define signalfd android_signalfd\
+#define timerfd_create android_timerfd_create\
+#define timerfd_settime android_timerfd_settime\
+\
+/* Define missing constants */\
+#ifndef SFD_CLOEXEC\
+#define SFD_CLOEXEC 0\
+#endif\
+#ifndef SFD_NONBLOCK\
+#define SFD_NONBLOCK 0\
+#endif\
+#ifndef TFD_CLOEXEC\
+#define TFD_CLOEXEC 0\
+#endif\
+#ifndef TFD_NONBLOCK\
+#define TFD_NONBLOCK 0\
+#endif\
+#ifndef TFD_TIMER_ABSTIME\
+#define TFD_TIMER_ABSTIME 0\
+#endif\
+' src/event-loop.c
       
-      echo "Applied Android syscall compatibility patches"
-    else
-      echo "Note: event-loop.c not found (libraries disabled), skipping syscall patches"
+      # Remove the actual includes since we're providing stubs
+      substituteInPlace src/event-loop.c \
+        --replace "#include <sys/signalfd.h>" "/* Android: signalfd not available in Bionic - using stub */" \
+        --replace "#include <sys/timerfd.h>" "/* Android: timerfd not available in Bionic - using stub */"
+      
+      echo "Applied event-loop.c patches for Android"
     fi
+    
+    # Android socket compatibility: Some socket flags might not be available
+    # Check if we need to define MSG_NOSIGNAL, MSG_DONTWAIT, etc.
+    # Android Bionic should have these, but let's be safe
+    if [ -f src/connection.c ]; then
+      echo "=== Checking connection.c for Android compatibility ==="
+      # Android should have CMSG_LEN, but verify
+      # MSG_NOSIGNAL and MSG_DONTWAIT should be available in Android
+      # No patches needed for connection.c on Android typically
+    fi
+    
+    # Android wayland-os.c compatibility: ucred handling
+    # Android uses SO_PEERCRED but with standard Linux kernel semantics
+    # We implement it using SO_PEERCRED and define a local compatible struct
+    # to avoid any header definition issues.
+    if [ -f src/wayland-os.c ]; then
+      echo "=== Patching wayland-os.c for Android ==="
+      # Replace the #error block or the whole function if it fails to compile
+      # We provide a complete implementation using SO_PEERCRED (17)
+      if grep -q '#error "Don.t know how to read ucred' src/wayland-os.c; then
+        echo "Found ucred error, replacing with Android SO_PEERCRED implementation"
+        sed -i '/#error "Don.t know how to read ucred/c\
+#include <sys/socket.h>\
+#include <sys/types.h>\
+\
+/* Define struct ucred locally if not available to avoid conflicts */\
+/* Layout matches Linux kernel: pid, uid, gid (all 32-bit typically) */\
+struct android_ucred {\
+    pid_t pid;\
+    uid_t uid;\
+    gid_t gid;\
+};\
+\
+/* Ensure SO_PEERCRED is defined (should be available with sys/socket.h) */\
+#ifndef SO_PEERCRED\
+#define SO_PEERCRED 17\
+#endif\
+\
+int wl_os_get_peer_credentials(int sockfd, uid_t *uid, gid_t *gid, pid_t *pid)\
+{\
+        struct android_ucred peercred;\
+        socklen_t len = sizeof(peercred);\
+        if (getsockopt(sockfd, SOL_SOCKET, SO_PEERCRED, &peercred, &len) < 0) return -1;\
+        *uid = peercred.uid;\
+        *gid = peercred.gid;\
+        *pid = peercred.pid;\
+        return 0;\
+}\
+\
+int wl_os_socket_peercred(int sockfd, uid_t *uid, gid_t *gid, pid_t *pid)\
+{\
+        return wl_os_get_peer_credentials(sockfd, uid, gid, pid);\
+}' src/wayland-os.c
+      fi
+      
+      # Check for SOCK_CLOEXEC and MSG_CMSG_CLOEXEC
+      # Android should support these, but let's check and define if missing
+      sed -i '1i\
+#ifndef SOCK_CLOEXEC\
+#define SOCK_CLOEXEC 0\
+#endif\
+#ifndef MSG_CMSG_CLOEXEC\
+#define MSG_CMSG_CLOEXEC 0\
+#endif\
+' src/wayland-os.c
+      
+      echo "Applied wayland-os.c patches for Android"
+    fi
+    
+    # Fix mkostemp in os-compatibility.c if it exists
+    if [ -f cursor/os-compatibility.c ]; then
+      echo "=== Checking os-compatibility.c ==="
+      # Android should have mkostemp, but if not, fallback to mkstemp
+      if grep -q "mkostemp" cursor/os-compatibility.c; then
+        echo "Found mkostemp usage, checking Android support"
+        # Android API 21+ should have mkostemp, but we can add fallback if needed
+        # For now, leave it as Android should support it
+      fi
+    fi
+    
+    echo "=== Android compatibility patches complete ==="
   '';
   preConfigure = ''
     export CC="${androidToolchain.androidCC}"
@@ -156,30 +356,38 @@ PYTHONPATCH
         PKG_CONFIG_PATH="$depPkg/lib/pkgconfig:$PKG_CONFIG_PATH"
       fi
     done
-    mkdir -p .build-scanner/pkgconfig
-    mkdir -p .build-scanner/bin
-    cat > .build-scanner/bin/wayland-scanner <<'SCANNERSCRIPT'
-#!/bin/sh
-echo "wayland-scanner stub - meson should build scanner internally" >&2
-exit 1
-SCANNERSCRIPT
-    chmod +x .build-scanner/bin/wayland-scanner
-    SCANNER_BIN_PATH="$(pwd)/.build-scanner/bin/wayland-scanner"
-    cat > .build-scanner/pkgconfig/wayland-scanner.pc <<EOF
-prefix=/usr
-exec_prefix=\''${prefix}
-libdir=\''${exec_prefix}/lib
-includedir=\''${prefix}/include
-bindir=\''${exec_prefix}/bin
-wayland_scanner=$SCANNER_BIN_PATH
-
-Name: wayland-scanner
-Description: Wayland scanner
-Version: 1.23.0
-EOF
-    PKG_CONFIG_PATH="$(pwd)/.build-scanner/pkgconfig:$PKG_CONFIG_PATH"
-    export PKG_CONFIG_PATH
-    export PATH="$(pwd)/.build-scanner/bin:$PATH"
+    
+    # Use the native wayland-scanner we built
+    # Also add native expat and libxml2 for native build tools
+    NATIVE_EXPAT_PKG_CONFIG_DIR="${buildPackages.expat.dev}/lib/pkgconfig"
+    NATIVE_LIBXML2_PKG_CONFIG_DIR="${buildPackages.libxml2.dev}/lib/pkgconfig"
+    if [ ! -d "$NATIVE_EXPAT_PKG_CONFIG_DIR" ]; then
+      NATIVE_EXPAT_PKG_CONFIG_DIR="${buildPackages.expat}/lib/pkgconfig"
+    fi
+    if [ ! -d "$NATIVE_LIBXML2_PKG_CONFIG_DIR" ]; then
+      NATIVE_LIBXML2_PKG_CONFIG_DIR="${buildPackages.libxml2}/lib/pkgconfig"
+    fi
+    export PKG_CONFIG_PATH_FOR_BUILD="${waylandScanner}/share/pkgconfig:$NATIVE_EXPAT_PKG_CONFIG_DIR:$NATIVE_LIBXML2_PKG_CONFIG_DIR:''${PKG_CONFIG_PATH_FOR_BUILD:-}"
+    export PATH="${waylandScanner}/bin:$PATH"
+    
+    # Add libffi include and library paths to cross-file for compilation
+    # Find libffi specifically (it's needed for connection.c)
+    LIBFFI_INCLUDE=""
+    LIBFFI_LIB=""
+    LIBFFI_PKG=$(echo ${lib.concatMapStringsSep " " (p: toString p) depInputs} | tr ' ' '\n' | grep libffi | head -n 1)
+    if [ -n "$LIBFFI_PKG" ]; then
+      if [ -d "$LIBFFI_PKG/include" ]; then
+        LIBFFI_INCLUDE="$LIBFFI_PKG/include"
+        echo "Found libffi include: $LIBFFI_INCLUDE"
+      fi
+      if [ -d "$LIBFFI_PKG/lib" ]; then
+        LIBFFI_LIB="$LIBFFI_PKG/lib"
+        echo "Found libffi lib: $LIBFFI_LIB"
+      fi
+    else
+      echo "Warning: libffi package not found"
+    fi
+    # Build cross-file with libffi include and library paths
     cat > android-cross-file.txt <<EOF
 [binaries]
 c = '${androidToolchain.androidCC}'
@@ -196,11 +404,21 @@ cpu = 'aarch64'
 endian = 'little'
 
 [built-in options]
-c_args = ['--target=${androidToolchain.androidTarget}', '-fPIC']
-cpp_args = ['--target=${androidToolchain.androidTarget}', '-fPIC']
-c_link_args = ['--target=${androidToolchain.androidTarget}']
-cpp_link_args = ['--target=${androidToolchain.androidTarget}']
 EOF
+    if [ -n "$LIBFFI_INCLUDE" ]; then
+      echo "c_args = ['--target=${androidToolchain.androidTarget}', '-fPIC', '-I$LIBFFI_INCLUDE', '-D_GNU_SOURCE']" >> android-cross-file.txt
+      echo "cpp_args = ['--target=${androidToolchain.androidTarget}', '-fPIC', '-I$LIBFFI_INCLUDE', '-D_GNU_SOURCE']" >> android-cross-file.txt
+    else
+      echo "c_args = ['--target=${androidToolchain.androidTarget}', '-fPIC', '-D_GNU_SOURCE']" >> android-cross-file.txt
+      echo "cpp_args = ['--target=${androidToolchain.androidTarget}', '-fPIC', '-D_GNU_SOURCE']" >> android-cross-file.txt
+    fi
+    if [ -n "$LIBFFI_LIB" ]; then
+      echo "c_link_args = ['--target=${androidToolchain.androidTarget}', '-L$LIBFFI_LIB']" >> android-cross-file.txt
+      echo "cpp_link_args = ['--target=${androidToolchain.androidTarget}', '-L$LIBFFI_LIB']" >> android-cross-file.txt
+    else
+      echo "c_link_args = ['--target=${androidToolchain.androidTarget}']" >> android-cross-file.txt
+      echo "cpp_link_args = ['--target=${androidToolchain.androidTarget}']" >> android-cross-file.txt
+    fi
     LIBXML2_NATIVE_INCLUDE_VAL=""
     LIBXML2_NATIVE_LIB_VAL=""
     if [ -d "${buildPackages.libxml2.dev}/include/libxml2" ]; then
@@ -271,33 +489,25 @@ NATIVEFILE
   '';
   configurePhase = ''
     runHook preConfigure
-    mkdir -p $NIX_BUILD_TOP/pkgconfig-native
-    cp .build-scanner/pkgconfig/wayland-scanner.pc $NIX_BUILD_TOP/pkgconfig-native/ 2>/dev/null || true
-    NATIVE_EXPAT_PKG_CONFIG_DIR="${buildPackages.expat.dev}/lib/pkgconfig"
-    NATIVE_LIBXML2_PKG_CONFIG_DIR="${buildPackages.libxml2.dev}/lib/pkgconfig"
-    if [ ! -d "$NATIVE_EXPAT_PKG_CONFIG_DIR" ]; then
-      NATIVE_EXPAT_PKG_CONFIG_DIR="${buildPackages.expat}/lib/pkgconfig"
-    fi
-    if [ ! -d "$NATIVE_LIBXML2_PKG_CONFIG_DIR" ]; then
-      NATIVE_LIBXML2_PKG_CONFIG_DIR="${buildPackages.libxml2}/lib/pkgconfig"
-    fi
-    NATIVE_PKG_CONFIG_PATH="$NATIVE_EXPAT_PKG_CONFIG_DIR:$NATIVE_LIBXML2_PKG_CONFIG_DIR"
     ANDROID_PKG_CONFIG_PATH=""
     for depPkg in ${lib.concatMapStringsSep " " (p: toString p) depInputs}; do
       if [ -d "$depPkg/lib/pkgconfig" ]; then
         ANDROID_PKG_CONFIG_PATH="$depPkg/lib/pkgconfig:$ANDROID_PKG_CONFIG_PATH"
       fi
     done
-    export PKG_CONFIG_PATH="$NIX_BUILD_TOP/pkgconfig-native:$ANDROID_PKG_CONFIG_PATH"
-    export PKG_CONFIG_PATH_FOR_BUILD="$NATIVE_PKG_CONFIG_PATH:$NIX_BUILD_TOP/pkgconfig-native"
+    export PKG_CONFIG_PATH="$ANDROID_PKG_CONFIG_PATH"
+    # PKG_CONFIG_PATH_FOR_BUILD is set in preConfigure for wayland-scanner
     export PATH="${buildPackages.gcc}/bin:$PATH"
     unset CC CXX AR STRIP RANLIB CFLAGS CXXFLAGS LDFLAGS NIX_CFLAGS_COMPILE NIX_CXXFLAGS_COMPILE
     NATIVE_FILE_PATH="$(pwd)/meson-native-file.txt"
     CROSS_FILE_PATH="$(pwd)/android-cross-file.txt"
     echo "PKG_CONFIG_PATH_FOR_BUILD=$PKG_CONFIG_PATH_FOR_BUILD"
+    echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
     echo "Testing native expat pkg-config:"
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH_FOR_BUILD" ${buildPackages.pkg-config}/bin/pkg-config --exists expat && echo "expat found" || echo "expat NOT found"
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH_FOR_BUILD" ${buildPackages.pkg-config}/bin/pkg-config --libs expat || echo "expat libs failed"
+    echo "Testing wayland-scanner:"
+    which wayland-scanner || echo "wayland-scanner not in PATH"
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH" PKG_CONFIG_PATH_FOR_BUILD="$PKG_CONFIG_PATH_FOR_BUILD" meson setup build \
       --prefix=$out \
       --libdir=$out/lib \

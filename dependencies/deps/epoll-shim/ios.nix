@@ -43,6 +43,7 @@ pkgs.stdenv.mkDerivation {
         --replace "include(CTest)" "# include(CTest) # Disabled for iOS cross-compilation" || true
       
       # Fix sysctl warning on iOS (discard qualifiers)
+      # Added (int *) cast to silence the warning
       substituteInPlace src/timerfd_ctx.c \
         --replace "sysctl((int const[2])" "sysctl((int *)(int const[2])" || true
 

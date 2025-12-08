@@ -49,7 +49,7 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=$out --host=arm-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --host=aarch64-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
     runHook postConfigure
   '';
   configureFlags = buildFlags;
