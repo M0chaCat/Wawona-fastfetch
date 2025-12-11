@@ -153,7 +153,8 @@ struct itimerspec {\
         export XCODE_APP
         export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
         export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+        # Use iPhoneSimulator SDK for simulator builds
+        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
       fi
     fi
     export NIX_CFLAGS_COMPILE=""
@@ -174,6 +175,12 @@ struct itimerspec {\
     export PKG_CONFIG_PATH="$EPOL_SHIM_PATH/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
     export PKG_CONFIG_PATH_FOR_BUILD="${waylandScanner}/share/pkgconfig:''${PKG_CONFIG_PATH_FOR_BUILD:-}"
     
+    # Determine architecture for simulator
+    SIMULATOR_ARCH="arm64"
+    if [ "$(uname -m)" = "x86_64" ]; then
+      SIMULATOR_ARCH="x86_64"
+    fi
+    
     cat > ios-cross-file.txt <<EOF
 [binaries]
 c = '$IOS_CC'
@@ -189,10 +196,10 @@ cpu = 'aarch64'
 endian = 'little'
 
 [built-in options]
-c_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=26.0', '-fPIC', '-D_DARWIN_C_SOURCE', '-I$EPOL_SHIM_PATH/include/libepoll-shim', '-I$EPOL_SHIM_PATH/include']
-cpp_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=26.0', '-fPIC', '-D_DARWIN_C_SOURCE', '-I$EPOL_SHIM_PATH/include/libepoll-shim', '-I$EPOL_SHIM_PATH/include']
-c_link_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=26.0', '-L$EPOL_SHIM_PATH/lib', '-lepoll-shim']
-cpp_link_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=26.0', '-L$EPOL_SHIM_PATH/lib', '-lepoll-shim']
+c_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC', '-D_DARWIN_C_SOURCE', '-I$EPOL_SHIM_PATH/include/libepoll-shim', '-I$EPOL_SHIM_PATH/include']
+cpp_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC', '-D_DARWIN_C_SOURCE', '-I$EPOL_SHIM_PATH/include/libepoll-shim', '-I$EPOL_SHIM_PATH/include']
+c_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-L$EPOL_SHIM_PATH/lib', '-lepoll-shim']
+cpp_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-L$EPOL_SHIM_PATH/lib', '-lepoll-shim']
 EOF
   '';
 

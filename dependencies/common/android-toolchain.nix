@@ -1,7 +1,8 @@
 { lib, pkgs }:
 
 let
-  androidApiLevel = 30;
+  # Android API level and target
+  androidApiLevel = 35;
   androidTarget = "aarch64-linux-android${toString androidApiLevel}";
   androidndkPkgsMacOS = if pkgs.stdenv.isAarch64 && pkgs.stdenv.isDarwin then
     let

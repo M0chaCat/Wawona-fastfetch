@@ -193,6 +193,24 @@ static inline NSArray<id<MTLDevice>> * Compat_MTLCopyAllDevices() {\
       }' src/kosmickrisp/bridge/mtl_residency_set.m
 
 
+    # Patch meson.build to skip atomic library check for iOS (atomic ops are built-in)
+    echo "Patching meson.build to skip atomic library check for iOS..."
+    # The meson.build checks if atomic operations need libatomic
+    # On iOS, atomic operations are built into the compiler, so we skip this check
+    # Find the line: dep_atomic = cc.find_library('atomic') and replace it
+    sed -i "s|dep_atomic = cc.find_library('atomic')|dep_atomic = null_dep  # Patched: atomic ops built-in on iOS|" meson.build || true
+    
+    # Patch iOS-incompatible library checks
+    echo "Patching meson.build for iOS compatibility..."
+    # iOS doesn't have separate libdl, librt - these functions are in system libs
+    # Make these dependencies optional/null - handle the exact format from meson.build
+    sed -i "s|dep_dl = cc.find_library('dl', required : true)|dep_dl = null_dep  # Patched: dl functions in system libs on iOS|g" meson.build || true
+    sed -i "s|dep_clock = cc.find_library('rt')|dep_clock = null_dep  # Patched: rt functions in system libs on iOS|g" meson.build || true
+    # Also handle without required parameter
+    sed -i "s|dep_dl = cc.find_library('dl')|dep_dl = null_dep  # Patched: dl functions in system libs on iOS|g" meson.build || true
+    
+    echo "Patched atomic and dl library checks"
+    
     set +x
     echo "Verifying patch was applied:"
     grep -A 7 "clang_libdirs = \[llvm_libdir\]" meson.build || echo "WARNING: Patch may not have been applied correctly"
@@ -205,7 +223,7 @@ static inline NSArray<id<MTLDevice>> * Compat_MTLCopyAllDevices() {\
         export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
         # Put Xcode tools after Nix tools so we pick up Nix python, etc.
         export PATH="$PATH:$DEVELOPER_DIR/usr/bin"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
       fi
     fi
     export NIX_CFLAGS_COMPILE=""
@@ -221,10 +239,16 @@ static inline NSArray<id<MTLDevice>> * Compat_MTLCopyAllDevices() {\
     # Common flags for all languages
     # Use -target for proper cross-compilation behavior
     # Include paths for dependencies
-    COMMON_ARGS="['-target', 'arm64-apple-ios16.0', '-isysroot', '$SDKROOT', '-fPIC', '-I${zlibIOS}/include', '-I${zstdIOS}/include', '-I${expatIOS}/include', '-I${spirvLLVMTranslatorIOS}/include', '-I${spirvToolsIOS}/include', '-I${libclcIOS}/include', '-I${pkgs.llvmPackages.clang-unwrapped.dev}/include']"
+    # Determine architecture for simulator
+    SIMULATOR_ARCH="arm64"
+    if [ "$(uname -m)" = "x86_64" ]; then
+      SIMULATOR_ARCH="x86_64"
+    fi
+    
+    COMMON_ARGS="['-target', '$SIMULATOR_ARCH-apple-ios-simulator15.0', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC', '-I${zlibIOS}/include', '-I${zstdIOS}/include', '-I${expatIOS}/include', '-I${spirvLLVMTranslatorIOS}/include', '-I${spirvToolsIOS}/include', '-I${libclcIOS}/include', '-I${pkgs.llvmPackages.clang-unwrapped.dev}/include']"
     
     # Common link args
-    COMMON_LINK_ARGS="['-target', 'arm64-apple-ios16.0', '-isysroot', '$SDKROOT', '-L${zlibIOS}/lib', '-L${zstdIOS}/lib', '-L${expatIOS}/lib', '-L${spirvLLVMTranslatorIOS}/lib', '-L${spirvToolsIOS}/lib', '-L${pkgs.llvmPackages.clang-unwrapped.lib}/lib', '-lz', '-lzstd', '-lexpat', '-framework', 'Metal', '-framework', 'MetalKit', '-framework', 'Foundation', '-framework', 'IOKit']"
+    COMMON_LINK_ARGS="['-target', '$SIMULATOR_ARCH-apple-ios-simulator15.0', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-L${zlibIOS}/lib', '-L${zstdIOS}/lib', '-L${expatIOS}/lib', '-L${spirvLLVMTranslatorIOS}/lib', '-L${spirvToolsIOS}/lib', '-L${pkgs.llvmPackages.clang-unwrapped.lib}/lib', '-lz', '-lzstd', '-lexpat', '-framework', 'Metal', '-framework', 'MetalKit', '-framework', 'Foundation', '-framework', 'IOKit']"
 
     cat > ios-cross-file.txt <<EOF
 [binaries]

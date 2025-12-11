@@ -75,3 +75,6 @@ android-dependencies/
 result
 result-*
 /nix/
+
+# Android Emulator artifacts
+.android_home/

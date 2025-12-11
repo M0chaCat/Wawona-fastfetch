@@ -21,7 +21,7 @@ else
     name = "epoll-shim-macos";
     src = fetchSource epollShimSource;
     patches = [];
-    nativeBuildInputs = with pkgs; [ cmake pkg-config apple-sdk_26 ];
+    nativeBuildInputs = with pkgs; [ cmake pkg-config ];
     buildInputs = [];
     cmakeFlags = [
       "-DCMAKE_BUILD_TYPE=Release"
@@ -31,16 +31,13 @@ else
     ];
     configurePhase = ''
       runHook preConfigure
-      MACOS_SDK="${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-      export SDKROOT="$MACOS_SDK"
-      export MACOSX_DEPLOYMENT_TARGET="26.0"
+      export MACOSX_DEPLOYMENT_TARGET="13.0"
       cmake -B build -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=$out \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DBUILD_SHARED_LIBS=ON \
-        -DCMAKE_OSX_SYSROOT="$MACOS_SDK" \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET="26.0"
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="13.0"
       runHook postConfigure
     '';
     buildPhase = ''

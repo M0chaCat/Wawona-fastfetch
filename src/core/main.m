@@ -69,6 +69,21 @@ static void signal_handler(int sig) {
     (void)application;
     (void)launchOptions;
     
+    // DEBUG: Write a marker file immediately to verify we reached this point
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths firstObject];
+    
+    // Ensure Documents directory exists
+    [[NSFileManager defaultManager] createDirectoryAtPath:documentsDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    
+    NSString *markerPath = [documentsDirectory stringByAppendingPathComponent:@"LAUNCH_MARKER.txt"];
+    [@"Launched!" writeToFile:markerPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    
+    // Redirect logs to file
+    NSString *logPath = [documentsDirectory stringByAppendingPathComponent:@"wawona.log"];
+    freopen([logPath cStringUsingEncoding:NSASCIIStringEncoding], "a+", stderr);
+    freopen([logPath cStringUsingEncoding:NSASCIIStringEncoding], "a+", stdout);
+    
     NSLog(@"🎯 Wawona - Wayland Compositor for iOS");
     NSLog(@"   Using libwayland-server (no WLRoots)");
     NSLog(@"   Rendering with Metal/Surface");
@@ -129,8 +144,20 @@ static void signal_handler(int sig) {
     }
     
     const char *socket_name = "w0";
-    BOOL enable_tcp_pref = [[WawonaPreferencesManager sharedManager] enableTCPListener];
-    NSInteger tcp_port_pref = [[WawonaPreferencesManager sharedManager] tcpListenerPort];
+    // Safely get preferences with fallback defaults
+    BOOL enable_tcp_pref = NO;
+    NSInteger tcp_port_pref = 0;
+    @try {
+        WawonaPreferencesManager *prefsManager = [WawonaPreferencesManager sharedManager];
+        if (prefsManager) {
+            enable_tcp_pref = [prefsManager enableTCPListener];
+            tcp_port_pref = [prefsManager tcpListenerPort];
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"⚠️ Failed to read preferences, using defaults: %@", exception);
+        enable_tcp_pref = NO;
+        tcp_port_pref = 0;
+    }
     BOOL use_tcp = enable_tcp_pref;
     int tcp_listen_fd = -1;
     int wayland_port = 0;
@@ -302,22 +329,44 @@ static void signal_handler(int sig) {
     rootViewController.view.backgroundColor = [UIColor clearColor];
     self.window.rootViewController = rootViewController;
     
-    // Create compositor backend
-    WawonaCompositor *compositor = [[WawonaCompositor alloc] initWithDisplay:display window:self.window];
-    g_compositor = compositor;
-    self.compositor = compositor;
-    
-    // Store TCP listening socket in compositor for manual accept() handling
-    if (use_tcp && tcp_listen_fd >= 0) {
-        compositor.tcp_listen_fd = tcp_listen_fd;
+    // Create compositor backend with error handling
+    WawonaCompositor *compositor = nil;
+    @try {
+        compositor = [[WawonaCompositor alloc] initWithDisplay:display window:self.window];
+        if (!compositor) {
+            NSLog(@"❌ Failed to create compositor");
+            wl_display_destroy(display);
+            return NO;
+        }
+        g_compositor = compositor;
+        self.compositor = compositor;
+        
+        // Store TCP listening socket in compositor for manual accept() handling
+        if (use_tcp && tcp_listen_fd >= 0) {
+            compositor.tcp_listen_fd = tcp_listen_fd;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception creating compositor: %@", exception);
+        NSLog(@"   Call stack: %@", [exception callStackSymbols]);
+        if (display) {
+            wl_display_destroy(display);
+        }
+        return NO;
     }
     
     // Signal handlers
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
     
-    if (![compositor start]) {
-        NSLog(@"❌ Failed to start compositor backend");
+    @try {
+        if (![compositor start]) {
+            NSLog(@"❌ Failed to start compositor backend");
+            wl_display_destroy(display);
+            return NO;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception starting compositor: %@", exception);
+        NSLog(@"   Call stack: %@", [exception callStackSymbols]);
         wl_display_destroy(display);
         return NO;
     }
@@ -325,7 +374,18 @@ static void signal_handler(int sig) {
     NSLog(@"🚀 Compositor running!");
     
     // Launch launcher client app only if multiple clients are allowed
-    if ([[WawonaPreferencesManager sharedManager] multipleClientsEnabled]) {
+    BOOL multipleClientsEnabled = NO;
+    @try {
+        WawonaPreferencesManager *prefsManager = [WawonaPreferencesManager sharedManager];
+        if (prefsManager) {
+            multipleClientsEnabled = [prefsManager multipleClientsEnabled];
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"⚠️ Failed to read multipleClientsEnabled preference, defaulting to NO: %@", exception);
+        multipleClientsEnabled = NO;
+    }
+    
+    if (multipleClientsEnabled) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             int sv[2];
             if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
@@ -346,9 +406,22 @@ static void signal_handler(int sig) {
         NSLog(@"ℹ️ Single-client mode: in-process launcher client disabled");
     }
     
-    [self setupSettingsButtonIfNeeded];
-    [self.window makeKeyAndVisible];
+    @try {
+        [self setupSettingsButtonIfNeeded];
+    } @catch (NSException *exception) {
+        NSLog(@"⚠️ Exception setting up settings button: %@", exception);
+        // Continue anyway - settings button is optional
+    }
     
+    @try {
+        [self.window makeKeyAndVisible];
+    } @catch (NSException *exception) {
+        NSLog(@"❌ Exception making window key and visible: %@", exception);
+        NSLog(@"   Call stack: %@", [exception callStackSymbols]);
+        // This is critical, but try to continue
+    }
+    
+    NSLog(@"✅ iOS app initialization complete");
     return YES;
 }
 
@@ -420,6 +493,26 @@ static void signal_handler(int sig) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        // Test main function execution
+        NSArray *testPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if ([testPaths count] > 0) {
+            NSString *testDocDir = [testPaths firstObject];
+            
+            // Ensure Documents directory exists (it might not on fresh install)
+            [[NSFileManager defaultManager] createDirectoryAtPath:testDocDir withIntermediateDirectories:YES attributes:nil error:nil];
+            
+            NSString *testFile = [testDocDir stringByAppendingPathComponent:@"MAIN_TEST.txt"];
+            [[@"Main function executed" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:testFile atomically:YES];
+        }
+
+        // DEBUG: Write a marker file in main
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if ([paths count] > 0) {
+            NSString *documentsDirectory = [paths firstObject];
+            NSString *markerPath = [documentsDirectory stringByAppendingPathComponent:@"MAIN_MARKER.txt"];
+            [@"Main reached!" writeToFile:markerPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+        
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([WawonaAppDelegate class]));
     }
 }

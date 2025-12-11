@@ -2,6 +2,7 @@
 
 let
   fetchSource = common.fetchSource;
+  xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
   waylandSource = {
     source = "gitlab";
     owner = "wayland";
@@ -10,20 +11,17 @@ let
     sha256 = "sha256-oK0Z8xO2ILuySGZS0m37ZF0MOyle2l8AXb0/6wai0/w=";
   };
   src = fetchSource waylandSource;
-  buildFlags = [ "-Dlibraries=false" "-Ddocumentation=false" "-Dtests=false" ];
+  buildFlags = [ "-Dlibraries=true" "-Ddocumentation=false" "-Dtests=false" ];
   patches = [];
   getDeps = depNames:
     map (depName:
-      if depName == "expat" then pkgs.expat
-      else if depName == "libffi" then pkgs.libffi
-      else if depName == "libxml2" then pkgs.libxml2
+      if depName == "expat" then buildModule.buildForMacOS "expat" {}
+      else if depName == "libffi" then buildModule.buildForMacOS "libffi" {}
+      else if depName == "libxml2" then buildModule.buildForMacOS "libxml2" {}
       else throw "Unknown dependency: ${depName}"
     ) depNames;
   depInputs = getDeps [ "expat" "libffi" "libxml2" ];
   # epoll-shim: Required for macOS Wayland builds (implements epoll on top of kqueue)
-  # Reference: MacPorts Wayland port depends on epoll-shim, libffi, libxml2
-  # See: docs/research-from-chatgpt-wayland-macos.md
-  # Use our epoll-shim build (which falls back to nixpkgs if available)
   epollShim = buildModule.buildForMacOS "epoll-shim" {};
 in
 pkgs.stdenv.mkDerivation {
@@ -33,68 +31,131 @@ pkgs.stdenv.mkDerivation {
     meson ninja pkg-config
     (python3.withPackages (ps: with ps; [ setuptools pip packaging mako pyyaml ]))
     bison flex
-    apple-sdk_26
   ];
   buildInputs = depInputs ++ [ epollShim ];
+  
   postPatch = ''
-    # macOS syscall compatibility: Remove signalfd/timerfd usage
-    # These syscalls don't exist on macOS (Darwin)
-    # Note: Only needed if building libraries (-Dlibraries=true)
-    if [ -f src/event-loop.c ]; then
-      echo "=== Applying macOS syscall compatibility patches ==="
-      # Replace signalfd with alternative signal handling
-      substituteInPlace src/event-loop.c \
-        --replace "#include <sys/signalfd.h>" "/* macOS: signalfd not available on Darwin */" \
-        --replace "signalfd(" "/* signalfd removed for macOS */ (void)0; /* signalfd(" \
-        --replace "SFD_CLOEXEC\|SFD_NONBLOCK" "0"
-      
-      # Replace timerfd with alternative timer handling
-      substituteInPlace src/event-loop.c \
-        --replace "#include <sys/timerfd.h>" "/* macOS: timerfd not available on Darwin */" \
-        --replace "timerfd_create(" "/* timerfd_create removed for macOS */ (void)0; /* timerfd_create(" \
-        --replace "timerfd_settime(" "/* timerfd_settime removed for macOS */ (void)0; /* timerfd_settime(" \
-        --replace "TFD_CLOEXEC\|TFD_NONBLOCK\|TFD_TIMER_ABSTIME" "0"
-      
-      # macOS epoll compatibility: Use epoll-shim
-      # epoll-shim implements epoll on top of kqueue for macOS/BSD
-      # Reference: MacPorts Wayland port depends on epoll-shim
-      # See: docs/research-from-chatgpt-wayland-macos.md
-      echo "Using epoll-shim for epoll compatibility on macOS"
-      # epoll-shim provides epoll.h - replace include to use epoll-shim's version
-      substituteInPlace src/event-loop.c \
-        --replace "#include <sys/epoll.h>" "#include <epoll-shim/epoll.h>" || true
-      
-      echo "Applied macOS syscall compatibility patches"
-    else
-      echo "Note: event-loop.c not found (libraries disabled), skipping syscall patches"
+    # Fix missing socket defines and types on macOS/Darwin
+    # - _DARWIN_C_SOURCE: Enables u_int, etc.
+    # - sys/types.h: Must be included before sys/ucred.h for u_int
+    # - SOCK_CLOEXEC, MSG_CMSG_CLOEXEC: Not supported on macOS, define to 0
+    # - MSG_NOSIGNAL, MSG_DONTWAIT: Not supported on macOS, define to 0/appropriate value
+    # - CMSG_LEN: Macro missing on some macOS SDK versions / standards modes
+    
+    COMMON_DEFINES=$(cat <<EOF
+#define _DARWIN_C_SOURCE
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0x80
+#endif
+#ifndef AF_LOCAL
+#define AF_LOCAL AF_UNIX
+#endif
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0
+#endif
+#ifndef MSG_CMSG_CLOEXEC
+#define MSG_CMSG_CLOEXEC 0
+#endif
+#ifndef CMSG_LEN
+#define CMSG_LEN(len) (CMSG_DATA((struct cmsghdr *)0) - (unsigned char *)0 + (len))
+#endif
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef mkostemp
+#define mkostemp(template, flags) mkstemp(template)
+#endif
+#ifndef _STRUCT_ITIMERSPEC
+struct itimerspec {
+    struct timespec it_interval;
+    struct timespec it_value;
+};
+#endif
+EOF
+)
+    
+    for f in src/connection.c src/wayland-os.c src/wayland-client.c src/wayland-server.c src/wayland-shm.c cursor/os-compatibility.c src/event-loop.c; do
+      if [ -f "$f" ]; then
+        # Insert defines at the top
+        echo "$COMMON_DEFINES" | cat - "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+      fi
+    done
+    
+    if [ -f src/wayland-os.c ]; then
+      # Replace the #error directive with macOS implementation for get_credentials
+      # This assumes wl_os_socket_peercred(int sockfd, ...) signature
+      # Wraps in function definition because the #error is likely at global scope (platform-specific function def)
+      substituteInPlace src/wayland-os.c \
+        --replace '#error "Don'\'''t know how to read ucred on this platform"' \
+'/* macOS implementation injected by Nix */
+int wl_os_socket_peercred(int sockfd, uid_t *uid, gid_t *gid, pid_t *pid)
+{
+    socklen_t len = sizeof(struct xucred);
+    struct xucred cr;
+    if (getsockopt(sockfd, SOL_LOCAL, LOCAL_PEERCRED, &cr, &len) < 0) return -1;
+    *uid = cr.cr_uid;
+    *gid = cr.cr_gid;
+    *pid = 0;
+    #ifdef LOCAL_PEERPID
+    pid_t p;
+    len = sizeof(p);
+    if (getsockopt(sockfd, SOL_LOCAL, LOCAL_PEERPID, &p, &len) == 0) *pid = p;
+    #endif
+    return 0;
+}'
     fi
   '';
+  
+  preConfigure = ''
+    if [ -z "''${XCODE_APP:-}" ]; then
+      XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+      if [ -n "$XCODE_APP" ]; then
+        export XCODE_APP
+        export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+        export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+        export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+      fi
+    fi
+    
+    # Add epoll-shim include path so sys/epoll.h, sys/signalfd.h, etc. are found.
+    # epoll-shim puts headers in include/libepoll-shim/sys/*.h, so we add include/libepoll-shim
+    # to the search path so that <sys/epoll.h> resolves correctly.
+    export CFLAGS="-isysroot $SDKROOT -mmacosx-version-min=26.0 -fPIC $CFLAGS -I${epollShim}/include/libepoll-shim"
+    
+    # Link against epoll-shim
+    export LDFLAGS="-isysroot $SDKROOT -mmacosx-version-min=26.0 $LDFLAGS -lepoll-shim"
+  '';
+  
   configurePhase = ''
     runHook preConfigure
-    # Use macOS SDK 26+
-    MACOS_SDK="${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-    export SDKROOT="$MACOS_SDK"
-    export MACOSX_DEPLOYMENT_TARGET="26.0"
-    # Add epoll-shim include paths for macOS
-    # epoll-shim is required for Wayland on macOS (implements epoll on top of kqueue)
-    export CFLAGS="-isysroot $MACOS_SDK -mmacosx-version-min=26.0 -I${epollShim}/include ''${NIX_CFLAGS_COMPILE:-}"
-    export LDFLAGS="-isysroot $MACOS_SDK -mmacosx-version-min=26.0 -L${epollShim}/lib -lepoll-shim ''${NIX_LDFLAGS:-}"
-    export PKG_CONFIG_PATH="${epollShim}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
-    echo "Configured epoll-shim paths: CFLAGS includes ${epollShim}/include"
+    
+    # Use standard Meson configure
     meson setup build \
       --prefix=$out \
-      --libdir=$out/lib \
-      ${lib.concatMapStringsSep " \\\n  " (flag: flag) buildFlags}
+      --buildtype=release \
+      ${lib.concatMapStringsSep " " (flag: flag) buildFlags} \
+      -Dc_args="$CFLAGS" \
+      -Dc_link_args="$LDFLAGS"
+      
     runHook postConfigure
   '';
+  
   buildPhase = ''
     runHook preBuild
-    meson compile -C build
+    ninja -C build
     runHook postBuild
   '';
+  
   installPhase = ''
     runHook preInstall
-    meson install -C build
+    ninja -C build install
     runHook postInstall
   '';
 }

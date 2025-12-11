@@ -1,0 +1,69 @@
+{ lib, pkgs, buildPackages, common, buildModule }:
+
+let
+  fetchSource = common.fetchSource;
+  androidToolchain = import ../../common/android-toolchain.nix { inherit lib pkgs; };
+  # Use pixman from nixpkgs source
+  pixmanSource = pkgs.pixman.src;
+  src = pixmanSource;
+  buildFlags = [];
+  patches = [];
+in
+pkgs.stdenv.mkDerivation {
+  name = "pixman-android";
+  inherit src patches;
+  nativeBuildInputs = with buildPackages; [
+    meson ninja pkg-config
+    (python3.withPackages (ps: with ps; [ setuptools pip packaging mako pyyaml ]))
+  ];
+  buildInputs = [];
+  preConfigure = ''
+    export CC="${androidToolchain.androidCC}"
+    export CXX="${androidToolchain.androidCXX}"
+    export AR="${androidToolchain.androidAR}"
+    export STRIP="${androidToolchain.androidSTRIP}"
+    export RANLIB="${androidToolchain.androidRANLIB}"
+    
+    # Create Android cross-file for Meson
+    cat > android-cross-file.txt <<EOF
+[binaries]
+c = '${androidToolchain.androidCC}'
+cpp = '${androidToolchain.androidCXX}'
+ar = '${androidToolchain.androidAR}'
+strip = '${androidToolchain.androidSTRIP}'
+pkgconfig = '${buildPackages.pkg-config}/bin/pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+c_args = ['--target=${androidToolchain.androidTarget}', '-fPIC']
+cpp_args = ['--target=${androidToolchain.androidTarget}', '-fPIC']
+c_link_args = ['--target=${androidToolchain.androidTarget}']
+cpp_link_args = ['--target=${androidToolchain.androidTarget}']
+EOF
+  '';
+  configurePhase = ''
+    runHook preConfigure
+    meson setup build \
+      --prefix=$out \
+      --libdir=$out/lib \
+      --cross-file=android-cross-file.txt \
+      --buildtype=release \
+      ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    runHook postConfigure
+  '';
+  buildPhase = ''
+    runHook preBuild
+    meson compile -C build
+    runHook postBuild
+  '';
+  installPhase = ''
+    runHook preInstall
+    meson install -C build
+    runHook postInstall
+  '';
+}

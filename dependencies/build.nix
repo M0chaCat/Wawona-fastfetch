@@ -14,6 +14,8 @@ let
         (import ./deps/libxml2/android.nix) { inherit lib pkgs buildPackages common; buildModule = androidModuleSelf; }
       else if name == "waypipe" then
         (import ./deps/waypipe/android.nix) { inherit lib pkgs buildPackages common; buildModule = androidModuleSelf; }
+      else if name == "pixman" then
+        (import ./deps/pixman/android.nix) { inherit lib pkgs buildPackages common; buildModule = androidModuleSelf; }
       else
         (import ./platforms/android.nix { inherit lib pkgs buildPackages common; buildModule = androidModuleSelf; }).buildForAndroid name entry;
   };
@@ -34,6 +36,8 @@ let
         (import ./deps/kosmickrisp/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
       else if name == "epoll-shim" then
         (import ./deps/epoll-shim/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
+      else if name == "pixman" then
+        (import ./deps/pixman/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
       else
         (import ./platforms/ios.nix { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }).buildForIOS name entry;
   };
@@ -54,6 +58,10 @@ let
         (import ./deps/waypipe/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
       else if name == "kosmickrisp" then
         (import ./deps/kosmickrisp/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
+      else if name == "spirv-tools" then
+        (import ./deps/spirv-tools/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
+      else if name == "spirv-llvm-translator" then
+        (import ./deps/spirv-llvm-translator/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
       else
         (import ./platforms/macos.nix { inherit lib pkgs common; buildModule = macosModuleSelf; }).buildForMacOS name entry;
   };
@@ -80,6 +88,7 @@ let
         "spirv-llvm-translator" = iosModule.buildForIOS "spirv-llvm-translator" {};
         "spirv-tools" = iosModule.buildForIOS "spirv-tools" {};
         libclc = iosModule.buildForIOS "libclc" {};
+        pixman = iosModule.buildForIOS "pixman" {};
         test-toolchain = pkgs.callPackage ./utils/test-ios-toolchain.nix {};
         test-toolchain-cross = pkgs.callPackage ./utils/test-ios-toolchain-cross.nix {};
       } else if platform == "macos" then {
@@ -92,6 +101,9 @@ let
         "epoll-shim" = macosModule.buildForMacOS "epoll-shim" {};
         zstd = macosModule.buildForMacOS "zstd" {};
         lz4 = macosModule.buildForMacOS "lz4" {};
+        ffmpeg = macosModule.buildForMacOS "ffmpeg" {};
+        "spirv-tools" = macosModule.buildForMacOS "spirv-tools" {};
+        "spirv-llvm-translator" = macosModule.buildForMacOS "spirv-llvm-translator" {};
       } else if platform == "android" then {
         libwayland = androidModule.buildForAndroid "libwayland" {};
         expat = androidModule.buildForAndroid "expat" {};
@@ -99,6 +111,7 @@ let
         libxml2 = androidModule.buildForAndroid "libxml2" {};
         waypipe = androidModule.buildForAndroid "waypipe" {};
         swiftshader = androidModule.buildForAndroid "swiftshader" {};
+        pixman = androidModule.buildForAndroid "pixman" {};
         zstd = androidModule.buildForAndroid "zstd" {};
         lz4 = androidModule.buildForAndroid "lz4" {};
         ffmpeg = androidModule.buildForAndroid "ffmpeg" {};

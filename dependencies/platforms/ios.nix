@@ -54,7 +54,8 @@ in
                   export XCODE_APP
                   export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
                   export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+                  # Use iPhoneSimulator SDK for simulator builds
+                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
                 fi
               fi
               if [ -d expat ]; then
@@ -69,13 +70,21 @@ in
                 IOS_CC="${buildPackages.clang}/bin/clang"
                 IOS_CXX="${buildPackages.clang}/bin/clang++"
               fi
+              # Determine architecture for simulator
+              SIMULATOR_ARCH="arm64"
+              if [ "$(uname -m)" = "x86_64" ]; then
+                SIMULATOR_ARCH="x86_64"
+              fi
               cat > ios-toolchain.cmake <<EOF
 set(CMAKE_SYSTEM_NAME iOS)
-set(CMAKE_OSX_ARCHITECTURES arm64)
+set(CMAKE_OSX_ARCHITECTURES $SIMULATOR_ARCH)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
 set(CMAKE_C_COMPILER "$IOS_CC")
 set(CMAKE_CXX_COMPILER "$IOS_CXX")
 set(CMAKE_SYSROOT "$SDKROOT")
+set(CMAKE_OSX_SYSROOT "$SDKROOT")
+set(CMAKE_C_FLAGS "-mios-simulator-version-min=15.0")
+set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=15.0")
 EOF
             '';
             cmakeFlags = [
@@ -99,7 +108,8 @@ EOF
                   export XCODE_APP
                   export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
                   export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+                  # Use iPhoneSimulator SDK for simulator builds
+                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
                 fi
               fi
               export NIX_CFLAGS_COMPILE=""
@@ -110,6 +120,11 @@ EOF
               else
                 IOS_CC="${buildPackages.clang}/bin/clang"
                 IOS_CXX="${buildPackages.clang}/bin/clang++"
+              fi
+              # Determine architecture for simulator
+              SIMULATOR_ARCH="arm64"
+              if [ "$(uname -m)" = "x86_64" ]; then
+                SIMULATOR_ARCH="x86_64"
               fi
               cat > ios-cross-file.txt <<EOF
 [binaries]
@@ -126,10 +141,10 @@ cpu = 'aarch64'
 endian = 'little'
 
 [built-in options]
-c_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=15.0', '-fPIC']
-cpp_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=15.0', '-fPIC']
-c_link_args = ['-arch', 'arm64', '-isysroot', '$SDKROOT', '-miphoneos-version-min=15.0']
-cpp_link_args = ['-arch', 'arm64', '-isysroot', '$SDKKROOT', '-miphoneos-version-min=15.0']
+c_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC']
+cpp_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC']
+c_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0']
+cpp_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0']
 EOF
             '';
             configurePhase = ''
@@ -177,7 +192,8 @@ EOF
                   export XCODE_APP
                   export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
                   export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+                  # Use iPhoneSimulator SDK for simulator builds
+                  export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
                 fi
               fi
               if [ ! -f ./configure ]; then
@@ -192,11 +208,16 @@ EOF
                 IOS_CC="${buildPackages.clang}/bin/clang"
                 IOS_CXX="${buildPackages.clang}/bin/clang++"
               fi
+              # Determine architecture for simulator
+              SIMULATOR_ARCH="arm64"
+              if [ "$(uname -m)" = "x86_64" ]; then
+                SIMULATOR_ARCH="x86_64"
+              fi
               export CC="$IOS_CC"
               export CXX="$IOS_CXX"
-              export CFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0 -fPIC"
-              export CXXFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0 -fPIC"
-              export LDFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0"
+              export CFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
+              export CXXFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
+              export LDFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0"
             '';
             configurePhase = ''
               runHook preConfigure

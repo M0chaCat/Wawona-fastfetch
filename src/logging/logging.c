@@ -5,6 +5,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 FILE *compositor_log_file = NULL;
 FILE *client_log_file = NULL;
 
@@ -58,6 +62,19 @@ void log_printf(const char *prefix, const char *format, ...)
     vprintf(format, args);
     va_end(args);
     printf("\n");
+
+#ifdef __ANDROID__
+    // Print to Android logcat
+    va_start(args, format);
+    // Determine priority based on prefix content (heuristic)
+    int priority = ANDROID_LOG_INFO;
+    if (strstr(prefix, "ERROR") || strstr(prefix, "❌")) priority = ANDROID_LOG_ERROR;
+    else if (strstr(prefix, "WARN") || strstr(prefix, "⚠️")) priority = ANDROID_LOG_WARN;
+    else if (strstr(prefix, "DEBUG")) priority = ANDROID_LOG_DEBUG;
+    
+    __android_log_vprint(priority, "Wawona", format, args);
+    va_end(args);
+#endif
     
     // Print to log file if open
     if (compositor_log_file) {

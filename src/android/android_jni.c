@@ -25,17 +25,38 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "WawonaJNI", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "WawonaJNI", __VA_ARGS__)
 
+// JNI Function Prototypes
+JNIEXPORT void JNICALL Java_com_aspauldingcode_wawona_MainActivity_nativeInit(JNIEnv* env, jobject thiz);
+JNIEXPORT void JNICALL Java_com_aspauldingcode_wawona_MainActivity_nativeSetSurface(JNIEnv* env, jobject thiz, jobject surface);
+JNIEXPORT void JNICALL Java_com_aspauldingcode_wawona_MainActivity_nativeDestroySurface(JNIEnv* env, jobject thiz);
+JNIEXPORT void JNICALL Java_com_aspauldingcode_wawona_MainActivity_nativeApplySettings(JNIEnv* env, jobject thiz,
+                                                                jboolean forceServerSideDecorations,
+                                                                jboolean autoRetinaScaling,
+                                                                jint renderingBackend,
+                                                                jboolean respectSafeArea,
+                                                                jboolean renderMacOSPointer,
+                                                                jboolean swapCmdAsCtrl,
+                                                                jboolean universalClipboard,
+                                                                jboolean colorSyncSupport,
+                                                                jboolean nestedCompositorsSupport,
+                                                                jboolean useMetal4ForNested,
+                                                                jboolean multipleClients,
+                                                                jboolean waypipeRSSupport,
+                                                                jboolean enableTCPListener,
+                                                                jint tcpPort);
+
 // ============================================================================
 // Global State
 // ============================================================================
 
 // Vulkan resources
-static VkInstance g_instance = VK_NULL_HANDLE;
-static VkSurfaceKHR g_surface = VK_NULL_HANDLE;
-static VkDevice g_device = VK_NULL_HANDLE;
-static VkQueue g_queue = VK_NULL_HANDLE;
-static VkSwapchainKHR g_swapchain = VK_NULL_HANDLE;
-static uint32_t g_queue_family = 0;
+VkInstance g_instance = VK_NULL_HANDLE;
+VkPhysicalDevice g_physicalDevice = VK_NULL_HANDLE;
+VkSurfaceKHR g_surface = VK_NULL_HANDLE;
+VkDevice g_device = VK_NULL_HANDLE;
+VkQueue g_queue = VK_NULL_HANDLE;
+VkSwapchainKHR g_swapchain = VK_NULL_HANDLE;
+uint32_t g_queue_family = 0;
 
 // Threading
 static int g_running = 0;
@@ -86,7 +107,7 @@ static struct {
     .nestedCompositorsSupport = 1,
     .useMetal4ForNested = 0,
     .multipleClients = 1,
-    .waypipeRSSupport = 0,
+    .waypipeRSSupport = 1,
     .enableTCPListener = 0,
     .tcpPort = 0
 };
@@ -99,7 +120,6 @@ static struct {
  * Update safe area insets from Android WindowInsets API
  * Handles display cutouts (notches, punch holes) and system gesture insets
  */
-static void update_safe_area(JNIEnv* env, jobject activity) {
 static void update_safe_area(JNIEnv* env, jobject activity) {
     if (!activity || !g_respectSafeArea) {
         g_safeAreaLeft = 0;
@@ -201,17 +221,24 @@ static void update_safe_area(JNIEnv* env, jobject activity) {
  */
 static VkResult create_instance(void) {
     // Set ICD before creating instance based on rendering backend setting
-    switch (g_settings.renderingBackend) {
-        case 1: // Metal (Vulkan)
-            setenv("VK_ICD_FILENAMES", "/data/local/tmp/freedreno_icd.json", 1);
-            break;
-        case 2: // Cocoa (Surface) - use software rendering
-            setenv("VK_ICD_FILENAMES", "/system/etc/vulkan/icd.d/swiftshader_icd.json", 1);
-            break;
-        case 0: // Automatic - default to Vulkan with fallback
-        default:
-            setenv("VK_ICD_FILENAMES", "/data/local/tmp/freedreno_icd.json", 1);
-            break;
+    // If Waypipe support is enabled, force SwiftShader for compatibility
+    if (g_settings.waypipeRSSupport) {
+        LOGI("Waypipe support enabled: Forcing SwiftShader ICD");
+        setenv("VK_ICD_FILENAMES", "/system/etc/vulkan/icd.d/swiftshader_icd.json", 1);
+    } else {
+        switch (g_settings.renderingBackend) {
+            case 1: // Metal (Vulkan)
+                setenv("VK_ICD_FILENAMES", "/data/local/tmp/freedreno_icd.json", 1);
+                break;
+            case 2: // Cocoa (Surface) - use software rendering (SwiftShader)
+                LOGI("Rendering backend 'Cocoa' selected: Using SwiftShader ICD");
+                setenv("VK_ICD_FILENAMES", "/system/etc/vulkan/icd.d/swiftshader_icd.json", 1);
+                break;
+            case 0: // Automatic - default to Vulkan with fallback
+            default:
+                setenv("VK_ICD_FILENAMES", "/data/local/tmp/freedreno_icd.json", 1);
+                break;
+        }
     }
     
     const char* exts[] = {
@@ -259,6 +286,19 @@ static VkPhysicalDevice pick_device(void) {
         return VK_NULL_HANDLE;
     }
     LOGI("Found %u Vulkan devices", count);
+    
+    // Print device names
+    for (uint32_t i = 0; i < count; i++) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(devs[i], &props);
+        LOGI("Device %u: %s (Type: %d, API: %u.%u.%u)", 
+             i, props.deviceName, props.deviceType,
+             VK_VERSION_MAJOR(props.apiVersion),
+             VK_VERSION_MINOR(props.apiVersion),
+             VK_VERSION_PATCH(props.apiVersion));
+    }
+    
+    g_physicalDevice = devs[0];
     return devs[0];
 }
 
@@ -287,6 +327,18 @@ static int pick_queue_family(VkPhysicalDevice pd) {
 }
 
 /**
+ * Check if an extension is available in the list
+ */
+static int is_extension_available(const char* name, VkExtensionProperties* props, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (strcmp(name, props[i].extensionName) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
  * Create Vulkan logical device with swapchain extension
  */
 static int create_device(VkPhysicalDevice pd) {
@@ -300,12 +352,44 @@ static int create_device(VkPhysicalDevice pd) {
     qci.queueCount = 1; 
     qci.pQueuePriorities = &prio;
     
-    const char* dev_exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    // Check available extensions
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &extCount, NULL);
+    VkExtensionProperties* availableExts = malloc(sizeof(VkExtensionProperties) * extCount);
+    if (availableExts) {
+        vkEnumerateDeviceExtensionProperties(pd, NULL, &extCount, availableExts);
+    }
+    
+    // List of desired extensions
+    const char* desired_exts[] = { 
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        "VK_EXT_external_memory_dma_buf", // Explicit string if header missing
+        "VK_ANDROID_external_memory_android_hardware_buffer"
+    };
+    uint32_t desiredCount = sizeof(desired_exts)/sizeof(desired_exts[0]);
+    
+    // Filter enabled extensions
+    const char* enabled_exts[16];
+    uint32_t enabledCount = 0;
+    
+    for (uint32_t i = 0; i < desiredCount; i++) {
+        if (availableExts && is_extension_available(desired_exts[i], availableExts, extCount)) {
+            enabled_exts[enabledCount++] = desired_exts[i];
+            LOGI("Enabling extension: %s", desired_exts[i]);
+        } else {
+            LOGI("Extension not available (skipping): %s", desired_exts[i]);
+        }
+    }
+    
+    if (availableExts) free(availableExts);
+    
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount = 1; 
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = (uint32_t)(sizeof(dev_exts)/sizeof(dev_exts[0]));
-    dci.ppEnabledExtensionNames = dev_exts;
+    dci.enabledExtensionCount = enabledCount;
+    dci.ppEnabledExtensionNames = enabled_exts;
     
     if (vkCreateDevice(pd, &dci, NULL, &g_device) != VK_SUCCESS) {
         LOGE("vkCreateDevice failed");
@@ -425,9 +509,9 @@ static void* render_thread(void* arg) {
         return NULL;
     }
     
-    // Render a few frames
+    // Render loop
     int frame_count = 0;
-    while (g_running && frame_count < 10) {
+    while (g_running) {
         uint32_t imageIndex;
         res = vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &imageIndex);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {

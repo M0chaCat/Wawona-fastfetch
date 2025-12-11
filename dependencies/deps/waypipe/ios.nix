@@ -1,8 +1,9 @@
 { lib, pkgs, buildPackages, common, buildModule }:
 
 let
+  # Use aarch64-apple-ios-sim target for iOS Simulator (Tier 2 supported target)
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-    targets = [ "aarch64-apple-ios" ];
+    targets = [ "aarch64-apple-ios-sim" ];
   };
   myRustPlatform = pkgs.makeRustPlatform {
     cargo = rustToolchain;
@@ -202,23 +203,19 @@ myRustPlatform.buildRustPackage {
   buildFeatures = [ "video" ];
   
   buildPhase = ''
-    cargo build --release --target aarch64-apple-ios
+    cargo build --release --target aarch64-apple-ios-sim
   '';
   
   installPhase = ''
     mkdir -p $out/bin
-    cp target/aarch64-apple-ios/release/waypipe $out/bin/
+    cp target/aarch64-apple-ios-sim/release/waypipe $out/bin/
   '';
   
-  CARGO_BUILD_TARGET = "aarch64-apple-ios";
+  CARGO_BUILD_TARGET = "aarch64-apple-ios-sim";
   
   doCheck = false;
   
   preConfigure = ''
-    # Unset macOS deployment target to avoid linker conflicts
-    unset MACOSX_DEPLOYMENT_TARGET
-    export IPHONEOS_DEPLOYMENT_TARGET="26.0"
-
     # Find Xcode path dynamically
     if [ -d "/Applications/Xcode.app" ]; then
       export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -228,7 +225,7 @@ myRustPlatform.buildRustPackage {
       export DEVELOPER_DIR=$(/usr/bin/xcode-select -p)
     fi
     
-    export IOS_SDK="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+    export IOS_SDK="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
     export SDKROOT="$IOS_SDK"
     
     # Check if SDK exists
@@ -238,15 +235,55 @@ myRustPlatform.buildRustPackage {
     fi
     echo "Using iOS SDK: $IOS_SDK"
 
+    # Set iOS deployment target for simulator
+    export IPHONEOS_DEPLOYMENT_TARGET="15.0"
+    # Prevent Nix cc-wrapper from adding macOS flags
+    export NIX_CFLAGS_COMPILE=""
+    export NIX_LDFLAGS=""
+    # Override CC/CXX to use Xcode clang directly to avoid cc-wrapper conflicts
+    export CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+    export CXX="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
+    # Configure Rust to use Xcode linker directly
+    export RUSTC_LINKER="$CC"
+
     export LIBRARY_PATH="${kosmickrisp}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
-    export RUSTFLAGS="-C link-arg=-target -C link-arg=arm64-apple-ios26.0 -C link-arg=-isysroot -C link-arg=$IOS_SDK -L native=${ffmpeg}/lib $RUSTFLAGS"
+    
+    # Use Rust's built-in aarch64-apple-ios-sim target for iOS Simulator
+    # This is the correct target for iOS Simulator on ARM64 (Apple Silicon Macs)
+    export CARGO_BUILD_TARGET="aarch64-apple-ios-sim"
+    
+    # Configure Rust flags for iOS Simulator
+    export RUSTFLAGS="-C linker=$CC -C link-arg=-isysroot -C link-arg=$IOS_SDK -C link-arg=-mios-simulator-version-min=15.0 -L native=${ffmpeg}/lib $RUSTFLAGS"
+    
+    # Configure C compiler for simulator target
+    export CC_aarch64_apple_ios_sim="$CC"
+    export CXX_aarch64_apple_ios_sim="$CXX"
+    export CFLAGS_aarch64_apple_ios_sim="-target arm64-apple-ios-simulator15.0 -isysroot $IOS_SDK -mios-simulator-version-min=15.0"
+    export AR_aarch64_apple_ios_sim="ar"
+    
     export PKG_CONFIG_PATH="${libwayland}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
     export PKG_CONFIG_ALLOW_CROSS=1
     
     export C_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$C_INCLUDE_PATH"
     export CPP_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$CPP_INCLUDE_PATH"
     
-    export BINDGEN_EXTRA_CLANG_ARGS="-I${zstd}/include -I${lz4}/include -I${ffmpeg}/include -I${pkgs.vulkan-headers}/include -isysroot $IOS_SDK -miphoneos-version-min=26.0"
+    export BINDGEN_EXTRA_CLANG_ARGS="-I${zstd}/include -I${lz4}/include -I${ffmpeg}/include -I${pkgs.vulkan-headers}/include -isysroot $IOS_SDK -mios-simulator-version-min=15.0 -target arm64-apple-ios-simulator15.0"
+    
+    # Create .cargo/config.toml to configure linker for simulator target
+    mkdir -p .cargo
+    cat > .cargo/config.toml <<CARGO_CONFIG
+[target.aarch64-apple-ios-sim]
+linker = "$CC"
+rustflags = [
+  "-C", "link-arg=-isysroot",
+  "-C", "link-arg=$IOS_SDK",
+  "-C", "link-arg=-mios-simulator-version-min=15.0",
+]
+
+[env]
+CC = "$CC"
+CXX = "$CXX"
+CARGO_CONFIG
   '';
   
   postPatch = ''

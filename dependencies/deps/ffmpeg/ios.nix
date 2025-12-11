@@ -41,7 +41,7 @@ pkgs.stdenv.mkDerivation {
     
     echo "Using Developer Dir: $DEVELOPER_DIR"
     
-    export IOS_SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+    export IOS_SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
     export MACOS_SDK_PATH="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
     
     if [ ! -d "$IOS_SDK_PATH" ]; then
@@ -64,9 +64,9 @@ pkgs.stdenv.mkDerivation {
     export HOST_CC="/usr/bin/clang"
     
     # Flags for TARGET (iOS)
-    export CFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -miphoneos-version-min=26.0 -fembed-bitcode"
+    export CFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -mios-simulator-version-min=26.0 -fembed-bitcode"
     export CXXFLAGS="$CFLAGS"
-    export LDFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -miphoneos-version-min=26.0"
+    export LDFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -mios-simulator-version-min=26.0"
   '';
   
   configurePhase = ''

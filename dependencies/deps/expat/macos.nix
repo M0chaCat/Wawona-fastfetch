@@ -19,6 +19,9 @@ pkgs.stdenv.mkDerivation {
   nativeBuildInputs = with pkgs; [ cmake pkg-config apple-sdk_26 ];
   buildInputs = [];
   preConfigure = ''
+    if [ -d expat ]; then
+      cd expat
+    fi
     MACOS_SDK="${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
     export SDKROOT="$MACOS_SDK"
     export MACOSX_DEPLOYMENT_TARGET="26.0"

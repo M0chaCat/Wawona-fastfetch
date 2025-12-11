@@ -57,7 +57,7 @@ pkgs.stdenv.mkDerivation {
         export XCODE_APP
         export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
         export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
       fi
     fi
     export NIX_CFLAGS_COMPILE=""
@@ -69,10 +69,19 @@ pkgs.stdenv.mkDerivation {
       IOS_CC="${buildPackages.clang}/bin/clang"
       IOS_CXX="${buildPackages.clang}/bin/clang++"
     fi
+    # Determine architecture for simulator
+    SIMULATOR_ARCH="arm64"
+    if [ "$(uname -m)" = "x86_64" ]; then
+      SIMULATOR_ARCH="x86_64"
+    fi
+    
     cat > ios-toolchain.cmake <<EOF
 set(CMAKE_SYSTEM_NAME iOS)
-set(CMAKE_OSX_ARCHITECTURES arm64)
-set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
+set(CMAKE_OSX_ARCHITECTURES $SIMULATOR_ARCH)
+set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+set(CMAKE_OSX_SYSROOT "$SDKROOT")
+set(CMAKE_C_FLAGS "-mios-simulator-version-min=15.0")
+set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=15.0")
 set(CMAKE_C_COMPILER "$IOS_CC")
 set(CMAKE_CXX_COMPILER "$IOS_CXX")
 set(CMAKE_SYSROOT "$SDKROOT")
@@ -105,7 +114,7 @@ EOF
     # Add iOS-specific flags that depend on SDKROOT
     EXTRA_CMAKE_FLAGS=""
     if [ -n "''${SDKROOT:-}" ]; then
-      EXTRA_CMAKE_FLAGS="-DCMAKE_OSX_SYSROOT=$SDKROOT -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0"
+      EXTRA_CMAKE_FLAGS="-DCMAKE_OSX_SYSROOT=$SDKROOT -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
     fi
     cmake -B build -S . \
       -DCMAKE_TOOLCHAIN_FILE=ios-toolchain.cmake \
@@ -196,7 +205,7 @@ EOF
         if [ -n "$XCODE_APP" ]; then
           export XCODE_APP
           export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
-          export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+          export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
           IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
         fi
       fi
@@ -230,9 +239,15 @@ TESTCODE
         
         echo "Using flags: $PKG_CFLAGS $PKG_LIBS"
         
+        # Determine architecture for simulator
+        SIMULATOR_ARCH="arm64"
+        if [ "$(uname -m)" = "x86_64" ]; then
+          SIMULATOR_ARCH="x86_64"
+        fi
+        
         "$IOS_CC" -isysroot "$SDKROOT" \
-           -arch arm64 \
-           -mios-version-min=26.0 \
+           -arch $SIMULATOR_ARCH \
+           -mios-simulator-version-min=15.0 \
            $PKG_CFLAGS \
            $PKG_LIBS \
            test_link.c \

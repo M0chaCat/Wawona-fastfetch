@@ -26,7 +26,7 @@ pkgs.stdenv.mkDerivation {
         export XCODE_APP
         export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
         export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
       fi
     fi
     
@@ -36,9 +36,9 @@ pkgs.stdenv.mkDerivation {
     # Unset macOS deployment target to prevent clang wrapper from adding -mmacos-version-min
     unset MACOSX_DEPLOYMENT_TARGET
     
-    # Use -target which is more robust than -miphoneos-version-min
+    # Use -target which is more robust than -mios-simulator-version-min
     # Add -Wno-error to override -Werror added by CMake configuration
-    TARGET_FLAGS="-target arm64-apple-ios15.0 -isysroot $SDKROOT -Wno-error"
+    TARGET_FLAGS="-target arm64-apple-ios-simulator15.0 -isysroot $SDKROOT -Wno-error"
     
     export NIX_CFLAGS_COMPILE="$TARGET_FLAGS"
     export NIX_CXXFLAGS_COMPILE="$TARGET_FLAGS"

@@ -51,8 +51,16 @@ __attribute__((unused)) static int tcp_accept_handler(int fd, uint32_t mask,
     if (flags >= 0) {
       fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
     }
-    BOOL allowMultiple =
-        [[WawonaPreferencesManager sharedManager] multipleClientsEnabled];
+    BOOL allowMultiple = NO;
+    @try {
+        WawonaPreferencesManager *prefsManager = [WawonaPreferencesManager sharedManager];
+        if (prefsManager) {
+            allowMultiple = [prefsManager multipleClientsEnabled];
+        }
+    } @catch (NSException *exception) {
+        log_printf("[COMPOSITOR] ", "⚠️ Failed to read multipleClientsEnabled preference: %s\n", [exception.description UTF8String]);
+        allowMultiple = NO;
+    }
     if (!allowMultiple && g_compositor_instance &&
         g_compositor_instance.connectedClientCount > 0) {
       log_printf("[COMPOSITOR] ",
@@ -496,8 +504,16 @@ static const struct wl_compositor_interface compositor_interface = {
 static void compositor_bind(struct wl_client *client, void *data,
                             uint32_t version, uint32_t id) {
   struct wl_compositor_impl *compositor = data;
-  BOOL allowMultiple =
-      [[WawonaPreferencesManager sharedManager] multipleClientsEnabled];
+  BOOL allowMultiple = NO;
+  @try {
+    WawonaPreferencesManager *prefsManager = [WawonaPreferencesManager sharedManager];
+    if (prefsManager) {
+      allowMultiple = [prefsManager multipleClientsEnabled];
+    }
+  } @catch (NSException *exception) {
+    NSLog(@"⚠️ Failed to read multipleClientsEnabled preference: %@", exception);
+    allowMultiple = NO;
+  }
   if (!allowMultiple && g_compositor_instance &&
       g_compositor_instance.connectedClientCount > 0) {
     NSLog(
@@ -1242,15 +1258,23 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     // Create custom view that accepts first responder and handles drawing
     CompositorView *compositorView;
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    // On iOS, we need to use a container view approach because
-    // rootViewController.view is automatically managed by UIKit to fill the
-    // window
-    UIViewController *rootVC = [[UIViewController alloc] init];
-    UIView *containerView = [[UIView alloc] initWithFrame:window.bounds];
-    containerView.backgroundColor =
-        [UIColor blackColor]; // Black background for unsafe areas
-    rootVC.view = containerView;
-    window.rootViewController = rootVC;
+    // On iOS, check if window already has a rootViewController (set in main.m)
+    // If it does, use that view; otherwise create a new one
+    UIView *containerView = nil;
+    if (window.rootViewController && window.rootViewController.view) {
+        // Use existing root view controller's view
+        containerView = window.rootViewController.view;
+        NSLog(@"✅ Using existing root view controller for compositor view");
+    } else {
+        // Create new root view controller (fallback)
+        UIViewController *rootVC = [[UIViewController alloc] init];
+        containerView = [[UIView alloc] initWithFrame:window.bounds];
+        containerView.backgroundColor =
+            [UIColor blackColor]; // Black background for unsafe areas
+        rootVC.view = containerView;
+        window.rootViewController = rootVC;
+        NSLog(@"✅ Created new root view controller for compositor view");
+    }
 
     // Create CompositorView as a subview with flexible sizing (full screen by
     // default) Layout will be handled in CompositorView's layoutSubviews to

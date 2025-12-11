@@ -1,0 +1,75 @@
+{ lib, pkgs, common, buildModule }:
+
+let
+  xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
+  src = pkgs.fetchFromGitHub {
+    owner = "KhronosGroup";
+    repo = "SPIRV-Tools";
+    rev = "v2024.4";
+    sha256 = "sha256-alJ4X7qbTzsRTqRFdpjdsj0wERVb17czui2muEaKNyI=";
+  };
+  spirvHeadersSource = pkgs.fetchFromGitHub {
+    owner = "KhronosGroup";
+    repo = "SPIRV-Headers";
+    rev = "3f17b2af6784bfa2c5aa5dbb8e0e74a607dd8b3b";
+    sha256 = "sha256-MCQ+i9ymjnxRZP/Agk7rOGdHcB4p67jT4J4athWUlcI=";
+  };
+  spirvHeaders = spirvHeadersSource;
+in
+pkgs.stdenv.mkDerivation {
+  name = "spirv-tools-macos";
+  inherit src;
+  
+  nativeBuildInputs = with pkgs; [ cmake pkg-config ninja python3 ];
+  
+  preConfigure = ''
+    if [ -z "''${XCODE_APP:-}" ]; then
+      XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+      if [ -n "$XCODE_APP" ]; then
+        export XCODE_APP
+        export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+        export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        
+        # Use Apple Clang to avoid Nix libc++ / SDK header conflicts
+        export CC="$XCODE_APP/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+        export CXX="$XCODE_APP/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
+      fi
+    fi
+    
+    # Fix SPIRV-Headers detection
+    mkdir -p external
+    cp -r --no-preserve=mode ${spirvHeaders} external/spirv-headers
+    
+    # Disable tests
+    sed -i 's|add_subdirectory(test)|# add_subdirectory(test)|g' CMakeLists.txt
+  '';
+  
+  configurePhase = ''
+    runHook preConfigure
+    
+    cmake . -B build -GNinja \
+      -DCMAKE_INSTALL_PREFIX=$out \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=ON \
+      -DSPIRV_WERROR=OFF \
+      -DCMAKE_OSX_SYSROOT="$SDKROOT" \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET="26.0" \
+      -DSPIRV_TOOLS_BUILD_STATIC=OFF \
+      -DCMAKE_C_COMPILER="$CC" \
+      -DCMAKE_CXX_COMPILER="$CXX"
+      
+    runHook postConfigure
+  '';
+  
+  buildPhase = ''
+    runHook preBuild
+    cmake --build build
+    runHook postBuild
+  '';
+  
+  installPhase = ''
+    runHook preInstall
+    cmake --install build
+    runHook postInstall
+  '';
+}

@@ -20,12 +20,21 @@ struct __IOSurface;
 typedef struct __IOSurface* IOSurfaceRef;
 #endif
 
+#ifdef __ANDROID__
+#include <vulkan/vulkan.h>
+#endif
+
 // DMA-BUF emulation for macOS using IOSurface
 // Allows efficient buffer sharing between processes via Metal textures
 
 struct metal_dmabuf_buffer {
+#ifdef __ANDROID__
+    VkImage image;
+    VkDeviceMemory memory;
+#else
     IOSurfaceRef iosurface;
     id texture;  // id<MTLTexture> in Objective-C
+#endif
     uint32_t width;
     uint32_t height;
     uint32_t format;
