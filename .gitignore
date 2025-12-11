@@ -78,3 +78,4 @@ result-*
 
 # Android Emulator artifacts
 .android_home/
+*.qcow2
