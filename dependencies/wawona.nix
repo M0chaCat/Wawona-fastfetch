@@ -1117,12 +1117,15 @@ if [ "$BOOTED" -eq 0 ]; then
   sleep 5
 fi
 
-# Open Simulator app if not already open
-if ! pgrep -x "Simulator" > /dev/null; then
-  echo "Opening Simulator app..."
-  open -a Simulator
-  sleep 5
-fi
+# Open Simulator app and bring it to the foreground
+# Use 'open -a' which brings the app forward even if already running
+echo "Opening Simulator app..."
+open -a Simulator
+sleep 2
+
+# Ensure Simulator is in the foreground (macOS focuses it)
+osascript -e 'tell application "Simulator" to activate' 2>/dev/null || true
+sleep 3
 
 # Copy app bundle to a writable location (simulator can't install from read-only Nix store)
 TEMP_APP_DIR=$(mktemp -d)

@@ -131,146 +131,19 @@
       in
         iosPkgs // macosPkgs // androidPkgs // directPkgs;
       
-      # Wrapper script to run Nix build and show dialog on exit
-      wawonaWrapper = pkgs.writeShellScriptBin "wawona-wrapper" ''
-        TARGET=$1
-        LOGFILE="build/$TARGET.log"
-        mkdir -p build
-        
-        # Map target names to Nix package names
-        case "$TARGET" in
-          ios-compositor)
-            NIX_PKG="wawona-ios"
-            ;;
-          macos-compositor)
-            NIX_PKG="wawona-macos"
-            ;;
-          android-compositor)
-            NIX_PKG="wawona-android"
-            ;;
-          *)
-            echo "Unknown target: $TARGET"
-            exit 1
-            ;;
-        esac
-        
-        # Run nix build and capture output (tee to log and stdout)
-        # We use a subshell to capture exit code of nix build, not tee
-        set +e
-        ( nix build --show-trace .#"$NIX_PKG" 2>&1; echo $? > build/"$TARGET".exitcode ) | tee "$LOGFILE"
-        EXIT_CODE=$(cat build/"$TARGET".exitcode)
-        rm build/"$TARGET".exitcode
-        set -e
-        
-        if [ "$EXIT_CODE" -eq 0 ]; then
-            MSG="Build '$TARGET' SUCCEEDED."
-            
-            # Run the application based on target
-            case "$TARGET" in
-              macos-compositor)
-                echo "Launching Wawona for macOS..."
-                # Assuming standard Nix install structure
-                if [ -d "./result/Applications/Wawona.app" ]; then
-                   open "./result/Applications/Wawona.app"
-                elif [ -f "./result/bin/Wawona" ]; then
-                   ./result/bin/Wawona &
-                else
-                   echo "Could not find Wawona binary/app to launch."
-                fi
-                ;;
-              ios-compositor)
-                echo "Deploying Wawona to iOS Simulator..."
-                APP_PATH=$(find ./result -name "Wawona.app" | head -n 1)
-                if [ -n "$APP_PATH" ]; then
-                    # Get first booted simulator
-                    DEVICE_ID=$(xcrun simctl list devices booted | grep "Booted" | head -n 1 | awk -F '[()]' '{print $2}')
-                    if [ -z "$DEVICE_ID" ]; then
-                        echo "No booted simulator found. Attempting to boot iPhone 14..."
-                        DEVICE_ID=$(xcrun simctl list devices available | grep "iPhone 14" | head -n 1 | awk -F '[()]' '{print $2}')
-                        if [ -n "$DEVICE_ID" ]; then
-                            xcrun simctl boot "$DEVICE_ID" || true
-                        else 
-                            echo "Could not find a simulator to boot."
-                        fi
-                    fi
-                    
-                    if [ -n "$DEVICE_ID" ]; then
-                        echo "Installing to device $DEVICE_ID..."
-                        xcrun simctl install "$DEVICE_ID" "$APP_PATH"
-                        echo "Launching com.aspauldingcode.Wawona..."
-                        xcrun simctl launch "$DEVICE_ID" "com.aspauldingcode.Wawona"
-                    fi
-                else
-                    echo "Could not find Wawona.app in build output."
-                fi
-                ;;
-              android-compositor)
-                echo "Deploying Wawona to Android Emulator..."
-                if [ -f "./result/bin/wawona-android-run" ]; then
-                    echo "Running Wawona Android launcher..."
-                    ./result/bin/wawona-android-run
-                elif [ -f "./result/bin/Wawona" ]; then
-                    # Fallback for headless binary if APK build fails or isn't used
-                    echo "Pushing binary to /data/local/tmp/..."
-                    adb push "./result/bin/Wawona" /data/local/tmp/wawona
-                    echo "Running..."
-                    adb shell "chmod +x /data/local/tmp/wawona && /data/local/tmp/wawona" &
-                else
-                    echo "Could not find Wawona build output (wawona-android-run or binary)."
-                fi
-                ;;
-            esac
-            
-        else
-            MSG="Build '$TARGET' FAILED (Exit Code: $EXIT_CODE)."
-        fi
-            
-            CHOICE=$(dialog --clear --title "Wawona Build: $TARGET" \
-                --menu "$MSG\nSelect an action:" 16 60 5 \
-                "1" "View Logs (less)" \
-                "2" "Open Logs (Default App)" \
-                "3" "Reveal Logs in Finder" \
-                "4" "Copy Log Here" \
-                "5" "Exit Pane" \
-                2>&1 >/dev/tty)
-            
-            case $CHOICE in
-                1)
-                    less -R "$LOGFILE"
-                    ;;
-                2)
-                    open "$LOGFILE"
-                    ;;
-                3)
-                    open -R "$LOGFILE"
-                    ;;
-                4)
-                    cp "$LOGFILE" "./$TARGET.log"
-                    dialog --msgbox "Log copied to ./$TARGET.log" 6 40
-                    ;;
-                5)
-                    break
-                    ;;
-                *)
-                    break
-                    ;;
-            esac
-        done
-      '';
-
       wawonaBuildInputs = with pkgs; [
         cmake meson ninja pkg-config
         autoconf automake libtool texinfo
         git python3 direnv gnumake patch
         bison flex shaderc mesa
-        tmux dialog
+        tmux sqlite
       ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
         # Xcode tools are system-provided usually
       ];
     in {
       default = pkgs.writeShellApplication {
         name = "wawona-multiplex";
-        runtimeInputs = wawonaBuildInputs ++ [ wawonaWrapper ];
+        runtimeInputs = wawonaBuildInputs;
         text = ''
           set -euo pipefail
           session="wawona-build"
@@ -278,16 +151,62 @@
             tmux kill-session -t "$session"
           fi
           
-          # Start session (pane 0) - ios-compositor
-          tmux new-session -d -s "$session" "wawona-wrapper ios-compositor"
+          # Get the flake path (current directory)
+          FLAKE_PATH="$(pwd)"
           
-          # Split horizontally (pane 1) - android-compositor
-          tmux split-window -h -t "$session":0
-          tmux send-keys -t "$session":0.1 "wawona-wrapper android-compositor" C-m
+          # Fix SQLite database busy errors by ensuring WAL (Write-Ahead Logging) mode
+          # This allows multiple Nix processes to access the evaluation cache concurrently
+          EVAL_CACHE_DIR="$HOME/.cache/nix/eval-cache-v6"
+          if [ -d "$EVAL_CACHE_DIR" ]; then
+            for db in "$EVAL_CACHE_DIR"/*.sqlite; do
+              if [ -f "$db" ]; then
+                # Check if database is already in WAL mode, if not convert it
+                CURRENT_MODE=$(sqlite3 "$db" "PRAGMA journal_mode;" 2>/dev/null || echo "unknown")
+                if [ "$CURRENT_MODE" != "wal" ] && [ "$CURRENT_MODE" != "unknown" ]; then
+                  echo "Converting $(basename "$db") to WAL mode..."
+                  sqlite3 "$db" "PRAGMA journal_mode=WAL;" 2>/dev/null || true
+                fi
+              fi
+            done
+          fi
           
-          # Split pane 1 vertically (pane 2) - macos-compositor
-          tmux split-window -v -t "$session":0.1
-          tmux send-keys -t "$session":0.2 "wawona-wrapper macos-compositor" C-m
+          # Build all packages in parallel AND multithreaded with a SINGLE nix build command
+          # This avoids lock contention that occurs when multiple separate nix commands
+          # try to build the same shared dependencies. Nix can parallelize optimally
+          # when all targets are specified together.
+          # 
+          # -j auto: Build multiple derivations in parallel (uses all CPU cores for parallelism)
+          # --cores 0: Let each individual build use all available CPU cores (multithreading)
+          # 
+          # Note: Nix intelligently manages resources to avoid oversubscription
+          echo "🔨 Building all platforms in parallel with multithreading..."
+          echo "   This builds wawona-ios, wawona-android, and wawona-macos simultaneously"
+          echo "   Each build can utilize multiple CPU cores for compilation"
+          echo ""
+          
+          nix build --show-trace -j auto --cores 0 \
+            .#wawona-ios \
+            .#wawona-android \
+            .#wawona-macos
+          
+          echo ""
+          echo "✅ All builds complete! Starting tmux session to run each platform..."
+          echo ""
+          
+          # Now run each app in separate tmux panes (builds are already done)
+          # Start session (pane 0) - iOS simulator
+          tmux new-session -d -s "$session" -c "$FLAKE_PATH" \
+            "echo '🍎 Launching iOS Simulator...' && nix run .#wawona-ios"
+          
+          # Split horizontally (pane 1) - Android emulator
+          tmux split-window -h -t "$session":0 -c "$FLAKE_PATH"
+          tmux send-keys -t "$session":0.1 \
+            "echo '🤖 Launching Android Emulator...' && nix run .#wawona-android" C-m
+          
+          # Split pane 1 vertically (pane 2) - macOS app
+          tmux split-window -v -t "$session":0.1 -c "$FLAKE_PATH"
+          tmux send-keys -t "$session":0.2 \
+            "echo '🖥️  Launching macOS App...' && nix run .#wawona-macos" C-m
           
           # Select first pane
           tmux select-pane -t "$session":0.0
