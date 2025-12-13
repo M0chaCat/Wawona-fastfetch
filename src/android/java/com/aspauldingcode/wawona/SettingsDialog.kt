@@ -145,9 +145,9 @@ fun SettingsDialog(
             
             Spacer(modifier = Modifier.height(8.dp))
             
-            // Waypipe Configuration Section
+            // Waypipe Section
             SettingsSectionHeader(
-                title = "Waypipe Configuration",
+                title = "Waypipe",
                 icon = Icons.Filled.Wifi
             )
             
@@ -300,6 +300,14 @@ fun SettingsDialog(
                     default = "hw",
                     options = listOf("hw", "sw", "hwdec", "swdec")
                 )
+                // Fix: Clear any version string that may have been incorrectly stored in waypipeVideoBpf
+                LaunchedEffect(Unit) {
+                    val currentValue = prefs.getString("waypipeVideoBpf", "")
+                    if (currentValue != null && currentValue.contains(".") && currentValue.matches(Regex("^\\d+\\.\\d+.*"))) {
+                        // Looks like a version string (e.g., "1.0.0"), clear it
+                        prefs.edit().putString("waypipeVideoBpf", "").apply()
+                    }
+                }
                 SettingsTextInputItem(
                     prefs = prefs,
                     key = "waypipeVideoBpf",
@@ -354,88 +362,74 @@ fun SettingsDialog(
                     default = "ssh",
                     keyboardType = KeyboardType.Text
                 )
+                SettingsTextInputItem(
+                    prefs = prefs,
+                    key = "waypipeRemoteCommand",
+                    title = "Remote Command",
+                    description = "Application to run on remote host (e.g., weston, weston-terminal)",
+                    icon = Icons.Filled.PlayArrow,
+                    default = "",
+                    keyboardType = KeyboardType.Text
+                )
+                SettingsMultiLineTextInputItem(
+                    prefs = prefs,
+                    key = "waypipeCustomScript",
+                    title = "Custom Script",
+                    description = "Full command line script to execute remotely (overrides Remote Command)",
+                    icon = Icons.Filled.Code,
+                    default = ""
+                )
             }
             
-            // Advanced Options
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeDebug",
-                title = "Debug Mode",
-                description = "Print debug log messages",
-                icon = Icons.Filled.BugReport,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeNoGpu",
-                title = "Disable GPU",
-                description = "Block GPU-accelerated protocols",
-                icon = Icons.Filled.Block,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeOneshot",
-                title = "One Shot",
-                description = "Exit after single connection closes",
-                icon = Icons.Filled.Stop,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeUnlinkSocket",
-                title = "Unlink Socket",
-                description = "Remove socket file on shutdown",
-                icon = Icons.Filled.Delete,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeLoginShell",
-                title = "Login Shell",
-                description = "Open login shell if no command",
-                icon = Icons.Filled.Code,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeVsock",
-                title = "VSock",
-                description = "Use vsock for VM communication",
-                icon = Icons.Filled.Storage,
-                default = false
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeXwls",
-                title = "XWayland Support",
-                description = "Use xwayland-satellite for X clients (unavailable)",
-                icon = Icons.Filled.Apps,
-                default = false,
-                enabled = false
-            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Advanced Waypipe Options (Sub-page)
+            var showAdvancedWaypipe by remember { mutableStateOf(false) }
             
-            // Title Prefix
-            SettingsTextInputItem(
-                prefs = prefs,
-                key = "waypipeTitlePrefix",
-                title = "Title Prefix",
-                description = "Prefix for window titles",
-                icon = Icons.Filled.TextFields,
-                default = "",
-                keyboardType = KeyboardType.Text
-            )
+            Surface(
+                onClick = { showAdvancedWaypipe = true },
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(vertical = 12.dp)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SettingsSuggest,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Advanced Options",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Debug, GPU, One-shot, etc.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Filled.ChevronRight,
+                        contentDescription = "Open",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             
-            // Security Context
-            SettingsTextInputItem(
-                prefs = prefs,
-                key = "waypipeSecCtx",
-                title = "Security Context",
-                description = "Application ID for security context",
-                icon = Icons.Filled.Security,
-                default = "",
-                keyboardType = KeyboardType.Text
-            )
+            if (showAdvancedWaypipe) {
+                AdvancedWaypipeDialog(
+                    prefs = prefs,
+                    onDismiss = { showAdvancedWaypipe = false }
+                )
+            }
             
             Spacer(modifier = Modifier.height(24.dp))
             
@@ -689,6 +683,84 @@ fun SettingsTextInputItem(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+fun SettingsMultiLineTextInputItem(
+    prefs: SharedPreferences,
+    key: String,
+    title: String,
+    description: String,
+    icon: ImageVector,
+    default: String
+) {
+    var text by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
+    
+    LaunchedEffect(key) {
+        text = prefs.getString(key, default) ?: default
+    }
+    
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = FontWeight.Medium
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = text,
+                onValueChange = { newValue ->
+                    text = newValue
+                    prefs.edit().putString(key, newValue).apply()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 120.dp),
+                maxLines = 10,
+                minLines = 4,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                ),
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 fun SettingsDropdownItem(
     prefs: SharedPreferences,
     key: String,
@@ -805,4 +877,68 @@ fun getLocalIpAddress(context: Context): String? {
         e.printStackTrace()
     }
     return null
+}
+
+@Composable
+fun AdvancedWaypipeDialog(
+    prefs: SharedPreferences,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Advanced Waypipe Options") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                SettingsSwitchItem(
+                    prefs = prefs,
+                    key = "waypipeDebug",
+                    title = "Debug Mode",
+                    description = "Enable verbose logging",
+                    icon = Icons.Filled.BugReport,
+                    default = false
+                )
+                SettingsSwitchItem(
+                    prefs = prefs,
+                    key = "waypipeDisableGpu",
+                    title = "Disable GPU",
+                    description = "Force software rendering",
+                    icon = Icons.Filled.Memory,
+                    default = false
+                )
+                SettingsSwitchItem(
+                    prefs = prefs,
+                    key = "waypipeOneshot",
+                    title = "One-Shot",
+                    description = "Exit after first client disconnects",
+                    icon = Icons.Filled.ExitToApp,
+                    default = false
+                )
+                SettingsSwitchItem(
+                    prefs = prefs,
+                    key = "waypipeSleepOnExit",
+                    title = "Sleep on Exit",
+                    description = "Keep socket open after exit",
+                    icon = Icons.Filled.Timer,
+                    default = false
+                )
+                SettingsSwitchItem(
+                    prefs = prefs,
+                    key = "waypipeUnlinkOnExit",
+                    title = "Unlink on Exit",
+                    description = "Remove socket file on exit",
+                    icon = Icons.Filled.Delete,
+                    default = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        }
+    )
 }

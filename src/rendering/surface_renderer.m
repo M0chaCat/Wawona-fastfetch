@@ -115,12 +115,17 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     // The previous implementation used CGDataProviderCreateWithData with NULL destructor,
     // which led to crashes if the underlying buffer was destroyed while the image was still alive.
     
+    // Log before accessing memory to debug crashes
+    NSLog(@"[RENDERER] Creating CFData from %p, size %d (stride %d * height %d)", data, stride * height, stride, height);
+    
     // Create a copy of the data managed by CFData
     CFDataRef cfData = CFDataCreate(NULL, data, stride * height);
     if (!cfData) {
+        NSLog(@"[RENDERER] ❌ CFDataCreate failed");
         CGColorSpaceRelease(colorSpace);
         return NULL;
     }
+    NSLog(@"[RENDERER] CFData created successfully");
     
     CGDataProviderRef provider = CGDataProviderCreateWithCFData(cfData);
     CFRelease(cfData); // Provider retains it
@@ -270,20 +275,26 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     uint32_t format;
     void *data = NULL;
     struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(surface->buffer_resource);
+    NSLog(@"[RENDERER] updateSurface called. Buffer resource: %p, shm_buffer: %p", surface->buffer_resource, shm_buffer);
+
     struct buffer_data *buf_data = NULL;
     struct metal_dmabuf_buffer *dmabuf_buffer = NULL;
     
     // First, try to handle as SHM buffer
     if (shm_buffer) {
         // Standard Wayland SHM buffer
+        NSLog(@"[RENDERER] Found SHM buffer: %p, getting properties...", shm_buffer);
         width = wl_shm_buffer_get_width(shm_buffer);
         height = wl_shm_buffer_get_height(shm_buffer);
         stride = wl_shm_buffer_get_stride(shm_buffer);
         format = wl_shm_buffer_get_format(shm_buffer);
+        NSLog(@"[RENDERER] SHM properties: %dx%d, stride: %d, format: 0x%x", width, height, stride, format);
         
+        NSLog(@"[RENDERER] Beginning access...");
         wl_shm_buffer_begin_access(shm_buffer);
+        NSLog(@"[RENDERER] Getting data...");
         data = wl_shm_buffer_get_data(shm_buffer);
-        NSLog(@"[RENDERER] Processing SHM buffer (size: %dx%d, stride: %d, format: 0x%x)", width, height, stride, format);
+        NSLog(@"[RENDERER] Got data: %p", data);
     } else {
         // Not an SHM buffer - might be EGL, dmabuf, or custom buffer
         buf_data = wl_resource_get_user_data(surface->buffer_resource);
@@ -600,24 +611,6 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             CGImageRelease(image);
         }
         
-        // Release the buffer for this frame if we haven't already
-        if (surface->buffer_resource && !surface->buffer_release_sent) {
-            // CRITICAL: Verify the buffer resource is still valid before sending release
-            // If the client disconnected or buffer was destroyed, this could crash
-            struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
-            if (release_buffer_client) {
-                // Buffer resource is still valid - safe to send release
-                struct buffer_data *release_data = wl_resource_get_user_data(surface->buffer_resource);
-                if (release_data != NULL) {
-                    wl_buffer_send_release(surface->buffer_resource);
-                }
-            } else {
-                // Buffer resource was destroyed (client disconnected) - just mark as released
-                NSLog(@"[RENDER] Buffer already destroyed (client disconnected) - skipping release");
-            }
-            surface->buffer_release_sent = true;
-        }
-        
         // Trigger redraw
         if (self.compositorView) {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -629,6 +622,26 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     } else {
         NSLog(@"[RENDER] Failed to create CGImage from buffer data: width=%d, height=%d, stride=%d, format=0x%x",
               width, height, stride, format);
+    }
+
+    // Release the buffer for this frame if we haven't already
+    // We do this REGARDLESS of whether image creation succeeded, so we don't hold onto buffers forever
+    if (surface->buffer_resource && !surface->buffer_release_sent) {
+        // CRITICAL: Verify the buffer resource is still valid before sending release
+        // If the client disconnected or buffer was destroyed, this could crash
+        struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+        if (release_buffer_client) {
+            // Buffer resource is still valid - safe to send release
+            // For SHM buffers, we must always send release to let client reuse it
+            // We don't check user_data here because standard SHM buffers might have opaque user data
+            // or we might not have set it ourselves, but the protocol requires release.
+            wl_buffer_send_release(surface->buffer_resource);
+            NSLog(@"[RENDERER] Released buffer %p", surface->buffer_resource);
+        } else {
+            // Buffer resource was destroyed (client disconnected) - just mark as released
+            NSLog(@"[RENDER] Buffer already destroyed (client disconnected) - skipping release");
+        }
+        surface->buffer_release_sent = true;
     }
 }
 

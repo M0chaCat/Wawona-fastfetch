@@ -144,15 +144,31 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback {
                 colorScheme = colorScheme,
                 typography = expressiveTypography
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                // Background container with specific color for safe area letterboxing
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(24, 24, 49)) // rgb(24, 24, 49)
+                ) {
                     // Wawona Rendering Surface
+                    // Respect Safe Area logic: Apply padding if enabled
+                    val respectSafeArea = prefs.getBoolean("respectSafeArea", true)
+                    
                     AndroidView(
                         factory = { context ->
                             SurfaceView(context).apply {
                                 holder.addCallback(this@MainActivity)
                             }
                         },
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (respectSafeArea) {
+                                    Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
+                                } else {
+                                    Modifier
+                                }
+                            )
                     )
                     
                     // Expressive FAB Menu

@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -9,15 +15,15 @@ let
   src = pkgs.fetchFromGitHub {
     owner = "google";
     repo = "swiftshader";
-    rev = "3d536c0fc62b1cdea0f78c3c38d79be559855b88";  # Latest commit from nixpkgs
-    hash = "sha256-8GcDyN+t6bUG0TfxdT++MBL3W5JShrn7CabROIqfXm4=";  # With submodules (glslang, googletest)
-    fetchSubmodules = true;  # SwiftShader requires glslang and googletest submodules
+    rev = "3d536c0fc62b1cdea0f78c3c38d79be559855b88"; # Latest commit from nixpkgs
+    hash = "sha256-8GcDyN+t6bUG0TfxdT++MBL3W5JShrn7CabROIqfXm4="; # With submodules (glslang, googletest)
+    fetchSubmodules = true; # SwiftShader requires glslang and googletest submodules
   };
 in
 pkgs.stdenv.mkDerivation {
   name = "swiftshader-android";
   inherit src;
-  patches = [];
+  patches = [ ];
   postPatch = ''
     # Fix CMake version requirements in submodules
     # marl's CMakeLists.txt requires CMake 3.5, update to work with current CMake
@@ -28,7 +34,7 @@ pkgs.stdenv.mkDerivation {
     if [ -f third_party/googletest/CMakeLists.txt ]; then
       sed -i.bak 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' third_party/googletest/CMakeLists.txt || true
     fi
-    
+
     # Disable tests and samples - we're building Vulkan ICD only
     # Tests require googletest/glslang but we can skip them for Vulkan ICD build
     if [ -f CMakeLists.txt ]; then
@@ -39,8 +45,13 @@ pkgs.stdenv.mkDerivation {
       sed -i.bak '/add_subdirectory(samples/s/^/# DISABLED: Samples disabled /' CMakeLists.txt || true
     fi
   '';
-  nativeBuildInputs = with buildPackages; [ cmake pkg-config ninja python3 ];
-  buildInputs = [];
+  nativeBuildInputs = with buildPackages; [
+    cmake
+    pkg-config
+    ninja
+    python3
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     # Use Android NDK's built-in CMake toolchain file (matches upstream SwiftShader build)
     # This is the standard way to cross-compile for Android with CMake
@@ -51,7 +62,7 @@ pkgs.stdenv.mkDerivation {
       exit 1
     fi
     export ANDROID_TOOLCHAIN_FILE
-    
+
     # Initialize git submodules (SwiftShader uses googletest submodule)
     # Note: In Nix sandbox, git might not work, so we handle this gracefully
     if [ -d .git ]; then
@@ -63,7 +74,7 @@ pkgs.stdenv.mkDerivation {
     # SwiftShader requires out-of-source build (matches upstream)
     mkdir -p build
     cd build
-    
+
     # Use NDK's built-in toolchain file (standard approach, matches upstream)
     cmakeFlagsArray+=("-DCMAKE_TOOLCHAIN_FILE=$ANDROID_TOOLCHAIN_FILE")
     # Android-specific CMake flags (matches upstream SwiftShader Android build)
@@ -72,7 +83,7 @@ pkgs.stdenv.mkDerivation {
     cmakeFlagsArray+=("-DANDROID_ABI=arm64-v8a")
     cmakeFlagsArray+=("-DANDROID_PLATFORM=android-$ANDROID_API_LEVEL")
     cmakeFlagsArray+=("-DANDROID_STL=c++_static")
-    
+
     # SwiftShader build options - build Vulkan ICD only (for waypipe-rs)
     # These match upstream SwiftShader CMake options
     cmakeFlagsArray+=("-DSWIFTSHADER_BUILD_VULKAN=ON")
@@ -88,7 +99,7 @@ pkgs.stdenv.mkDerivation {
     cmake .. -GNinja
     runHook postConfigure
   '';
-  cmakeFlags = [];
+  cmakeFlags = [ ];
   # Build in the build/ subdirectory
   # configurePhase cd's into build/, so buildPhase runs from there
   buildPhase = ''
@@ -120,7 +131,7 @@ pkgs.stdenv.mkDerivation {
     fi
     # Install using CMake
     cmake --install . --prefix $out
-    
+
     # SwiftShader may not install libvk_swiftshader.so by default, so copy it manually
     # Check if it exists in the build directory
     if [ -f libvk_swiftshader.so ]; then
@@ -135,14 +146,14 @@ pkgs.stdenv.mkDerivation {
       echo "Warning: libvk_swiftshader.so not found in build directory"
       find . -name "libvk_swiftshader.so" -type f || echo "No libvk_swiftshader.so found"
     fi
-    
+
     # Copy ICD JSON manifest if it exists
     if [ -f vk_swiftshader_icd.json ]; then
       mkdir -p $out/lib/vulkan/icd.d
       cp vk_swiftshader_icd.json $out/lib/vulkan/icd.d/
       echo "✓ Copied ICD manifest"
     fi
-    
+
     runHook postInstall
   '';
   # SwiftShader produces a Vulkan ICD library (libvk_swiftshader.so)
@@ -152,7 +163,7 @@ pkgs.stdenv.mkDerivation {
   # These are used by waypipe-rs and Wawona Compositor for Vulkan support
   postInstall = ''
     echo "=== Installing SwiftShader Vulkan ICD for Android ==="
-    
+
     # SwiftShader installs libvk_swiftshader.so to lib/
     # Verify the library exists
     if [ -f "$out/lib/libvk_swiftshader.so" ]; then
@@ -163,19 +174,19 @@ pkgs.stdenv.mkDerivation {
       echo "Warning: libvk_swiftshader.so not found in $out/lib/"
       ls -la "$out/lib/" || true
     fi
-    
+
     # Copy ICD JSON manifest if it exists (SwiftShader may generate this)
     if [ -f "$out/share/vulkan/icd.d/vk_swiftshader_icd.json" ]; then
       mkdir -p $out/lib/vulkan/icd.d
       cp "$out/share/vulkan/icd.d/vk_swiftshader_icd.json" "$out/lib/vulkan/icd.d/" || true
     fi
-    
+
     # Copy any Vulkan layers if built
     if [ -d "$out/lib/libVkLayer"* ]; then
       mkdir -p $out/lib/vulkan
       cp -r "$out/lib"/libVkLayer*.so "$out/lib/vulkan/" 2>/dev/null || true
     fi
-    
+
     echo "SwiftShader Vulkan ICD installation complete"
     echo "Library location: $out/lib/libvk_swiftshader.so"
   '';

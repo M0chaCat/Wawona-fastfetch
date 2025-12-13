@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -11,14 +17,24 @@ let
     sha256 = "sha256-tvNdhpUnOvWoC5bpezUJv+EScnowhURI7XEtYF/EnQw=";
   };
   src = fetchSource libffiSource;
-  buildFlags = [ "--disable-docs" "--disable-shared" "--enable-static" ];
-  patches = [];
+  buildFlags = [
+    "--disable-docs"
+    "--disable-shared"
+    "--enable-static"
+  ];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "libffi-ios";
   inherit src patches;
-  nativeBuildInputs = with buildPackages; [ autoconf automake libtool pkg-config texinfo ];
-  buildInputs = [];
+  nativeBuildInputs = with buildPackages; [
+    autoconf
+    automake
+    libtool
+    pkg-config
+    texinfo
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
@@ -49,7 +65,9 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=$out --host=aarch64-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --host=aarch64-apple-darwin ${
+      lib.concatMapStringsSep " " (flag: flag) buildFlags
+    }
     runHook postConfigure
   '';
   configureFlags = buildFlags;

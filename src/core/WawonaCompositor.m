@@ -3,9 +3,9 @@
 #ifdef __APPLE__
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
+#import "WawonaPreferencesManager.h"
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <libproc.h>
-#import "WawonaPreferencesManager.h"
 #endif
 #endif
 #include "logging.h"
@@ -239,6 +239,8 @@ static void surface_attach(struct wl_client *client,
 
   // Pending state update
   surface->buffer_resource = buffer;
+  // Reset release sent flag for the new buffer (or re-attached buffer)
+  surface->buffer_release_sent = false;
   surface->x = x;
   surface->y = y;
 }
@@ -386,6 +388,10 @@ static const struct wl_surface_interface surface_interface = {
 
 static void surface_destroy_resource(struct wl_resource *resource) {
   struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
+
+  // CRITICAL: Notify renderer to remove this surface before we free it
+  // This prevents Use-After-Free crashes in the renderer loop
+  remove_surface_from_renderer(surface);
 
   // Remove from global list
   if (g_surface_list == surface) {

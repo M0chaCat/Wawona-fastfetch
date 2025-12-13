@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
@@ -10,9 +16,9 @@ in
 pkgs.stdenv.mkDerivation {
   name = "zlib-ios";
   inherit src;
-  patches = [];
+  patches = [ ];
   nativeBuildInputs = with buildPackages; [ ];
-  buildInputs = [];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)

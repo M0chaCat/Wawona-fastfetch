@@ -1,0 +1,392 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>StringsTable</key>
+	<string>Root</string>
+	<key>PreferenceSpecifiers</key>
+	<array>
+		<!-- Display & Rendering Section -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Display &amp; Rendering</string>
+		</dict>
+		<!-- Force Server-Side Decorations (macOS only) -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Force Server-Side Decorations</string>
+			<key>Key</key>
+			<string>ForceServerSideDecorations</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<!-- Render macOS Cursor (macOS only, off by default) -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Show macOS Cursor</string>
+			<key>Key</key>
+			<string>RenderMacOSPointer</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
+		<!-- Auto Scale (macOS) -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Auto Scale</string>
+			<key>Key</key>
+			<string>AutoScale</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		
+		<!-- Input &amp; Interaction Section -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Input &amp; Interaction</string>
+		</dict>
+		<!-- Swap CMD with ALT (macOS only) -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Swap CMD with ALT</string>
+			<key>Key</key>
+			<string>SwapCmdWithAlt</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<!-- Universal Clipboard -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Universal Clipboard</string>
+			<key>Key</key>
+			<string>UniversalClipboard</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		
+		<!-- Advanced Features Section -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Advanced Features</string>
+		</dict>
+		<!-- Color Operations -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Color Operations</string>
+			<key>Key</key>
+			<string>ColorOperations</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<!-- Nested Compositors -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Nested Compositors</string>
+			<key>Key</key>
+			<string>NestedCompositorsSupport</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<!-- Multiple Clients (enabled on macOS by default) -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Multiple Clients</string>
+			<key>Key</key>
+			<string>MultipleClients</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		
+		<!-- Waypipe Configuration Section -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Waypipe Configuration</string>
+			<key>FooterText</key>
+			<string>Configure Waypipe remote display options. Socket path is set automatically by the platform.</string>
+		</dict>
+		<!-- Wayland Display -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Wayland Display</string>
+			<key>Key</key>
+			<string>WaypipeDisplay</string>
+			<key>DefaultValue</key>
+			<string>wayland-0</string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+		</dict>
+		<!-- Socket Path (read-only, informational) -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Socket Path</string>
+			<key>Key</key>
+			<string>WaypipeSocket</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>IsSecure</key>
+			<false/>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+		</dict>
+		<!-- Compression -->
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Title</key>
+			<string>Compression</string>
+			<key>Key</key>
+			<string>WaypipeCompress</string>
+			<key>DefaultValue</key>
+			<string>lz4</string>
+			<key>Titles</key>
+			<array>
+				<string>None</string>
+				<string>LZ4</string>
+				<string>ZSTD</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>none</string>
+				<string>lz4</string>
+				<string>zstd</string>
+			</array>
+		</dict>
+		<!-- Compression Level (for ZSTD) -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Compression Level</string>
+			<key>Key</key>
+			<string>WaypipeCompressLevel</string>
+			<key>DefaultValue</key>
+			<string>7</string>
+			<key>KeyboardType</key>
+			<string>NumberPad</string>
+		</dict>
+		<!-- Threads -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Threads</string>
+			<key>Key</key>
+			<string>WaypipeThreads</string>
+			<key>DefaultValue</key>
+			<string>0</string>
+			<key>KeyboardType</key>
+			<string>NumberPad</string>
+		</dict>
+		<!-- Video Compression -->
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Title</key>
+			<string>Video Compression</string>
+			<key>Key</key>
+			<string>WaypipeVideo</string>
+			<key>DefaultValue</key>
+			<string>none</string>
+			<key>Titles</key>
+			<array>
+				<string>None</string>
+				<string>H.264</string>
+				<string>VP9</string>
+				<string>AV1</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>none</string>
+				<string>h264</string>
+				<string>vp9</string>
+				<string>av1</string>
+			</array>
+		</dict>
+		<!-- Video Encoding -->
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Title</key>
+			<string>Video Encoding</string>
+			<key>Key</key>
+			<string>WaypipeVideoEncoding</string>
+			<key>DefaultValue</key>
+			<string>hw</string>
+			<key>Titles</key>
+			<array>
+				<string>Hardware</string>
+				<string>Software</string>
+				<string>Hardware Encode</string>
+				<string>Software Encode</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>hw</string>
+				<string>sw</string>
+				<string>hwenc</string>
+				<string>swenc</string>
+			</array>
+		</dict>
+		<!-- Video Decoding -->
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Title</key>
+			<string>Video Decoding</string>
+			<key>Key</key>
+			<string>WaypipeVideoDecoding</string>
+			<key>DefaultValue</key>
+			<string>hw</string>
+			<key>Titles</key>
+			<array>
+				<string>Hardware</string>
+				<string>Software</string>
+				<string>Hardware Decode</string>
+				<string>Software Decode</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>hw</string>
+				<string>sw</string>
+				<string>hwdec</string>
+				<string>swdec</string>
+			</array>
+		</dict>
+		<!-- Bits Per Frame -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Bits Per Frame</string>
+			<key>Key</key>
+			<string>WaypipeVideoBpf</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>NumberPad</string>
+		</dict>
+		<!-- Advanced Waypipe Options (Sub-page) -->
+		<dict>
+			<key>Type</key>
+			<string>PSChildPaneSpecifier</string>
+			<key>Title</key>
+			<string>Advanced Options</string>
+			<key>File</key>
+			<string>WaypipeAdvanced</string>
+		</dict>
+		
+		<!-- SSH Configuration -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>SSH Configuration</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Enable SSH</string>
+			<key>Key</key>
+			<string>WaypipeSSHEnabled</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>SSH Host</string>
+			<key>Key</key>
+			<string>WaypipeSSHHost</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>URL</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>SSH User</string>
+			<key>Key</key>
+			<string>WaypipeSSHUser</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>SSH Binary Path</string>
+			<key>Key</key>
+			<string>WaypipeSSHBinary</string>
+			<key>DefaultValue</key>
+			<string>ssh</string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Remote Command</string>
+			<key>Key</key>
+			<string>WaypipeRemoteCommand</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>Custom Script</string>
+			<key>Key</key>
+			<string>WaypipeCustomScript</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+			<key>IsSecure</key>
+			<false/>
+			<key>AutocapitalizationType</key>
+			<string>None</string>
+			<key>AutocorrectionType</key>
+			<string>No</string>
+		</dict>
+
+	</array>
+</dict>
+</plist>
+

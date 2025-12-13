@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   androidToolchain = import ../../common/android-toolchain.nix { inherit lib pkgs; };
@@ -13,27 +19,30 @@ in
 pkgs.stdenv.mkDerivation {
   name = "zstd-android";
   inherit src;
-  patches = [];
-  nativeBuildInputs = with buildPackages; [ cmake pkg-config ];
-  buildInputs = [];
-  
+  patches = [ ];
+  nativeBuildInputs = with buildPackages; [
+    cmake
+    pkg-config
+  ];
+  buildInputs = [ ];
+
   preConfigure = ''
     export CC="${androidToolchain.androidCC}"
     export CXX="${androidToolchain.androidCXX}"
     export AR="${androidToolchain.androidAR}"
     export STRIP="${androidToolchain.androidSTRIP}"
     export RANLIB="${androidToolchain.androidRANLIB}"
-    
+
     # Set sysroot for API level
     NDK_SYSROOT="${androidToolchain.androidndkRoot}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
     export CFLAGS="--target=${androidToolchain.androidTarget} --sysroot=$NDK_SYSROOT -fPIC"
     export CXXFLAGS="--target=${androidToolchain.androidTarget} --sysroot=$NDK_SYSROOT -fPIC"
     export LDFLAGS="--target=${androidToolchain.androidTarget} --sysroot=$NDK_SYSROOT"
   '';
-  
+
   # zstd has CMakeLists.txt in build/cmake subdirectory
   sourceRoot = "source/build/cmake";
-  
+
   cmakeFlags = [
     "-DCMAKE_POLICY_DEFAULT_CMP0126=NEW"
     "-DCMAKE_SYSTEM_NAME=Android"
@@ -47,7 +56,7 @@ pkgs.stdenv.mkDerivation {
     "-DZSTD_BUILD_SHARED=ON"
     "-DZSTD_BUILD_STATIC=ON"
   ];
-  
+
   # Patch CMakeLists.txt to fix CMake syntax issues
   postPatch = ''
     echo "=== Patching zstd CMakeLists.txt for Android ==="

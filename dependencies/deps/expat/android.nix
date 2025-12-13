@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -11,14 +17,17 @@ let
     sha256 = "sha256-dDxnAJsj515vr9+j2Uqa9E+bB+teIBfsnrexppBtdXg=";
   };
   src = fetchSource expatSource;
-  buildFlags = [];
-  patches = [];
+  buildFlags = [ ];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "expat-android";
   inherit src patches;
-  nativeBuildInputs = with buildPackages; [ cmake pkg-config ];
-  buildInputs = [];
+  nativeBuildInputs = with buildPackages; [
+    cmake
+    pkg-config
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -d expat ]; then
       cd expat
@@ -41,5 +50,6 @@ pkgs.stdenv.mkDerivation {
     "-DCMAKE_ANDROID_PLATFORM=android-${toString androidToolchain.androidNdkApiLevel}"
     "-DCMAKE_C_FLAGS=--target=${androidToolchain.androidTarget}"
     "-DCMAKE_CXX_FLAGS=--target=${androidToolchain.androidTarget}"
-  ] ++ buildFlags;
+  ]
+  ++ buildFlags;
 }

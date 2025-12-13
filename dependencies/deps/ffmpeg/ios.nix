@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -15,18 +21,18 @@ in
 pkgs.stdenv.mkDerivation {
   name = "ffmpeg-ios";
   inherit src;
-  
+
   # We need to access /Applications/Xcode.app for the SDK and toolchain
-  __noChroot = true; 
+  __noChroot = true;
 
   nativeBuildInputs = with buildPackages; [
     pkg-config
     nasm
     yasm
   ];
-  
-  buildInputs = [];
-  
+
+  buildInputs = [ ];
+
   # Configure phase to set up the environment
   preConfigure = ''
     # Find Xcode path dynamically
@@ -38,19 +44,19 @@ pkgs.stdenv.mkDerivation {
       # Fallback to xcode-select
       export DEVELOPER_DIR=$(/usr/bin/xcode-select -p)
     fi
-    
+
     echo "Using Developer Dir: $DEVELOPER_DIR"
-    
+
     export IOS_SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
     export MACOS_SDK_PATH="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-    
+
     if [ ! -d "$IOS_SDK_PATH" ]; then
       echo "Error: iOS SDK not found at $IOS_SDK_PATH"
       exit 1
     fi
-    
+
     echo "Using iOS SDK: $IOS_SDK_PATH"
-    
+
     # Use the toolchain from Xcode
     export TOOLCHAIN_BIN="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
     export CC="$TOOLCHAIN_BIN/clang"
@@ -59,19 +65,19 @@ pkgs.stdenv.mkDerivation {
     export RANLIB="$TOOLCHAIN_BIN/ranlib"
     export STRIP="$TOOLCHAIN_BIN/strip"
     export NM="$TOOLCHAIN_BIN/nm"
-    
+
     # HOST compiler (runs on macOS)
     export HOST_CC="/usr/bin/clang"
-    
+
     # Flags for TARGET (iOS)
     export CFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -mios-simulator-version-min=26.0 -fembed-bitcode"
     export CXXFLAGS="$CFLAGS"
     export LDFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -mios-simulator-version-min=26.0"
   '';
-  
+
   configurePhase = ''
     runHook preConfigure
-    
+
     # Explicitly disable programs and runtime checks
     # Note: We set --host-cc to the macOS compiler to allow building helper tools
     ./configure \
@@ -113,17 +119,17 @@ pkgs.stdenv.mkDerivation {
       
     runHook postConfigure
   '';
-  
+
   buildPhase = ''
     runHook preBuild
     make -j$NIX_BUILD_CORES
     runHook postBuild
   '';
-  
+
   installPhase = ''
     runHook preInstall
     make install || echo "make install failed, continuing with manual installation"
-    
+
     # Ensure include directory exists
     if [ ! -d "$out/include" ] || [ -z "$(ls -A $out/include 2>/dev/null)" ]; then
       echo "Warning: include directory missing or empty, copying headers from source"
@@ -174,44 +180,44 @@ pkgs.stdenv.mkDerivation {
         done
       fi
     fi
-    
+
     runHook postInstall
   '';
-  
+
   postInstall = ''
-    # FFmpeg should generate .pc files, verify they exist
-    if [ ! -f "$out/lib/pkgconfig/libavcodec.pc" ]; then
-      echo "Warning: libavcodec.pc not found, creating minimal version"
-      mkdir -p "$out/lib/pkgconfig"
-      cat > "$out/lib/pkgconfig/libavcodec.pc" <<EOF
-prefix=$out
-exec_prefix=\''${prefix}
-libdir=\''${exec_prefix}/lib
-includedir=\''${prefix}/include
+        # FFmpeg should generate .pc files, verify they exist
+        if [ ! -f "$out/lib/pkgconfig/libavcodec.pc" ]; then
+          echo "Warning: libavcodec.pc not found, creating minimal version"
+          mkdir -p "$out/lib/pkgconfig"
+          cat > "$out/lib/pkgconfig/libavcodec.pc" <<EOF
+    prefix=$out
+    exec_prefix=\''${prefix}
+    libdir=\''${exec_prefix}/lib
+    includedir=\''${prefix}/include
 
-Name: libavcodec
-Description: FFmpeg codec library
-Version: 7.1
-Requires: libavutil
-Libs: -L\''${libdir} -lavcodec
-Cflags: -I\''${includedir}
-EOF
-    fi
-    
-    if [ ! -f "$out/lib/pkgconfig/libavutil.pc" ]; then
-      echo "Warning: libavutil.pc not found, creating minimal version"
-      cat > "$out/lib/pkgconfig/libavutil.pc" <<EOF
-prefix=$out
-exec_prefix=\''${prefix}
-libdir=\''${exec_prefix}/lib
-includedir=\''${prefix}/include
+    Name: libavcodec
+    Description: FFmpeg codec library
+    Version: 7.1
+    Requires: libavutil
+    Libs: -L\''${libdir} -lavcodec
+    Cflags: -I\''${includedir}
+    EOF
+        fi
+        
+        if [ ! -f "$out/lib/pkgconfig/libavutil.pc" ]; then
+          echo "Warning: libavutil.pc not found, creating minimal version"
+          cat > "$out/lib/pkgconfig/libavutil.pc" <<EOF
+    prefix=$out
+    exec_prefix=\''${prefix}
+    libdir=\''${exec_prefix}/lib
+    includedir=\''${prefix}/include
 
-Name: libavutil
-Description: FFmpeg utility library
-Version: 7.1
-Libs: -L\''${libdir} -lavutil
-Cflags: -I\''${includedir}
-EOF
-    fi
+    Name: libavutil
+    Description: FFmpeg utility library
+    Version: 7.1
+    Libs: -L\''${libdir} -lavutil
+    Cflags: -I\''${includedir}
+    EOF
+        fi
   '';
 }

@@ -1,4 +1,8 @@
-{ lib, pkgs, common }:
+{
+  lib,
+  pkgs,
+  common,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -10,14 +14,18 @@ let
     sha256 = "sha256-dDxnAJsj515vr9+j2Uqa9E+bB+teIBfsnrexppBtdXg=";
   };
   src = fetchSource expatSource;
-  buildFlags = [];
-  patches = [];
+  buildFlags = [ ];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "expat-macos";
   inherit src patches;
-  nativeBuildInputs = with pkgs; [ cmake pkg-config apple-sdk_26 ];
-  buildInputs = [];
+  nativeBuildInputs = with pkgs; [
+    cmake
+    pkg-config
+    apple-sdk_26
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -d expat ]; then
       cd expat

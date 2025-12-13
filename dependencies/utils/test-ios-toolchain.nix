@@ -1,4 +1,8 @@
-{ lib, pkgs, buildPackages }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+}:
 
 let
   sdk = "${pkgs.apple-sdk_26}/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk";
@@ -10,7 +14,7 @@ pkgs.stdenv.mkDerivation {
     cat > test.c <<EOF
     int main() { return 0; }
     EOF
-    
+
     echo "Testing iOS compilation..."
     ${pkgs.clang}/bin/clang \
       -arch arm64 \

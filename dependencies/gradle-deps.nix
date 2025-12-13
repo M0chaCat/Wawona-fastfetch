@@ -1,4 +1,13 @@
-{ stdenv, lib, gradle, jdk17, git, androidSDK, wawonaSrc, pkgs }:
+{
+  stdenv,
+  lib,
+  gradle,
+  jdk17,
+  git,
+  androidSDK,
+  wawonaSrc,
+  pkgs,
+}:
 
 stdenv.mkDerivation {
   pname = "wawona-android-gradle-deps";
@@ -6,27 +15,34 @@ stdenv.mkDerivation {
 
   src = wawonaSrc;
 
-  nativeBuildInputs = [ gradle jdk17 git pkgs.cacert pkgs.curl pkgs.openssl ];
+  nativeBuildInputs = [
+    gradle
+    jdk17
+    git
+    pkgs.cacert
+    pkgs.curl
+    pkgs.openssl
+  ];
 
   outputHashAlgo = "sha256";
   outputHashMode = "recursive";
   outputHash = "sha256-p4feX5TqQq6GvUH2QsVxmQdiGrL/eqsdigUA4LH67R0=";
- 
-   buildPhase = ''
+
+  buildPhase = ''
     export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
     export GRADLE_OPTS="-Djava.net.preferIPv4Stack=true -Djava.net.preferIPv6Addresses=false"
     export GRADLE_USER_HOME=$out
     export JAVA_HOME="${jdk17}"
     export ANDROID_SDK_ROOT="${androidSDK.androidsdk}/libexec/android-sdk"
     export ANDROID_HOME="$ANDROID_SDK_ROOT"
-    
+
     # Create a writable Android User Home for license acceptance and other state
     export ANDROID_USER_HOME=$(mktemp -d)
-    
+
     # Accept licenses
     mkdir -p $ANDROID_USER_HOME/licenses
     echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_USER_HOME/licenses/android-sdk-license
-    
+
     # Use JDK's cacerts directly
     REAL_JAVA_HOME=$(find ${jdk17} -name cacerts | head -n 1 | sed 's|/lib/security/cacerts||')
     echo "Using trustStore at: $REAL_JAVA_HOME/lib/security/cacerts"
@@ -44,15 +60,15 @@ stdenv.mkDerivation {
     cd src/android
     # We use a custom init script to ensure we don't fail on missing signing config
     gradle --version
-    
+
     # Try with explicit --refresh-dependencies and ensuring online
     # Also unset GRADLE_OPTS just in case
     unset GRADLE_OPTS
-    
+
     gradle --no-daemon --refresh-dependencies dependencies --configuration implementation --info --stacktrace
     gradle --no-daemon --refresh-dependencies dependencies --configuration debugImplementation --info --stacktrace
     gradle --no-daemon --refresh-dependencies dependencies --configuration androidTestImplementation --info --stacktrace
-    
+
     # Also run assembleDebug to get build dependencies (plugins etc)
     # This might fail due to read-only filesystem or other issues, so we allow failure
     # but we hope it downloads what it needs first.
@@ -63,7 +79,7 @@ stdenv.mkDerivation {
     # Clean up non-deterministic files
     find $out -name "*.lock" -delete
     find $out -name "gc.properties" -delete
-    
+
     # Remove build-specific caches that might contain absolute paths or timestamps
     rm -rf $out/caches/*/plugin-resolution/
     rm -rf $out/caches/*/scripts/
@@ -72,10 +88,10 @@ stdenv.mkDerivation {
     rm -rf $out/caches/build-cache-1/
     rm -rf $out/daemon
     rm -rf $out/wrapper
-    
+
     # Remove compiled scripts which capture the init script path
     rm -rf $out/caches/jars-*
-    
+
     # Remove files containing Nix store paths (references to init scripts etc)
     # We use a loop to avoid xargs issues and handle empty results
     # (grep returns 1 if no matches, so we use || true)

@@ -1,4 +1,8 @@
-{ lib, pkgs, common }:
+{
+  lib,
+  pkgs,
+  common,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -12,13 +16,18 @@ let
   };
   src = fetchSource libxml2Source;
   buildFlags = [ "--without-python" ];
-  patches = [];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "libxml2-macos";
   inherit src patches;
-  nativeBuildInputs = with pkgs; [ autoconf automake libtool pkg-config ];
-  buildInputs = [];
+  nativeBuildInputs = with pkgs; [
+    autoconf
+    automake
+    libtool
+    pkg-config
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
@@ -40,7 +49,9 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=$out --host=aarch64-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --host=aarch64-apple-darwin ${
+      lib.concatMapStringsSep " " (flag: flag) buildFlags
+    }
     runHook postConfigure
   '';
   configureFlags = buildFlags;

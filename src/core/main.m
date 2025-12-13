@@ -584,14 +584,14 @@ int main(int argc, char *argv[]) {
         if (runtime_dir) {
             runtimePath = [NSString stringWithUTF8String:runtime_dir];
         } else {
-            NSString *tmpDir = NSTemporaryDirectory();
-            if (tmpDir) {
-                runtimePath = [tmpDir stringByAppendingPathComponent:@"wayland-runtime"];
-                setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
-            }
+            // Use a predictable path in /tmp so external tools (like waypipe) can find it easily
+            // NSTemporaryDirectory() is too unpredictable and can be long
+            runtimePath = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
+            setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
         }
         
         if (runtimePath) {
+            NSLog(@"ℹ️ Using XDG_RUNTIME_DIR: %@", runtimePath);
             // Ensure directory exists with correct permissions (0700)
             NSDictionary *attrs = @{NSFilePosixPermissions: @0700};
             NSError *error = nil;

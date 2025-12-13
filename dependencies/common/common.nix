@@ -4,7 +4,8 @@
   registry = import ./registry.nix;
   getBuildSystem = entry: entry.buildSystem or "autotools";
   getSource = entry: entry.source or "github";
-  fetchSource = entry:
+  fetchSource =
+    entry:
     let
       source = entry.source or "github";
       sha256 = entry.sha256 or lib.fakeHash;
@@ -13,53 +14,53 @@
       null
     else if source == "gitlab-gnome" then
       (
-      if lib.hasAttr "tag" entry then
-        pkgs.fetchgit {
-          url = "https://gitlab.gnome.org/${entry.owner}/${entry.repo}.git";
-          rev = "refs/tags/${entry.tag}";
-          sha256 = sha256;
-        }
-      else if lib.hasAttr "branch" entry then
-        pkgs.fetchgit {
-          url = "https://gitlab.gnome.org/${entry.owner}/${entry.repo}.git";
-          rev = "refs/heads/${entry.branch}";
-          sha256 = sha256;
-        }
-      else if lib.hasAttr "rev" entry then
-        pkgs.fetchFromGitLab {
-          domain = "gitlab.gnome.org";
-          owner = entry.owner;
-          repo = entry.repo;
-          rev = entry.rev;
-          sha256 = sha256;
-        }
-      else
-        throw "GitLab GNOME source requires 'rev', 'tag', or 'branch'"
+        if lib.hasAttr "tag" entry then
+          pkgs.fetchgit {
+            url = "https://gitlab.gnome.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/tags/${entry.tag}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "branch" entry then
+          pkgs.fetchgit {
+            url = "https://gitlab.gnome.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/heads/${entry.branch}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "rev" entry then
+          pkgs.fetchFromGitLab {
+            domain = "gitlab.gnome.org";
+            owner = entry.owner;
+            repo = entry.repo;
+            rev = entry.rev;
+            sha256 = sha256;
+          }
+        else
+          throw "GitLab GNOME source requires 'rev', 'tag', or 'branch'"
       )
     else if source == "gitlab" then
       (
-      if lib.hasAttr "tag" entry then
-        pkgs.fetchgit {
-          url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
-          rev = "refs/tags/${entry.tag}";
-          sha256 = sha256;
-        }
-      else if lib.hasAttr "branch" entry then
-        pkgs.fetchgit {
-          url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
-          rev = "refs/heads/${entry.branch}";
-          sha256 = sha256;
-        }
-      else if lib.hasAttr "rev" entry then
-        pkgs.fetchFromGitLab {
-          domain = "gitlab.freedesktop.org";
-          owner = entry.owner;
-          repo = entry.repo;
-          rev = entry.rev;
-          sha256 = sha256;
-        }
-      else
-        throw "GitLab source requires 'rev', 'tag', or 'branch'"
+        if lib.hasAttr "tag" entry then
+          pkgs.fetchgit {
+            url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/tags/${entry.tag}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "branch" entry then
+          pkgs.fetchgit {
+            url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/heads/${entry.branch}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "rev" entry then
+          pkgs.fetchFromGitLab {
+            domain = "gitlab.freedesktop.org";
+            owner = entry.owner;
+            repo = entry.repo;
+            rev = entry.rev;
+            sha256 = sha256;
+          }
+        else
+          throw "GitLab source requires 'rev', 'tag', or 'branch'"
       )
     else
       (

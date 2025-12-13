@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -17,9 +23,13 @@ in
 pkgs.stdenv.mkDerivation {
   name = "epoll-shim-ios";
   inherit src;
-  patches = [];
-  nativeBuildInputs = with buildPackages; [ cmake pkg-config file ];
-  buildInputs = [];
+  patches = [ ];
+  nativeBuildInputs = with buildPackages; [
+    cmake
+    pkg-config
+    file
+  ];
+  buildInputs = [ ];
   postPatch = ''
     # Disable tests for iOS cross-compilation using Nix patches
     # Tests can't run during cross-compilation and cause build failures
@@ -51,51 +61,51 @@ pkgs.stdenv.mkDerivation {
     fi
   '';
   preConfigure = ''
-    if [ -z "''${XCODE_APP:-}" ]; then
-      XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
-      if [ -n "$XCODE_APP" ]; then
-        export XCODE_APP
-        export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
-        export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
-      fi
-    fi
-    export NIX_CFLAGS_COMPILE=""
-    export NIX_CXXFLAGS_COMPILE=""
-    if [ -n "''${SDKROOT:-}" ] && [ -d "$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin" ]; then
-      IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
-      IOS_CXX="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
-    else
-      IOS_CC="${buildPackages.clang}/bin/clang"
-      IOS_CXX="${buildPackages.clang}/bin/clang++"
-    fi
-    # Determine architecture for simulator
-    SIMULATOR_ARCH="arm64"
-    if [ "$(uname -m)" = "x86_64" ]; then
-      SIMULATOR_ARCH="x86_64"
-    fi
-    
-    cat > ios-toolchain.cmake <<EOF
-set(CMAKE_SYSTEM_NAME iOS)
-set(CMAKE_OSX_ARCHITECTURES $SIMULATOR_ARCH)
-set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
-set(CMAKE_OSX_SYSROOT "$SDKROOT")
-set(CMAKE_C_FLAGS "-mios-simulator-version-min=15.0")
-set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=15.0")
-set(CMAKE_C_COMPILER "$IOS_CC")
-set(CMAKE_CXX_COMPILER "$IOS_CXX")
-set(CMAKE_SYSROOT "$SDKROOT")
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-set(CMAKE_CROSSCOMPILING TRUE)
-# Disable code signing for try_run executables
-set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
-# Tell CMake the compilers work (skip tests)
-set(CMAKE_C_COMPILER_WORKS TRUE)
-set(CMAKE_CXX_COMPILER_WORKS TRUE)
-EOF
+        if [ -z "''${XCODE_APP:-}" ]; then
+          XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+          if [ -n "$XCODE_APP" ]; then
+            export XCODE_APP
+            export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+            export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+            export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+          fi
+        fi
+        export NIX_CFLAGS_COMPILE=""
+        export NIX_CXXFLAGS_COMPILE=""
+        if [ -n "''${SDKROOT:-}" ] && [ -d "$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin" ]; then
+          IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+          IOS_CXX="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
+        else
+          IOS_CC="${buildPackages.clang}/bin/clang"
+          IOS_CXX="${buildPackages.clang}/bin/clang++"
+        fi
+        # Determine architecture for simulator
+        SIMULATOR_ARCH="arm64"
+        if [ "$(uname -m)" = "x86_64" ]; then
+          SIMULATOR_ARCH="x86_64"
+        fi
+        
+        cat > ios-toolchain.cmake <<EOF
+    set(CMAKE_SYSTEM_NAME iOS)
+    set(CMAKE_OSX_ARCHITECTURES $SIMULATOR_ARCH)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+    set(CMAKE_OSX_SYSROOT "$SDKROOT")
+    set(CMAKE_C_FLAGS "-mios-simulator-version-min=15.0")
+    set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=15.0")
+    set(CMAKE_C_COMPILER "$IOS_CC")
+    set(CMAKE_CXX_COMPILER "$IOS_CXX")
+    set(CMAKE_SYSROOT "$SDKROOT")
+    set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+    set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+    set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+    set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+    set(CMAKE_CROSSCOMPILING TRUE)
+    # Disable code signing for try_run executables
+    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
+    # Tell CMake the compilers work (skip tests)
+    set(CMAKE_C_COMPILER_WORKS TRUE)
+    set(CMAKE_CXX_COMPILER_WORKS TRUE)
+    EOF
   '';
   cmakeFlags = [
     "-DCMAKE_TOOLCHAIN_FILE=ios-toolchain.cmake"
@@ -138,161 +148,161 @@ EOF
     runHook postInstall
   '';
   postInstall = ''
-    # Ensure pkg-config files are in the right place
-    if [ -d "$out/lib/pkgconfig" ]; then
-      mkdir -p $out/lib/pkgconfig
-    fi
-    
-    # Verify installation and test the library
-    echo "=== Verifying epoll-shim iOS build ==="
-    
-    # Check library exists
-    if [ -f "$out/lib/libepoll-shim.a" ]; then
-      echo "✓ Static library found: $out/lib/libepoll-shim.a"
-      ls -lh "$out/lib/libepoll-shim.a"
-      
-      # Verify library architecture (should be arm64 for iOS)
-      if command -v file >/dev/null 2>&1; then
-        echo "=== Library architecture verification ==="
-        file "$out/lib/libepoll-shim.a" || true
-        # Check for arm64 architecture
-        if file "$out/lib/libepoll-shim.a" | grep -q "arm64\|ARM64\|aarch64"; then
-          echo "✓ Library architecture is correct for iOS (arm64)"
-        else
-          echo "⚠ Warning: Library architecture may not be correct for iOS"
-          file "$out/lib/libepoll-shim.a" || true
-        fi
-      fi
-      
-      # Verify library contains symbols (basic sanity check)
-      if command -v ar >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
-        echo "=== Library symbol verification ==="
-        # Extract and check for epoll-related symbols
-        if ar t "$out/lib/libepoll-shim.a" 2>/dev/null | head -5 > /dev/null; then
-          echo "✓ Library archive contains object files"
-          # Try to check for epoll symbols (this is a basic check)
-          TEMP_DIR=$(mktemp -d)
-          OLD_PWD=$(pwd)
-          cd "$TEMP_DIR" || exit 1
-          if ar x "$out/lib/libepoll-shim.a" 2>/dev/null; then
-            if nm *.o 2>/dev/null | grep -q "epoll\|kqueue"; then
-              echo "✓ Library contains epoll/kqueue-related symbols"
-            fi
-            rm -f *.o 2>/dev/null || true
-          fi
-          cd "$OLD_PWD" || true
-          rm -rf "$TEMP_DIR" 2>/dev/null || true
-        fi
-      fi
-      
-      # Verify headers are installed
-      if [ -d "$out/include" ]; then
-        echo "=== Header verification ==="
-        if [ -f "$out/include/epoll-shim/epoll.h" ] || [ -f "$out/include/libepoll-shim/sys/epoll.h" ]; then
-          echo "✓ epoll.h header found"
-          find "$out/include" -name "*.h" | head -5
-        else
-          echo "⚠ Warning: epoll.h header not found in expected location"
-          find "$out/include" -name "*.h" | head -10 || true
-        fi
-      fi
-      
-      # Test linking: Create a minimal test program to verify the library links correctly
-      echo "=== Testing library linkage ==="
-      # Re-setup iOS toolchain for link test
-      if [ -z "''${XCODE_APP:-}" ]; then
-        XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
-        if [ -n "$XCODE_APP" ]; then
-          export XCODE_APP
-          export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
-          export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
-          IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
-        fi
-      fi
-      
-      cat > test_link.c <<'TESTCODE'
-#include <sys/epoll.h>
-#include <unistd.h>
-#include <stdio.h>
-int main() {
-    int epfd = epoll_create1(0);
-    if (epfd >= 0) {
-        printf("epoll_create1() succeeded: fd=%d\n", epfd);
-        close(epfd);
-        return 0;
-    }
-    printf("epoll_create1() failed\n");
-    return 1;
-}
-TESTCODE
-      
-      # REQUIRED TEST: Compile and link a test program (this verifies the library works)
-      # This test MUST pass for the build to succeed
-      if [ -n "''${SDKROOT:-}" ] && [ -n "$IOS_CC" ] && [ -x "$IOS_CC" ]; then
-        echo "Running link test: Compiling test program with iOS toolchain..."
-        
-        # Set up pkg-config
-        export PKG_CONFIG_PATH="$out/lib/pkgconfig:$out/libdata/pkgconfig"
-        # Fallback flags if pkg-config fails or isn't available
-        PKG_CFLAGS=$(pkg-config --cflags epoll-shim 2>/dev/null || echo "-I$out/include/libepoll-shim")
-        PKG_LIBS=$(pkg-config --libs epoll-shim 2>/dev/null || echo "-L$out/lib -lepoll-shim -lepoll-shim-interpose")
-        
-        echo "Using flags: $PKG_CFLAGS $PKG_LIBS"
-        
-        # Determine architecture for simulator
-        SIMULATOR_ARCH="arm64"
-        if [ "$(uname -m)" = "x86_64" ]; then
-          SIMULATOR_ARCH="x86_64"
+        # Ensure pkg-config files are in the right place
+        if [ -d "$out/lib/pkgconfig" ]; then
+          mkdir -p $out/lib/pkgconfig
         fi
         
-        "$IOS_CC" -isysroot "$SDKROOT" \
-           -arch $SIMULATOR_ARCH \
-           -mios-simulator-version-min=15.0 \
-           $PKG_CFLAGS \
-           $PKG_LIBS \
-           test_link.c \
-           -o test_link_ios
-        TEST_EXIT_CODE=$?
+        # Verify installation and test the library
+        echo "=== Verifying epoll-shim iOS build ==="
         
-        if [ $TEST_EXIT_CODE -eq 0 ] && [ -f test_link_ios ]; then
-          echo "✓ Test program compiled and linked successfully"
-          echo "✓ Library is linkable and headers are correct"
+        # Check library exists
+        if [ -f "$out/lib/libepoll-shim.a" ]; then
+          echo "✓ Static library found: $out/lib/libepoll-shim.a"
+          ls -lh "$out/lib/libepoll-shim.a"
           
-          # Verify the test binary is for iOS arm64
+          # Verify library architecture (should be arm64 for iOS)
           if command -v file >/dev/null 2>&1; then
-            BINARY_ARCH=$(file test_link_ios | grep -o "arm64\|ARM64\|aarch64" || echo "")
-            if [ -n "$BINARY_ARCH" ]; then
-              echo "✓ Test binary architecture is correct: $BINARY_ARCH"
+            echo "=== Library architecture verification ==="
+            file "$out/lib/libepoll-shim.a" || true
+            # Check for arm64 architecture
+            if file "$out/lib/libepoll-shim.a" | grep -q "arm64\|ARM64\|aarch64"; then
+              echo "✓ Library architecture is correct for iOS (arm64)"
+            else
+              echo "⚠ Warning: Library architecture may not be correct for iOS"
+              file "$out/lib/libepoll-shim.a" || true
             fi
           fi
           
-          rm -f test_link.c test_link_ios 2>/dev/null || true
+          # Verify library contains symbols (basic sanity check)
+          if command -v ar >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
+            echo "=== Library symbol verification ==="
+            # Extract and check for epoll-related symbols
+            if ar t "$out/lib/libepoll-shim.a" 2>/dev/null | head -5 > /dev/null; then
+              echo "✓ Library archive contains object files"
+              # Try to check for epoll symbols (this is a basic check)
+              TEMP_DIR=$(mktemp -d)
+              OLD_PWD=$(pwd)
+              cd "$TEMP_DIR" || exit 1
+              if ar x "$out/lib/libepoll-shim.a" 2>/dev/null; then
+                if nm *.o 2>/dev/null | grep -q "epoll\|kqueue"; then
+                  echo "✓ Library contains epoll/kqueue-related symbols"
+                fi
+                rm -f *.o 2>/dev/null || true
+              fi
+              cd "$OLD_PWD" || true
+              rm -rf "$TEMP_DIR" 2>/dev/null || true
+            fi
+          fi
+          
+          # Verify headers are installed
+          if [ -d "$out/include" ]; then
+            echo "=== Header verification ==="
+            if [ -f "$out/include/epoll-shim/epoll.h" ] || [ -f "$out/include/libepoll-shim/sys/epoll.h" ]; then
+              echo "✓ epoll.h header found"
+              find "$out/include" -name "*.h" | head -5
+            else
+              echo "⚠ Warning: epoll.h header not found in expected location"
+              find "$out/include" -name "*.h" | head -10 || true
+            fi
+          fi
+          
+          # Test linking: Create a minimal test program to verify the library links correctly
+          echo "=== Testing library linkage ==="
+          # Re-setup iOS toolchain for link test
+          if [ -z "''${XCODE_APP:-}" ]; then
+            XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+            if [ -n "$XCODE_APP" ]; then
+              export XCODE_APP
+              export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+              export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+              IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+            fi
+          fi
+          
+          cat > test_link.c <<'TESTCODE'
+    #include <sys/epoll.h>
+    #include <unistd.h>
+    #include <stdio.h>
+    int main() {
+        int epfd = epoll_create1(0);
+        if (epfd >= 0) {
+            printf("epoll_create1() succeeded: fd=%d\n", epfd);
+            close(epfd);
+            return 0;
+        }
+        printf("epoll_create1() failed\n");
+        return 1;
+    }
+    TESTCODE
+          
+          # REQUIRED TEST: Compile and link a test program (this verifies the library works)
+          # This test MUST pass for the build to succeed
+          if [ -n "''${SDKROOT:-}" ] && [ -n "$IOS_CC" ] && [ -x "$IOS_CC" ]; then
+            echo "Running link test: Compiling test program with iOS toolchain..."
+            
+            # Set up pkg-config
+            export PKG_CONFIG_PATH="$out/lib/pkgconfig:$out/libdata/pkgconfig"
+            # Fallback flags if pkg-config fails or isn't available
+            PKG_CFLAGS=$(pkg-config --cflags epoll-shim 2>/dev/null || echo "-I$out/include/libepoll-shim")
+            PKG_LIBS=$(pkg-config --libs epoll-shim 2>/dev/null || echo "-L$out/lib -lepoll-shim -lepoll-shim-interpose")
+            
+            echo "Using flags: $PKG_CFLAGS $PKG_LIBS"
+            
+            # Determine architecture for simulator
+            SIMULATOR_ARCH="arm64"
+            if [ "$(uname -m)" = "x86_64" ]; then
+              SIMULATOR_ARCH="x86_64"
+            fi
+            
+            "$IOS_CC" -isysroot "$SDKROOT" \
+               -arch $SIMULATOR_ARCH \
+               -mios-simulator-version-min=15.0 \
+               $PKG_CFLAGS \
+               $PKG_LIBS \
+               test_link.c \
+               -o test_link_ios
+            TEST_EXIT_CODE=$?
+            
+            if [ $TEST_EXIT_CODE -eq 0 ] && [ -f test_link_ios ]; then
+              echo "✓ Test program compiled and linked successfully"
+              echo "✓ Library is linkable and headers are correct"
+              
+              # Verify the test binary is for iOS arm64
+              if command -v file >/dev/null 2>&1; then
+                BINARY_ARCH=$(file test_link_ios | grep -o "arm64\|ARM64\|aarch64" || echo "")
+                if [ -n "$BINARY_ARCH" ]; then
+                  echo "✓ Test binary architecture is correct: $BINARY_ARCH"
+                fi
+              fi
+              
+              rm -f test_link.c test_link_ios 2>/dev/null || true
+            else
+              echo "✗ ERROR: Link test FAILED"
+              echo "Test compilation output:"
+              echo "$TEST_OUTPUT"
+              echo ""
+              echo "This indicates the library cannot be linked or headers are incorrect"
+              rm -f test_link.c test_link_ios 2>/dev/null || true
+              exit 1
+            fi
+          else
+            echo "✗ ERROR: Cannot run link test - iOS toolchain not available"
+            echo "XCODE_APP: ''${XCODE_APP:-not set}"
+            echo "SDKROOT: ''${SDKROOT:-not set}"
+            echo "IOS_CC: ''${IOS_CC:-not set}"
+            exit 1
+          fi
+          
+          echo "=== epoll-shim iOS build verification complete ==="
+          echo "✓ Library built successfully for iOS"
         else
-          echo "✗ ERROR: Link test FAILED"
-          echo "Test compilation output:"
-          echo "$TEST_OUTPUT"
-          echo ""
-          echo "This indicates the library cannot be linked or headers are incorrect"
-          rm -f test_link.c test_link_ios 2>/dev/null || true
+          echo "✗ ERROR: epoll-shim library not found after installation"
+          echo "Checking build directory:"
+          find build -name "*.a" -o -name "*.dylib" 2>/dev/null | head -10 || true
+          ls -la "$out/lib/" || true
+          ls -la "$out/" || true
           exit 1
         fi
-      else
-        echo "✗ ERROR: Cannot run link test - iOS toolchain not available"
-        echo "XCODE_APP: ''${XCODE_APP:-not set}"
-        echo "SDKROOT: ''${SDKROOT:-not set}"
-        echo "IOS_CC: ''${IOS_CC:-not set}"
-        exit 1
-      fi
-      
-      echo "=== epoll-shim iOS build verification complete ==="
-      echo "✓ Library built successfully for iOS"
-    else
-      echo "✗ ERROR: epoll-shim library not found after installation"
-      echo "Checking build directory:"
-      find build -name "*.a" -o -name "*.dylib" 2>/dev/null | head -10 || true
-      ls -la "$out/lib/" || true
-      ls -la "$out/" || true
-      exit 1
-    fi
   '';
 }

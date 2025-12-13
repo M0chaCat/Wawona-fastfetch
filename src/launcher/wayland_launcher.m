@@ -36,12 +36,27 @@
     
     // Set up XDG_RUNTIME_DIR if not set
     if (!getenv("XDG_RUNTIME_DIR")) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        NSString *runtimeDir = NSTemporaryDirectory();
+        if (runtimeDir) {
+            // iOS sandbox path
+            [[NSFileManager defaultManager] createDirectoryAtPath:runtimeDir 
+                                      withIntermediateDirectories:YES 
+                                                       attributes:nil 
+                                                            error:nil];
+            setenv("XDG_RUNTIME_DIR", [runtimeDir UTF8String], 1);
+        } else {
+            NSLog(@"❌ Failed to get NSTemporaryDirectory");
+        }
+#else
+        // macOS: Use /tmp for less limiting access (e.g. waypipe)
         NSString *runtimeDir = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
         [[NSFileManager defaultManager] createDirectoryAtPath:runtimeDir 
                                   withIntermediateDirectories:YES 
                                                    attributes:nil 
                                                         error:nil];
         setenv("XDG_RUNTIME_DIR", [runtimeDir UTF8String], 1);
+#endif
     }
 }
 

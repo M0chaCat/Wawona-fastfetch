@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -11,14 +17,23 @@ let
     sha256 = "sha256-SFDNj4QPPqZUGLx4lfaUzHn0G/HhvWWXWCFoekD9lYM=";
   };
   src = fetchSource libxml2Source;
-  buildFlags = [ "--without-python" "--without-python" ];
-  patches = [];
+  buildFlags = [
+    "--without-python"
+    "--without-python"
+  ];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "libxml2-android";
   inherit src patches;
-  nativeBuildInputs = with buildPackages; [ autoconf automake libtool pkg-config texinfo ];
-  buildInputs = [];
+  nativeBuildInputs = with buildPackages; [
+    autoconf
+    automake
+    libtool
+    pkg-config
+    texinfo
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ ! -f ./configure ]; then
       autoreconf -fi || autogen.sh || true
@@ -33,7 +48,9 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=/usr --host=${androidToolchain.androidTarget} ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=/usr --host=${androidToolchain.androidTarget} ${
+      lib.concatMapStringsSep " " (flag: flag) buildFlags
+    }
     runHook postConfigure
   '';
   buildPhase = ''

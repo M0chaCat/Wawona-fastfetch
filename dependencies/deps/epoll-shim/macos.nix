@@ -1,4 +1,9 @@
-{ lib, pkgs, common, buildModule }:
+{
+  lib,
+  pkgs,
+  common,
+  buildModule,
+}:
 
 let
   # Try to use nixpkgs epoll-shim, otherwise build from source
@@ -20,9 +25,12 @@ else
   pkgs.stdenv.mkDerivation {
     name = "epoll-shim-macos";
     src = fetchSource epollShimSource;
-    patches = [];
-    nativeBuildInputs = with pkgs; [ cmake pkg-config ];
-    buildInputs = [];
+    patches = [ ];
+    nativeBuildInputs = with pkgs; [
+      cmake
+      pkg-config
+    ];
+    buildInputs = [ ];
     cmakeFlags = [
       "-DCMAKE_BUILD_TYPE=Release"
       "-DCMAKE_INSTALL_PREFIX=$out"

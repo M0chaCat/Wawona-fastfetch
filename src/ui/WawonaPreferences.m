@@ -1,5 +1,8 @@
 #import "WawonaPreferences.h"
 #import "WawonaPreferencesManager.h"
+#import <SystemConfiguration/SystemConfiguration.h>
+#import <ifaddrs.h>
+#import <net/if.h>
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #import <UIKit/UIKit.h>
@@ -157,9 +160,12 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"SettingsCell"];
     }
     
+    // Reset all cell properties to avoid reuse issues
     cell.textLabel.text = title;
-    cell.accessoryView = nil; // Reset
+    cell.detailTextLabel.text = nil; // Clear detail text to prevent version from appearing in reused cells
+    cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     
     if ([type isEqualToString:@"switch"]) {
         NSString *key = item[@"key"];
@@ -197,6 +203,8 @@
             } else {
                 textField.text = [defaults stringForKey:key];
             }
+        } else {
+            textField.text = @"";
         }
         
         [textField addTarget:self action:@selector(textFieldChanged:) forControlEvents:UIControlEventEditingDidEnd];
@@ -205,9 +213,15 @@
         cell.accessoryView = textField;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if ([type isEqualToString:@"info"]) {
+        // Only set version for info type cells
         NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
         NSString *build = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ (%@)", version, build];
+        if (version) {
+            // Format as v0.0.1 (build)
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"v%@ (%@)", version, build ? build : @"1"];
+        } else {
+            cell.detailTextLabel.text = @"Unknown";
+        }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if ([type isEqualToString:@"button"]) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -271,50 +285,890 @@
 
 #else
 
-@interface WawonaPreferences () <NSToolbarDelegate>
+// macOS Implementation with Modern Sidebar Style (Tahoe + 26)
 
-@property (nonatomic, strong) NSView *displayView;
-@property (nonatomic, strong) NSView *colorManagementView;
-@property (nonatomic, strong) NSView *nestedCompositorsView;
-@property (nonatomic, strong) NSView *inputView;
-@property (nonatomic, strong) NSView *clientManagementView;
-@property (nonatomic, strong) NSView *waylandConfigView;
-@property (nonatomic, strong) NSView *currentView;
-@property (nonatomic, strong) NSToolbar *toolbar;
-@property (nonatomic, strong) NSStackView *contentStackView;
+@class WawonaPreferencesContentViewController;
 
-// Input (includes Clipboard)
-@property (nonatomic, strong) NSButton *universalClipboardCheckbox;
+// MARK: - Models
 
-// Display
+@interface WawonaPreferencesItem : NSObject
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, strong) NSImage *icon;
+@property (nonatomic, strong) NSColor *iconColor;
+@end
+
+@implementation WawonaPreferencesItem
+@end
+
+// MARK: - Sidebar View Controller
+
+@interface WawonaPreferencesSidebarViewController : NSViewController <NSOutlineViewDelegate, NSOutlineViewDataSource>
+@property (nonatomic, strong) NSOutlineView *outlineView;
+@property (nonatomic, strong) NSArray<WawonaPreferencesItem *> *items;
+@property (nonatomic, copy) void (^selectionHandler)(NSString *identifier);
+@end
+
+@implementation WawonaPreferencesSidebarViewController
+
+- (void)loadView {
+    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 250, 500)];
+    
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:self.view.bounds];
+    scrollView.hasVerticalScroller = YES;
+    scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scrollView.drawsBackground = NO;
+    
+    self.outlineView = [[NSOutlineView alloc] initWithFrame:scrollView.bounds];
+    self.outlineView.delegate = self;
+    self.outlineView.dataSource = self;
+    self.outlineView.headerView = nil;
+    self.outlineView.selectionHighlightStyle = NSTableViewSelectionHighlightStyleSourceList;
+    self.outlineView.backgroundColor = [NSColor clearColor];
+    
+    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"MainColumn"];
+    [self.outlineView addTableColumn:column];
+    self.outlineView.outlineTableColumn = column;
+    
+    scrollView.documentView = self.outlineView;
+    [self.view addSubview:scrollView];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self setupItems];
+    [self.outlineView reloadData];
+    
+    // Select first item by default
+    if (self.items.count > 0) {
+        [self.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    }
+}
+
+- (void)setupItems {
+    NSMutableArray *items = [NSMutableArray array];
+    
+    WawonaPreferencesItem *display = [[WawonaPreferencesItem alloc] init];
+    display.title = @"Display";
+    display.identifier = @"display";
+    display.icon = [NSImage imageWithSystemSymbolName:@"display" accessibilityDescription:@"Display"];
+    display.iconColor = [NSColor systemBlueColor];
+    [items addObject:display];
+    
+    WawonaPreferencesItem *input = [[WawonaPreferencesItem alloc] init];
+    input.title = @"Input";
+    input.identifier = @"input";
+    input.icon = [NSImage imageWithSystemSymbolName:@"keyboard" accessibilityDescription:@"Input"];
+    input.iconColor = [NSColor systemPurpleColor];
+    [items addObject:input];
+
+    WawonaPreferencesItem *graphics = [[WawonaPreferencesItem alloc] init];
+    graphics.title = @"Graphics";
+    graphics.identifier = @"graphics";
+    graphics.icon = [NSImage imageWithSystemSymbolName:@"cpu" accessibilityDescription:@"Graphics"];
+    graphics.iconColor = [NSColor systemRedColor];
+    [items addObject:graphics];
+
+    WawonaPreferencesItem *network = [[WawonaPreferencesItem alloc] init];
+    network.title = @"Network";
+    network.identifier = @"network";
+    network.icon = [NSImage imageWithSystemSymbolName:@"network" accessibilityDescription:@"Network"];
+    network.iconColor = [NSColor systemOrangeColor];
+    [items addObject:network];
+    
+    WawonaPreferencesItem *advanced = [[WawonaPreferencesItem alloc] init];
+    advanced.title = @"Advanced";
+    advanced.identifier = @"advanced";
+    advanced.icon = [NSImage imageWithSystemSymbolName:@"gearshape.2" accessibilityDescription:@"Advanced"];
+    advanced.iconColor = [NSColor systemGrayColor];
+    [items addObject:advanced];
+    
+    WawonaPreferencesItem *waypipe = [[WawonaPreferencesItem alloc] init];
+    waypipe.title = @"Waypipe";
+    waypipe.identifier = @"waypipe";
+    waypipe.icon = [NSImage imageWithSystemSymbolName:@"network" accessibilityDescription:@"Waypipe"];
+    waypipe.iconColor = [NSColor systemGreenColor];
+    [items addObject:waypipe];
+    
+    self.items = items;
+}
+
+#pragma mark - NSOutlineViewDataSource
+
+- (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(id)item {
+    return item == nil ? self.items.count : 0;
+}
+
+- (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)index ofItem:(id)item {
+    return item == nil ? self.items[index] : nil;
+}
+
+- (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item {
+    return NO;
+}
+
+#pragma mark - NSOutlineViewDelegate
+
+- (NSView *)outlineView:(NSOutlineView *)outlineView viewForTableColumn:(NSTableColumn *)tableColumn item:(id)item {
+    if ([item isKindOfClass:[WawonaPreferencesItem class]]) {
+        WawonaPreferencesItem *prefItem = (WawonaPreferencesItem *)item;
+        NSTableCellView *cell = [outlineView makeViewWithIdentifier:@"Cell" owner:self];
+        
+        if (!cell) {
+            cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 200, 30)];
+            cell.identifier = @"Cell";
+            
+            NSImageView *imageView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 6, 18, 18)];
+            imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
+            imageView.tag = 100;
+            [cell addSubview:imageView];
+            
+            NSTextField *textField = [[NSTextField alloc] initWithFrame:NSMakeRect(26, 6, 170, 18)];
+            textField.bordered = NO;
+            textField.drawsBackground = NO;
+            textField.editable = NO;
+            textField.tag = 101;
+            [cell addSubview:textField];
+        }
+        
+        NSImageView *img = [cell viewWithTag:100];
+        NSTextField *txt = [cell viewWithTag:101];
+        
+        img.image = prefItem.icon;
+        img.contentTintColor = prefItem.iconColor;
+        txt.stringValue = prefItem.title;
+        
+        return cell;
+    }
+    return nil;
+}
+
+- (void)outlineViewSelectionDidChange:(NSNotification *)notification {
+    NSInteger row = [self.outlineView selectedRow];
+    if (row >= 0 && row < (NSInteger)self.items.count) {
+        if (self.selectionHandler) {
+            self.selectionHandler(self.items[row].identifier);
+        }
+    }
+}
+
+- (CGFloat)outlineView:(NSOutlineView *)outlineView heightOfRowByItem:(id)item {
+    return 32.0;
+}
+
+@end
+
+// MARK: - Content View Controller
+
+@interface WawonaPreferencesContentViewController : NSViewController <NSTextFieldDelegate, NSTextViewDelegate>
+
+@property (nonatomic, strong) NSScrollView *scrollView;
+@property (nonatomic, strong) NSStackView *stackView;
+
+// Properties for bindings/updates
 @property (nonatomic, strong) NSButton *forceServerSideDecorationsCheckbox;
-@property (nonatomic, strong) NSButton *autoRetinaScalingCheckbox;
-
-// Color Management
-@property (nonatomic, strong) NSButton *colorSyncSupportCheckbox;
-
-// Nested Compositors
-@property (nonatomic, strong) NSButton *nestedCompositorsCheckbox;
-@property (nonatomic, strong) NSButton *useMetal4ForNestedCheckbox;
-
-// Input
 @property (nonatomic, strong) NSButton *renderMacOSPointerCheckbox;
-@property (nonatomic, strong) NSButton *swapCmdAsCtrlCheckbox;
-
-// Client Management
+@property (nonatomic, strong) NSButton *autoScaleCheckbox;
+@property (nonatomic, strong) NSButton *respectSafeAreaCheckbox;
+@property (nonatomic, strong) NSButton *swapCmdWithAltCheckbox;
+@property (nonatomic, strong) NSButton *universalClipboardCheckbox;
+@property (nonatomic, strong) NSButton *colorOperationsCheckbox;
+@property (nonatomic, strong) NSButton *nestedCompositorsCheckbox;
 @property (nonatomic, strong) NSButton *multipleClientsCheckbox;
 
-// Network / Remote Access
-@property (nonatomic, strong) NSButton *enableTCPListenerCheckbox;
-@property (nonatomic, strong) NSTextField *tcpListenerPortField;
-@property (nonatomic, strong) NSButton *waypipeRSSupportCheckbox;
-@property (nonatomic, strong) NSButton *enableVulkanDriversCheckbox;
-@property (nonatomic, strong) NSButton *enableEGLDriversCheckbox;
+// Graphics
+@property (nonatomic, strong) NSButton *vulkanDriversCheckbox;
+@property (nonatomic, strong) NSButton *eglDriversCheckbox;
+@property (nonatomic, strong) NSButton *dmabufCheckbox;
 
-// Wayland Config
-@property (nonatomic, strong) NSTextField *waylandSocketDirField;
-@property (nonatomic, strong) NSTextField *waylandDisplayNumberField;
+// Network
+@property (nonatomic, strong) NSButton *tcpListenerCheckbox;
+@property (nonatomic, strong) NSTextField *tcpPortField;
+@property (nonatomic, strong) NSTextField *socketDirField;
+@property (nonatomic, strong) NSTextField *displayNumField;
 
+@property (nonatomic, strong) NSTextField *waypipeDisplayField;
+@property (nonatomic, strong) NSTextField *waypipeSocketField;
+@property (nonatomic, strong) NSPopUpButton *waypipeCompressPopup;
+@property (nonatomic, strong) NSTextField *waypipeCompressLevelField;
+@property (nonatomic, strong) NSTextField *waypipeThreadsField;
+@property (nonatomic, strong) NSPopUpButton *waypipeVideoPopup;
+@property (nonatomic, strong) NSPopUpButton *waypipeVideoEncodingPopup;
+@property (nonatomic, strong) NSPopUpButton *waypipeVideoDecodingPopup;
+@property (nonatomic, strong) NSTextField *waypipeVideoBpfField;
+@property (nonatomic, strong) NSButton *waypipeSSHEnabledCheckbox;
+@property (nonatomic, strong) NSTextField *waypipeSSHHostField;
+@property (nonatomic, strong) NSTextField *waypipeSSHUserField;
+@property (nonatomic, strong) NSTextField *waypipeSSHBinaryField;
+@property (nonatomic, strong) NSTextField *waypipeRemoteCommandField;
+@property (nonatomic, strong) NSTextView *waypipeCustomScriptTextView;
+@property (nonatomic, strong) NSButton *waypipeDebugCheckbox;
+@property (nonatomic, strong) NSButton *waypipeNoGpuCheckbox;
+@property (nonatomic, strong) NSButton *waypipeOneshotCheckbox;
+@property (nonatomic, strong) NSButton *waypipeUnlinkSocketCheckbox;
+@property (nonatomic, strong) NSButton *waypipeLoginShellCheckbox;
+@property (nonatomic, strong) NSButton *waypipeVsockCheckbox;
+@property (nonatomic, strong) NSButton *waypipeXwlsCheckbox;
+@property (nonatomic, strong) NSTextField *waypipeTitlePrefixField;
+@property (nonatomic, strong) NSTextField *waypipeSecCtxField;
+
+- (void)showSection:(NSString *)identifier;
+
+@end
+
+@implementation WawonaPreferencesContentViewController
+
+- (void)loadView {
+    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 500)];
+    
+    self.scrollView = [[NSScrollView alloc] initWithFrame:self.view.bounds];
+    self.scrollView.hasVerticalScroller = YES;
+    self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.scrollView.drawsBackground = NO;
+    self.scrollView.borderType = NSNoBorder;
+    
+    NSView *documentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 500)];
+    documentView.autoresizingMask = NSViewWidthSizable;
+    
+    self.stackView = [[NSStackView alloc] initWithFrame:documentView.bounds];
+    self.stackView.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.stackView.alignment = NSLayoutAttributeLeading;
+    self.stackView.spacing = 20;
+    self.stackView.edgeInsets = NSEdgeInsetsMake(20, 40, 20, 40);
+    self.stackView.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    [documentView addSubview:self.stackView];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [self.stackView.topAnchor constraintEqualToAnchor:documentView.topAnchor],
+        [self.stackView.leadingAnchor constraintEqualToAnchor:documentView.leadingAnchor],
+        [self.stackView.trailingAnchor constraintEqualToAnchor:documentView.trailingAnchor],
+        [self.stackView.bottomAnchor constraintEqualToAnchor:documentView.bottomAnchor]
+    ]];
+    
+    self.scrollView.documentView = documentView;
+    [self.view addSubview:self.scrollView];
+}
+
+- (void)showSection:(NSString *)identifier {
+    // Clear existing views
+    for (NSView *view in [self.stackView.arrangedSubviews copy]) {
+        [self.stackView removeArrangedSubview:view];
+        [view removeFromSuperview];
+    }
+    
+    // Build new section
+    if ([identifier isEqualToString:@"display"]) {
+        [self buildDisplaySection];
+    } else if ([identifier isEqualToString:@"input"]) {
+        [self buildInputSection];
+    } else if ([identifier isEqualToString:@"graphics"]) {
+        [self buildGraphicsSection];
+    } else if ([identifier isEqualToString:@"network"]) {
+        [self buildNetworkSection];
+    } else if ([identifier isEqualToString:@"advanced"]) {
+        [self buildAdvancedSection];
+    } else if ([identifier isEqualToString:@"waypipe"]) {
+        [self buildWaypipeSection];
+    }
+    
+    // Refresh data
+    [self loadPreferences];
+}
+
+// MARK: - Section Builders
+
+- (void)buildDisplaySection {
+    [self addSectionTitle:@"Display"];
+    
+    NSButton *ssd;
+    [self addCheckbox:@"Force Server-Side Decorations"
+          description:@"Forces Wayland clients to use macOS-style window decorations (titlebar, controls)."
+               action:@selector(forceServerSideDecorationsChanged:)
+             checkbox:&ssd];
+    self.forceServerSideDecorationsCheckbox = ssd;
+    
+    NSButton *cursor;
+    [self addCheckbox:@"Show macOS Cursor"
+          description:@"Toggles the visibility of the macOS cursor when the application is focused."
+               action:@selector(renderMacOSPointerChanged:)
+             checkbox:&cursor];
+    self.renderMacOSPointerCheckbox = cursor;
+    
+    NSButton *scale;
+    [self addCheckbox:@"Auto Scale"
+          description:@"Detects and matches macOS UI Scaling."
+               action:@selector(autoScaleChanged:)
+             checkbox:&scale];
+    self.autoScaleCheckbox = scale;
+
+    NSButton *safe;
+    [self addCheckbox:@"Respect Safe Area"
+          description:@"Avoids rendering content in notch/camera housing areas."
+               action:@selector(respectSafeAreaChanged:)
+             checkbox:&safe];
+    self.respectSafeAreaCheckbox = safe;
+}
+
+- (void)buildInputSection {
+    [self addSectionTitle:@"Input"];
+    
+    NSButton *swap;
+    [self addCheckbox:@"Swap CMD with ALT"
+          description:@"Swaps Command (⌘) and Alt (⌥) keys. Useful for Linux/Windows layouts."
+               action:@selector(swapCmdWithAltChanged:)
+             checkbox:&swap];
+    self.swapCmdWithAltCheckbox = swap;
+    
+    NSButton *clipboard;
+    [self addCheckbox:@"Universal Clipboard"
+          description:@"Enables clipboard synchronization between Wawona and macOS."
+               action:@selector(universalClipboardChanged:)
+             checkbox:&clipboard];
+    self.universalClipboardCheckbox = clipboard;
+}
+
+- (void)buildGraphicsSection {
+    [self addSectionTitle:@"Graphics"];
+    
+    NSButton *vulkan;
+    [self addCheckbox:@"Enable Vulkan Drivers"
+          description:@"Enables experimental Vulkan driver support."
+               action:@selector(vulkanDriversChanged:)
+             checkbox:&vulkan];
+    self.vulkanDriversCheckbox = vulkan;
+    
+    NSButton *egl;
+    [self addCheckbox:@"Enable EGL Drivers"
+          description:@"Enables EGL for hardware accelerated rendering."
+               action:@selector(eglDriversChanged:)
+             checkbox:&egl];
+    self.eglDriversCheckbox = egl;
+    
+    NSButton *dmabuf;
+    [self addCheckbox:@"Enable DMABUF"
+          description:@"Enables zero-copy texture sharing via IOSurface."
+               action:@selector(dmabufChanged:)
+             checkbox:&dmabuf];
+    self.dmabufCheckbox = dmabuf;
+}
+
+- (void)buildNetworkSection {
+    [self addSectionTitle:@"Network & Ports"];
+    
+    NSButton *tcp;
+    [self addCheckbox:@"Enable TCP Listener"
+          description:@"Allows external connections via TCP."
+               action:@selector(tcpListenerChanged:)
+             checkbox:&tcp];
+    self.tcpListenerCheckbox = tcp;
+    
+    NSTextField *port;
+    [self addTextField:@"TCP Listener Port"
+           description:@"Port number for TCP listener."
+               default:@"6000"
+                  icon:@"network"
+                 field:&port];
+    self.tcpPortField = port;
+    
+    NSTextField *sock;
+    [self addTextField:@"Wayland Socket Directory"
+           description:@"Directory for Wayland sockets."
+               default:@"/tmp"
+                  icon:@"folder"
+                 field:&sock];
+    self.socketDirField = sock;
+    
+    NSTextField *disp;
+    [self addTextField:@"Display Number"
+           description:@"Wayland display number (e.g., 0 for wayland-0)."
+               default:@"0"
+                  icon:@"display"
+                 field:&disp];
+    self.displayNumField = disp;
+}
+
+- (void)buildAdvancedSection {
+    [self addSectionTitle:@"Advanced"];
+    
+    NSButton *color;
+    [self addCheckbox:@"Color Operations"
+          description:@"Enables support for color profiles and HDR."
+               action:@selector(colorOperationsChanged:)
+             checkbox:&color];
+    self.colorOperationsCheckbox = color;
+    
+    NSButton *nested;
+    [self addCheckbox:@"Nested Compositors"
+          description:@"Enables support for running other Wayland compositors (e.g., Weston, Plasma)."
+               action:@selector(nestedCompositorsChanged:)
+             checkbox:&nested];
+    self.nestedCompositorsCheckbox = nested;
+    
+    NSButton *clients;
+    [self addCheckbox:@"Multiple Clients"
+          description:@"Allows multiple Wayland clients to connect simultaneously."
+               action:@selector(multipleClientsChanged:)
+             checkbox:&clients];
+    self.multipleClientsCheckbox = clients;
+}
+
+- (void)buildWaypipeSection {
+    [self addSectionTitle:@"Waypipe"];
+    
+    [self addInfoField:@"Local IP Address" value:[self getLocalIPAddress] icon:@"network"];
+    
+    NSTextField *display;
+    [self addTextField:@"Wayland Display"
+           description:@"Socket name (e.g., wayland-0)"
+               default:@"wayland-0"
+                  icon:@"display"
+                 field:&display];
+    self.waypipeDisplayField = display;
+    
+    NSTextField *socket;
+    NSString *socketPath = [[WawonaPreferencesManager sharedManager] waypipeSocket];
+    [self addTextField:@"Socket Path"
+           description:@"Unix socket path (read-only)."
+               default:socketPath
+                  icon:@"folder"
+                 field:&socket];
+    [socket setEditable:NO];
+    self.waypipeSocketField = socket;
+    
+    NSPopUpButton *compress;
+    [self addPopup:@"Compression"
+       description:@"Compression method."
+           options:@[@"none", @"lz4", @"zstd"]
+           default:@"lz4"
+              icon:@"archive"
+             popup:&compress];
+    self.waypipeCompressPopup = compress;
+    
+    NSTextField *level;
+    [self addTextField:@"Compression Level"
+           description:@"Zstd level (1-22)."
+               default:@"7"
+                  icon:@"slider.horizontal.3"
+                 field:&level];
+    self.waypipeCompressLevelField = level;
+    
+    NSTextField *threads;
+    [self addTextField:@"Threads"
+           description:@"Number of threads (0 = auto)."
+               default:@"0"
+                  icon:@"cpu"
+                 field:&threads];
+    self.waypipeThreadsField = threads;
+    
+    [self addSeparator];
+    [self addSectionTitle:@"Video Compression"];
+    
+    NSPopUpButton *video;
+    [self addPopup:@"Video Codec"
+       description:@"Lossy video codec for DMABUF."
+           options:@[@"none", @"h264", @"vp9", @"av1"]
+           default:@"none"
+              icon:@"video"
+             popup:&video];
+    self.waypipeVideoPopup = video;
+    
+    NSPopUpButton *vEnc;
+    [self addPopup:@"Encoding"
+       description:@"Hardware vs Software encoding."
+           options:@[@"hw", @"sw", @"hwenc", @"swenc"]
+           default:@"hw"
+              icon:@"gearshape"
+             popup:&vEnc];
+    self.waypipeVideoEncodingPopup = vEnc;
+    
+    NSPopUpButton *vDec;
+    [self addPopup:@"Decoding"
+       description:@"Hardware vs Software decoding."
+           options:@[@"hw", @"sw", @"hwdec", @"swdec"]
+           default:@"hw"
+              icon:@"gearshape"
+             popup:&vDec];
+    self.waypipeVideoDecodingPopup = vDec;
+    
+    NSTextField *bpf;
+    [self addTextField:@"Bits Per Frame"
+           description:@"Target bit rate per frame."
+               default:@""
+                  icon:@"speedometer"
+                 field:&bpf];
+    self.waypipeVideoBpfField = bpf;
+    
+    [self addSeparator];
+    [self addSectionTitle:@"SSH"];
+    
+    NSButton *ssh;
+    [self addCheckbox:@"Enable SSH"
+          description:@"Use SSH for remote connections."
+               action:@selector(waypipeSSHEnabledChanged:)
+             checkbox:&ssh];
+    self.waypipeSSHEnabledCheckbox = ssh;
+    
+    NSTextField *host;
+    [self addTextField:@"Host" description:@"Remote host address." default:@"" icon:@"server.rack" field:&host];
+    self.waypipeSSHHostField = host;
+    
+    NSTextField *user;
+    [self addTextField:@"User" description:@"SSH Username." default:@"" icon:@"person" field:&user];
+    self.waypipeSSHUserField = user;
+    
+    NSTextField *cmd;
+    [self addTextField:@"Remote Command" description:@"Command to run remotely." default:@"" icon:@"play.circle" field:&cmd];
+    self.waypipeRemoteCommandField = cmd;
+    
+    [self addSeparator];
+    [self addSectionTitle:@"Advanced"];
+    
+    NSButton *debug;
+    [self addCheckbox:@"Debug Mode" description:@"Print debug logs." action:@selector(waypipeDebugChanged:) checkbox:&debug];
+    self.waypipeDebugCheckbox = debug;
+    
+    NSButton *noGpu;
+    [self addCheckbox:@"Disable GPU" description:@"Block GPU protocols." action:@selector(waypipeNoGpuChanged:) checkbox:&noGpu];
+    self.waypipeNoGpuCheckbox = noGpu;
+
+    NSButton *oneshot;
+    [self addCheckbox:@"One-shot" description:@"Exit when the last client disconnects." action:@selector(waypipeOneshotChanged:) checkbox:&oneshot];
+    self.waypipeOneshotCheckbox = oneshot;
+
+    NSButton *unlink;
+    [self addCheckbox:@"Unlink Socket" description:@"Unlink socket on exit." action:@selector(waypipeUnlinkSocketChanged:) checkbox:&unlink];
+    self.waypipeUnlinkSocketCheckbox = unlink;
+    
+    NSButton *login;
+    [self addCheckbox:@"Login Shell" description:@"Run remote command in login shell." action:@selector(waypipeLoginShellChanged:) checkbox:&login];
+    self.waypipeLoginShellCheckbox = login;
+    
+    NSButton *vsock;
+    [self addCheckbox:@"VSock" description:@"Use VSock for communication." action:@selector(waypipeVsockChanged:) checkbox:&vsock];
+    self.waypipeVsockCheckbox = vsock;
+    
+    NSButton *xwls;
+    [self addCheckbox:@"XWayland Support" description:@"Enable XWayland support." action:@selector(waypipeXwlsChanged:) checkbox:&xwls];
+    self.waypipeXwlsCheckbox = xwls;
+    
+    NSTextField *prefix;
+    [self addTextField:@"Title Prefix" description:@"Prefix for window titles." default:@"" icon:@"text.format" field:&prefix];
+    self.waypipeTitlePrefixField = prefix;
+    
+    NSTextField *sec;
+    [self addTextField:@"Security Context" description:@"SELinux security context." default:@"" icon:@"lock" field:&sec];
+    self.waypipeSecCtxField = sec;
+}
+
+// MARK: - UI Helpers
+
+- (void)addSectionTitle:(NSString *)title {
+    NSTextField *field = [NSTextField labelWithString:title];
+    field.font = [NSFont systemFontOfSize:18 weight:NSFontWeightBold];
+    [self.stackView addArrangedSubview:field];
+}
+
+- (void)addCheckbox:(NSString *)title description:(NSString *)desc action:(SEL)action checkbox:(NSButton **)outBtn {
+    NSView *container = [[NSView alloc] init];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    NSButton *btn = [NSButton checkboxWithTitle:title target:self action:action];
+    btn.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:btn];
+    
+    NSTextField *descField = [NSTextField labelWithString:desc];
+    descField.font = [NSFont systemFontOfSize:11];
+    descField.textColor = [NSColor secondaryLabelColor];
+    descField.translatesAutoresizingMaskIntoConstraints = NO;
+    descField.preferredMaxLayoutWidth = 400;
+    [container addSubview:descField];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [btn.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [btn.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [descField.topAnchor constraintEqualToAnchor:btn.bottomAnchor constant:2],
+        [descField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:18],
+        [descField.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [descField.bottomAnchor constraintEqualToAnchor:container.bottomAnchor]
+    ]];
+    
+    [self.stackView addArrangedSubview:container];
+    if (outBtn) *outBtn = btn;
+}
+
+- (void)addTextField:(NSString *)title description:(NSString *)desc default:(NSString *)def icon:(NSString *)icon field:(NSTextField **)outField {
+    NSView *container = [[NSView alloc] init];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    NSImageView *img = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:icon accessibilityDescription:nil]];
+    img.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:img];
+    
+    NSTextField *label = [NSTextField labelWithString:title];
+    label.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:label];
+    
+    NSTextField *textField = [NSTextField textFieldWithString:def];
+    textField.translatesAutoresizingMaskIntoConstraints = NO;
+    textField.delegate = self;
+    [container addSubview:textField];
+    
+    NSTextField *descLabel = [NSTextField labelWithString:desc];
+    descLabel.font = [NSFont systemFontOfSize:11];
+    descLabel.textColor = [NSColor secondaryLabelColor];
+    descLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:descLabel];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [img.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [img.topAnchor constraintEqualToAnchor:container.topAnchor constant:2],
+        [img.widthAnchor constraintEqualToConstant:16],
+        [img.heightAnchor constraintEqualToConstant:16],
+        
+        [label.leadingAnchor constraintEqualToAnchor:img.trailingAnchor constant:8],
+        [label.topAnchor constraintEqualToAnchor:container.topAnchor],
+        
+        [textField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24],
+        [textField.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:4],
+        [textField.widthAnchor constraintEqualToConstant:200],
+        
+        [descLabel.leadingAnchor constraintEqualToAnchor:textField.trailingAnchor constant:8],
+        [descLabel.centerYAnchor constraintEqualToAnchor:textField.centerYAnchor],
+        [descLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        
+        [container.bottomAnchor constraintEqualToAnchor:textField.bottomAnchor constant:8]
+    ]];
+    
+    [self.stackView addArrangedSubview:container];
+    if (outField) *outField = textField;
+}
+
+- (void)addPopup:(NSString *)title description:(NSString *)desc options:(NSArray *)opts default:(NSString *)def icon:(NSString *)icon popup:(NSPopUpButton **)outPopup {
+    NSView *container = [[NSView alloc] init];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    NSImageView *img = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:icon accessibilityDescription:nil]];
+    img.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:img];
+    
+    NSTextField *label = [NSTextField labelWithString:title];
+    label.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:label];
+    
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [popup addItemsWithTitles:opts];
+    [popup selectItemWithTitle:def];
+    popup.translatesAutoresizingMaskIntoConstraints = NO;
+    popup.target = self;
+    popup.action = @selector(popupValueChanged:);
+    [container addSubview:popup];
+    
+    NSTextField *descLabel = [NSTextField labelWithString:desc];
+    descLabel.font = [NSFont systemFontOfSize:11];
+    descLabel.textColor = [NSColor secondaryLabelColor];
+    descLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:descLabel];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [img.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [img.topAnchor constraintEqualToAnchor:container.topAnchor constant:2],
+        [img.widthAnchor constraintEqualToConstant:16],
+        [img.heightAnchor constraintEqualToConstant:16],
+        
+        [label.leadingAnchor constraintEqualToAnchor:img.trailingAnchor constant:8],
+        [label.topAnchor constraintEqualToAnchor:container.topAnchor],
+        
+        [popup.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24],
+        [popup.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:4],
+        [popup.widthAnchor constraintEqualToConstant:150],
+        
+        [descLabel.leadingAnchor constraintEqualToAnchor:popup.trailingAnchor constant:8],
+        [descLabel.centerYAnchor constraintEqualToAnchor:popup.centerYAnchor],
+        [descLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        
+        [container.bottomAnchor constraintEqualToAnchor:popup.bottomAnchor constant:8]
+    ]];
+    
+    [self.stackView addArrangedSubview:container];
+    if (outPopup) *outPopup = popup;
+}
+
+- (void)addInfoField:(NSString *)title value:(NSString *)value icon:(NSString *)icon {
+    NSTextField *f;
+    [self addTextField:title description:@"(Read Only)" default:value icon:icon field:&f];
+    [f setEditable:NO];
+}
+
+- (void)addSeparator {
+    NSBox *box = [[NSBox alloc] init];
+    box.boxType = NSBoxSeparator;
+    [self.stackView addArrangedSubview:box];
+}
+
+// MARK: - Actions
+
+- (void)forceServerSideDecorationsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setForceServerSideDecorations:sender.state]; }
+- (void)renderMacOSPointerChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setRenderMacOSPointer:sender.state]; }
+- (void)autoScaleChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setAutoScale:sender.state]; }
+- (void)respectSafeAreaChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setRespectSafeArea:sender.state]; }
+
+- (void)swapCmdWithAltChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setSwapCmdWithAlt:sender.state]; }
+- (void)universalClipboardChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setUniversalClipboardEnabled:sender.state]; }
+
+- (void)vulkanDriversChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setVulkanDriversEnabled:sender.state]; }
+- (void)eglDriversChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setEglDriversEnabled:sender.state]; }
+- (void)dmabufChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setDmabufEnabled:sender.state]; }
+
+- (void)tcpListenerChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setEnableTCPListener:sender.state]; }
+
+- (void)colorOperationsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setColorOperations:sender.state]; }
+- (void)nestedCompositorsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setNestedCompositorsSupportEnabled:sender.state]; }
+- (void)multipleClientsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setMultipleClientsEnabled:sender.state]; }
+
+- (void)waypipeSSHEnabledChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeSSHEnabled:sender.state]; }
+- (void)waypipeDebugChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeDebug:sender.state]; }
+- (void)waypipeNoGpuChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeNoGpu:sender.state]; }
+- (void)waypipeOneshotChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeOneshot:sender.state]; }
+- (void)waypipeUnlinkSocketChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeUnlinkSocket:sender.state]; }
+- (void)waypipeLoginShellChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeLoginShell:sender.state]; }
+- (void)waypipeVsockChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeVsock:sender.state]; }
+- (void)waypipeXwlsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeXwls:sender.state]; }
+
+- (void)popupValueChanged:(NSPopUpButton *)sender {
+    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
+    if (sender == self.waypipeCompressPopup) [prefs setWaypipeCompress:sender.selectedItem.title];
+    else if (sender == self.waypipeVideoPopup) [prefs setWaypipeVideo:sender.selectedItem.title];
+    else if (sender == self.waypipeVideoEncodingPopup) [prefs setWaypipeVideoEncoding:sender.selectedItem.title];
+    else if (sender == self.waypipeVideoDecodingPopup) [prefs setWaypipeVideoDecoding:sender.selectedItem.title];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+    NSTextField *field = notification.object;
+    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
+    
+    if (field == self.waypipeDisplayField) [prefs setWaypipeDisplay:field.stringValue];
+    else if (field == self.waypipeCompressLevelField) [prefs setWaypipeCompressLevel:field.stringValue];
+    else if (field == self.waypipeThreadsField) [prefs setWaypipeThreads:field.stringValue];
+    else if (field == self.waypipeVideoBpfField) [prefs setWaypipeVideoBpf:field.stringValue];
+    else if (field == self.waypipeSSHHostField) [prefs setWaypipeSSHHost:field.stringValue];
+    else if (field == self.waypipeSSHUserField) [prefs setWaypipeSSHUser:field.stringValue];
+    else if (field == self.waypipeRemoteCommandField) [prefs setWaypipeRemoteCommand:field.stringValue];
+    
+    else if (field == self.tcpPortField) [prefs setTCPListenerPort:field.integerValue];
+    else if (field == self.socketDirField) [prefs setWaylandSocketDir:field.stringValue];
+    else if (field == self.displayNumField) [prefs setWaylandDisplayNumber:field.integerValue];
+    
+    else if (field == self.waypipeTitlePrefixField) [prefs setWaypipeTitlePrefix:field.stringValue];
+    else if (field == self.waypipeSecCtxField) [prefs setWaypipeSecCtx:field.stringValue];
+}
+
+- (void)loadPreferences {
+    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
+    
+    if (self.forceServerSideDecorationsCheckbox) self.forceServerSideDecorationsCheckbox.state = prefs.forceServerSideDecorations;
+    if (self.renderMacOSPointerCheckbox) self.renderMacOSPointerCheckbox.state = prefs.renderMacOSPointer;
+    if (self.autoScaleCheckbox) self.autoScaleCheckbox.state = prefs.autoScale;
+    if (self.respectSafeAreaCheckbox) self.respectSafeAreaCheckbox.state = prefs.respectSafeArea;
+    
+    if (self.swapCmdWithAltCheckbox) self.swapCmdWithAltCheckbox.state = prefs.swapCmdWithAlt;
+    if (self.universalClipboardCheckbox) self.universalClipboardCheckbox.state = prefs.universalClipboardEnabled;
+    
+    if (self.vulkanDriversCheckbox) self.vulkanDriversCheckbox.state = prefs.vulkanDriversEnabled;
+    if (self.eglDriversCheckbox) self.eglDriversCheckbox.state = prefs.eglDriversEnabled;
+    if (self.dmabufCheckbox) self.dmabufCheckbox.state = prefs.dmabufEnabled;
+    
+    if (self.tcpListenerCheckbox) self.tcpListenerCheckbox.state = prefs.enableTCPListener;
+    if (self.tcpPortField) self.tcpPortField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.tcpListenerPort];
+    if (self.socketDirField) self.socketDirField.stringValue = prefs.waylandSocketDir ?: @"/tmp";
+    if (self.displayNumField) self.displayNumField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.waylandDisplayNumber];
+    
+    if (self.colorOperationsCheckbox) self.colorOperationsCheckbox.state = prefs.colorOperations;
+    if (self.nestedCompositorsCheckbox) self.nestedCompositorsCheckbox.state = prefs.nestedCompositorsSupportEnabled;
+    if (self.multipleClientsCheckbox) self.multipleClientsCheckbox.state = prefs.multipleClientsEnabled;
+    
+    if (self.waypipeDisplayField) self.waypipeDisplayField.stringValue = prefs.waypipeDisplay ?: @"wayland-0";
+    if (self.waypipeCompressPopup) [self.waypipeCompressPopup selectItemWithTitle:prefs.waypipeCompress ?: @"lz4"];
+    if (self.waypipeCompressLevelField) self.waypipeCompressLevelField.stringValue = prefs.waypipeCompressLevel ?: @"7";
+    if (self.waypipeThreadsField) self.waypipeThreadsField.stringValue = prefs.waypipeThreads ?: @"0";
+    if (self.waypipeVideoPopup) [self.waypipeVideoPopup selectItemWithTitle:prefs.waypipeVideo ?: @"none"];
+    if (self.waypipeVideoEncodingPopup) [self.waypipeVideoEncodingPopup selectItemWithTitle:prefs.waypipeVideoEncoding ?: @"hw"];
+    if (self.waypipeVideoDecodingPopup) [self.waypipeVideoDecodingPopup selectItemWithTitle:prefs.waypipeVideoDecoding ?: @"hw"];
+    if (self.waypipeVideoBpfField) self.waypipeVideoBpfField.stringValue = prefs.waypipeVideoBpf ?: @"";
+    if (self.waypipeSSHEnabledCheckbox) self.waypipeSSHEnabledCheckbox.state = prefs.waypipeSSHEnabled;
+    if (self.waypipeSSHHostField) self.waypipeSSHHostField.stringValue = prefs.waypipeSSHHost ?: @"";
+    if (self.waypipeSSHUserField) self.waypipeSSHUserField.stringValue = prefs.waypipeSSHUser ?: @"";
+    if (self.waypipeRemoteCommandField) self.waypipeRemoteCommandField.stringValue = prefs.waypipeRemoteCommand ?: @"";
+    if (self.waypipeDebugCheckbox) self.waypipeDebugCheckbox.state = prefs.waypipeDebug;
+    if (self.waypipeNoGpuCheckbox) self.waypipeNoGpuCheckbox.state = prefs.waypipeNoGpu;
+    if (self.waypipeOneshotCheckbox) self.waypipeOneshotCheckbox.state = prefs.waypipeOneshot;
+    if (self.waypipeUnlinkSocketCheckbox) self.waypipeUnlinkSocketCheckbox.state = prefs.waypipeUnlinkSocket;
+    if (self.waypipeLoginShellCheckbox) self.waypipeLoginShellCheckbox.state = prefs.waypipeLoginShell;
+    if (self.waypipeVsockCheckbox) self.waypipeVsockCheckbox.state = prefs.waypipeVsock;
+    if (self.waypipeXwlsCheckbox) self.waypipeXwlsCheckbox.state = prefs.waypipeXwls;
+    if (self.waypipeTitlePrefixField) self.waypipeTitlePrefixField.stringValue = prefs.waypipeTitlePrefix ?: @"";
+    if (self.waypipeSecCtxField) self.waypipeSecCtxField.stringValue = prefs.waypipeSecCtx ?: @"";
+}
+
+- (NSString *)getLocalIPAddress {
+    NSString *address = @"Unavailable";
+    struct ifaddrs *interfaces = NULL;
+    struct ifaddrs *temp_addr = NULL;
+    if (getifaddrs(&interfaces) == 0) {
+        temp_addr = interfaces;
+        while (temp_addr != NULL) {
+            if (temp_addr->ifa_addr->sa_family == AF_INET) {
+                if ([[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en0"] ||
+                    [[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en1"]) {
+                    address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
+                    break;
+                }
+            }
+            temp_addr = temp_addr->ifa_next;
+        }
+    }
+    freeifaddrs(interfaces);
+    return address;
+}
+
+@end
+
+// MARK: - Split View Controller
+
+@interface WawonaPreferencesSplitViewController : NSSplitViewController
+@property (nonatomic, strong) WawonaPreferencesSidebarViewController *sidebarVC;
+@property (nonatomic, strong) WawonaPreferencesContentViewController *contentVC;
+@end
+
+@implementation WawonaPreferencesSplitViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.sidebarVC = [[WawonaPreferencesSidebarViewController alloc] init];
+    self.contentVC = [[WawonaPreferencesContentViewController alloc] init];
+    
+    NSSplitViewItem *sidebarItem = [NSSplitViewItem sidebarWithViewController:self.sidebarVC];
+    NSSplitViewItem *contentItem = [NSSplitViewItem contentListWithViewController:self.contentVC];
+    
+    [self addSplitViewItem:sidebarItem];
+    [self addSplitViewItem:contentItem];
+    
+    // Connect sidebar selection
+    __weak typeof(self) weakSelf = self;
+    self.sidebarVC.selectionHandler = ^(NSString *identifier) {
+        [weakSelf.contentVC showSection:identifier];
+    };
+}
+
+@end
+
+// MARK: - Main Window Controller Implementation
+
+@interface WawonaPreferences ()
+@property (nonatomic, strong) WawonaPreferencesSplitViewController *splitViewController;
 @end
 
 @implementation WawonaPreferences
@@ -329,651 +1183,28 @@
 }
 
 - (instancetype)init {
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    self = [super init];
-    if (self) {
-        self.title = @"Wawona Preferences";
-    }
-    return self;
-#else
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500)
-                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
-                                                      backing:NSBackingStoreBuffered
-                                                        defer:NO];
-    [window setTitle:@"Wawona Preferences"];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 550)
+                                                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
+                                                     backing:NSBackingStoreBuffered
+                                                       defer:NO];
+    [window setTitle:@"Wawona Settings"];
     [window setContentMinSize:NSMakeSize(600, 400)];
     [window center];
+    [window setToolbarStyle:NSWindowToolbarStyleUnified];
     
     self = [super initWithWindow:window];
     if (self) {
-        [self setupToolbar];
-        [self setupViews];
-        [self loadPreferences];
+        self.splitViewController = [[WawonaPreferencesSplitViewController alloc] init];
+        self.contentViewController = self.splitViewController;
     }
     return self;
-#endif
-}
-
-- (void)setupToolbar {
-    self.toolbar = [[NSToolbar alloc] initWithIdentifier:@"WawonaPreferencesToolbar"];
-    self.toolbar.delegate = self;
-    self.toolbar.displayMode = NSToolbarDisplayModeIconAndLabel;
-    self.toolbar.allowsUserCustomization = NO;
-    [self.window setToolbar:self.toolbar];
-}
-
-- (void)setupViews {
-    NSView *contentView = self.window.contentView;
-    
-    // Create main content stack view
-    self.contentStackView = [[NSStackView alloc] init];
-    self.contentStackView.orientation = NSUserInterfaceLayoutOrientationVertical;
-    self.contentStackView.spacing = 20;
-    self.contentStackView.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    self.contentStackView.translatesAutoresizingMaskIntoConstraints = NO;
-    [contentView addSubview:self.contentStackView];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.contentStackView.topAnchor constraintEqualToAnchor:contentView.topAnchor],
-        [self.contentStackView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
-        [self.contentStackView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-        [self.contentStackView.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor]
-    ]];
-    
-    // Create all preference views
-    [self createDisplayView];
-    [self createColorManagementView];
-    [self createNestedCompositorsView];
-    [self createInputView]; // Input now includes Clipboard
-    [self createClientManagementView];
-    [self createRenderingBackendsView];
-    [self createWaylandConfigView];
-    
-    // Show input view by default
-    [self showView:self.inputView];
-}
-
-
-- (void)createDisplayView {
-    self.displayView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.displayView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.displayView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.displayView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.displayView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.displayView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Display"];
-    [stack addArrangedSubview:title];
-    
-    self.forceServerSideDecorationsCheckbox = [self createCheckbox:@"Force Server-Side Decorations"
-                                                            action:@selector(forceServerSideDecorationsChanged:)];
-    [stack addArrangedSubview:self.forceServerSideDecorationsCheckbox];
-    
-    NSTextField *desc1 = [self createDescription:@"Disallow client-side decorations. All Wayland clients will use macOS window decorations."];
-    [stack addArrangedSubview:desc1];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    self.autoRetinaScalingCheckbox = [self createCheckbox:@"Auto Retina Scaling Support"
-                                                    action:@selector(autoRetinaScalingChanged:)];
-    [stack addArrangedSubview:self.autoRetinaScalingCheckbox];
-    
-    NSTextField *desc2 = [self createDescription:@"Automatically scale content for Retina displays."];
-    [stack addArrangedSubview:desc2];
-}
-
-- (void)createRenderingBackendsView {
-    NSView *view = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [view addSubview:stack];
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:view.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:view.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:view.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:view.bottomAnchor]
-    ]];
-    NSTextField *title = [self createSectionTitle:@"Rendering Backends"];
-    [stack addArrangedSubview:title];
-    self.enableVulkanDriversCheckbox = [self createCheckbox:@"Enable Vulkan Drivers" action:@selector(enableVulkanDriversChanged:)];
-    [stack addArrangedSubview:self.enableVulkanDriversCheckbox];
-    self.enableEGLDriversCheckbox = [self createCheckbox:@"Enable EGL Drivers" action:@selector(enableEGLDriversChanged:)];
-    [stack addArrangedSubview:self.enableEGLDriversCheckbox];
-    [self.contentStackView addArrangedSubview:view];
-}
-
-- (void)createColorManagementView {
-    self.colorManagementView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.colorManagementView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.colorManagementView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.colorManagementView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.colorManagementView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.colorManagementView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Color Management"];
-    [stack addArrangedSubview:title];
-    
-    self.colorSyncSupportCheckbox = [self createCheckbox:@"ColorSync - HDR/Color Profiles Support"
-                                                   action:@selector(colorSyncSupportChanged:)];
-    [stack addArrangedSubview:self.colorSyncSupportCheckbox];
-    
-    NSTextField *desc = [self createDescription:@"Enable ColorSync integration for HDR and color profile support."];
-    [stack addArrangedSubview:desc];
-}
-
-- (void)createNestedCompositorsView {
-    self.nestedCompositorsView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.nestedCompositorsView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.nestedCompositorsView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.nestedCompositorsView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.nestedCompositorsView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.nestedCompositorsView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Nested Compositors"];
-    [stack addArrangedSubview:title];
-    
-    self.nestedCompositorsCheckbox = [self createCheckbox:@"Enable Nested Compositors Support"
-                                                    action:@selector(nestedCompositorsChanged:)];
-    [stack addArrangedSubview:self.nestedCompositorsCheckbox];
-    
-    NSTextField *desc1 = [self createDescription:@"Allow running Wayland compositors (like Weston) inside Wawona."];
-    [stack addArrangedSubview:desc1];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    self.useMetal4ForNestedCheckbox = [self createCheckbox:@"Use Metal 4 for Nested Compositors"
-                                                      action:@selector(useMetal4ForNestedChanged:)];
-    [stack addArrangedSubview:self.useMetal4ForNestedCheckbox];
-    
-    NSTextField *desc2 = [self createDescription:@"Use Metal 4 instead of Cocoa for rendering nested compositors. Requires Metal 4 support."];
-    [stack addArrangedSubview:desc2];
-}
-
-- (void)createInputView {
-    self.inputView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.inputView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.inputView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.inputView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.inputView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.inputView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Input"];
-    [stack addArrangedSubview:title];
-    
-    // Universal Clipboard
-    self.universalClipboardCheckbox = [self createCheckbox:@"Enable Universal Clipboard"
-                                                     action:@selector(universalClipboardChanged:)];
-    [stack addArrangedSubview:self.universalClipboardCheckbox];
-    
-    NSTextField *descClipboard = [self createDescription:@"Share clipboard content between macOS and Wayland clients."];
-    [stack addArrangedSubview:descClipboard];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    // macOS Pointer
-    self.renderMacOSPointerCheckbox = [self createCheckbox:@"Render macOS Pointer"
-                                                     action:@selector(renderMacOSPointerChanged:)];
-    [stack addArrangedSubview:self.renderMacOSPointerCheckbox];
-    
-    NSTextField *desc1 = [self createDescription:@"Show macOS cursor while using Wawona."];
-    [stack addArrangedSubview:desc1];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    // Keyboard Mapping
-    self.swapCmdAsCtrlCheckbox = [self createCheckbox:@"Swap Command as Control"
-                                                 action:@selector(swapCmdAsCtrlChanged:)];
-    [stack addArrangedSubview:self.swapCmdAsCtrlCheckbox];
-    
-    NSTextField *desc2 = [self createDescription:@"Map macOS Command key to Control for Wayland clients."];
-    [stack addArrangedSubview:desc2];
-}
-
-- (void)createClientManagementView {
-    self.clientManagementView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.clientManagementView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.clientManagementView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.clientManagementView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.clientManagementView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.clientManagementView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Client Management"];
-    [stack addArrangedSubview:title];
-    
-    self.multipleClientsCheckbox = [self createCheckbox:@"Allow Multiple Clients"
-                                                  action:@selector(multipleClientsChanged:)];
-    [stack addArrangedSubview:self.multipleClientsCheckbox];
-    
-    NSTextField *desc = [self createDescription:@"Allow multiple Wayland clients to connect simultaneously. When disabled, only one client at a time."];
-    [stack addArrangedSubview:desc];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    NSTextField *networkTitle = [self createLabel:@"Network / Remote Access:"];
-    [stack addArrangedSubview:networkTitle];
-    
-    self.enableTCPListenerCheckbox = [self createCheckbox:@"Enable TCP Listener"
-                                                   action:@selector(enableTCPListenerChanged:)];
-    [stack addArrangedSubview:self.enableTCPListenerCheckbox];
-    
-    NSTextField *networkDesc = [self createDescription:@"Allow external Wayland clients (e.g., via Waypipe) to connect to this compositor over the network."];
-    [stack addArrangedSubview:networkDesc];
-    
-    NSStackView *portStack = [[NSStackView alloc] init];
-    portStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    portStack.spacing = 10;
-    
-    NSTextField *portLabel = [self createLabel:@"TCP Port:"];
-    [portStack addArrangedSubview:portLabel];
-    
-    self.tcpListenerPortField = [[NSTextField alloc] init];
-    self.tcpListenerPortField.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.tcpListenerPortField setTarget:self];
-    [self.tcpListenerPortField setAction:@selector(tcpListenerPortChanged:)];
-    [portStack addArrangedSubview:self.tcpListenerPortField];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.tcpListenerPortField.widthAnchor constraintEqualToConstant:100]
-    ]];
-    
-    [stack addArrangedSubview:portStack];
-    
-    NSTextField *portDesc = [self createDescription:@"Port for TCP listener (0 for dynamic)."];
-    [stack addArrangedSubview:portDesc];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    self.waypipeRSSupportCheckbox = [self createCheckbox:@"Waypipe-RS Support"
-                                                    action:@selector(waypipeRSSupportChanged:)];
-    [stack addArrangedSubview:self.waypipeRSSupportCheckbox];
-    
-    NSTextField *desc2 = [self createDescription:@"Enable Waypipe-RS support. Requires conformant Vulkan 1.3 + Metal 4 Apple Silicon KosmicKrisp userland drivers (Mesa 26+)."];
-    [stack addArrangedSubview:desc2];
-}
-
-- (void)createWaylandConfigView {
-    self.waylandConfigView = [[NSView alloc] init];
-    NSStackView *stack = [[NSStackView alloc] init];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing = 15;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.waylandConfigView addSubview:stack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.waylandConfigView.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:self.waylandConfigView.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:self.waylandConfigView.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:self.waylandConfigView.bottomAnchor]
-    ]];
-    
-    NSTextField *title = [self createSectionTitle:@"Wayland Configuration"];
-    [stack addArrangedSubview:title];
-    
-    NSTextField *socketDirLabel = [self createLabel:@"Wayland Socket Directory:"];
-    [stack addArrangedSubview:socketDirLabel];
-    
-    NSStackView *socketDirStack = [[NSStackView alloc] init];
-    socketDirStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    socketDirStack.spacing = 10;
-    
-    self.waylandSocketDirField = [[NSTextField alloc] init];
-    self.waylandSocketDirField.translatesAutoresizingMaskIntoConstraints = NO;
-    [socketDirStack addArrangedSubview:self.waylandSocketDirField];
-    
-    NSButton *browseButton = [[NSButton alloc] init];
-    [browseButton setTitle:@"Browse..."];
-    [browseButton setButtonType:NSButtonTypeMomentaryPushIn];
-    [browseButton setTarget:self];
-    [browseButton setAction:@selector(browseSocketDir:)];
-    [socketDirStack addArrangedSubview:browseButton];
-    
-    [stack addArrangedSubview:socketDirStack];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.waylandSocketDirField.widthAnchor constraintGreaterThanOrEqualToConstant:400]
-    ]];
-    
-    [stack addArrangedSubview:[self createSeparator]];
-    
-    NSTextField *displayLabel = [self createLabel:@"Wayland Display Number:"];
-    [stack addArrangedSubview:displayLabel];
-    
-    self.waylandDisplayNumberField = [[NSTextField alloc] init];
-    self.waylandDisplayNumberField.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.waylandDisplayNumberField setTarget:self];
-    [self.waylandDisplayNumberField setAction:@selector(waylandDisplayNumberChanged:)];
-    [stack addArrangedSubview:self.waylandDisplayNumberField];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.waylandDisplayNumberField.widthAnchor constraintEqualToConstant:100]
-    ]];
-    
-    NSTextField *desc = [self createDescription:@"Set the Wayland display number (0, 1, 2, etc.). Changes require restart."];
-    [stack addArrangedSubview:desc];
-}
-
-
-- (NSTextField *)createSectionTitle:(NSString *)title {
-    NSTextField *field = [[NSTextField alloc] init];
-    field.stringValue = title;
-    field.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
-    field.alignment = NSTextAlignmentLeft;
-    field.bezeled = NO;
-    field.drawsBackground = NO;
-    field.editable = NO;
-    field.selectable = NO;
-    return field;
-}
-
-- (NSButton *)createCheckbox:(NSString *)title action:(SEL)action {
-    NSButton *button = [[NSButton alloc] init];
-    [button setButtonType:NSButtonTypeSwitch];
-    [button setTitle:title];
-    [button setTarget:self];
-    [button setAction:action];
-    return button;
-}
-
-- (NSTextField *)createLabel:(NSString *)text {
-    NSTextField *field = [[NSTextField alloc] init];
-    field.stringValue = text;
-    field.font = [NSFont systemFontOfSize:13];
-    field.alignment = NSTextAlignmentLeft;
-    field.bezeled = NO;
-    field.drawsBackground = NO;
-    field.editable = NO;
-    field.selectable = NO;
-    return field;
-}
-
-- (NSTextField *)createDescription:(NSString *)text {
-    NSTextField *field = [[NSTextField alloc] init];
-    field.stringValue = text;
-    field.font = [NSFont systemFontOfSize:11];
-    field.textColor = [NSColor secondaryLabelColor];
-    field.alignment = NSTextAlignmentLeft;
-    field.bezeled = NO;
-    field.drawsBackground = NO;
-    field.editable = NO;
-    field.selectable = NO;
-    field.preferredMaxLayoutWidth = 600;
-    return field;
-}
-
-- (NSBox *)createSeparator {
-    NSBox *separator = [[NSBox alloc] init];
-    separator.boxType = NSBoxSeparator;
-    separator.translatesAutoresizingMaskIntoConstraints = NO;
-    [separator.heightAnchor constraintEqualToConstant:1].active = YES;
-    return separator;
-}
-
-- (void)showView:(NSView *)view {
-    if (self.currentView) {
-        [self.currentView removeFromSuperview];
-    }
-    
-    self.currentView = view;
-    view.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.contentStackView addArrangedSubview:view];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [view.leadingAnchor constraintEqualToAnchor:self.contentStackView.leadingAnchor],
-        [view.trailingAnchor constraintEqualToAnchor:self.contentStackView.trailingAnchor]
-    ]];
-}
-
-- (void)loadPreferences {
-    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
-    
-    self.universalClipboardCheckbox.state = prefs.universalClipboardEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.forceServerSideDecorationsCheckbox.state = prefs.forceServerSideDecorations ? NSControlStateValueOn : NSControlStateValueOff;
-    self.autoRetinaScalingCheckbox.state = prefs.autoRetinaScalingEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.colorSyncSupportCheckbox.state = prefs.colorSyncSupportEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.nestedCompositorsCheckbox.state = prefs.nestedCompositorsSupportEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.useMetal4ForNestedCheckbox.state = prefs.useMetal4ForNested ? NSControlStateValueOn : NSControlStateValueOff;
-    self.renderMacOSPointerCheckbox.state = prefs.renderMacOSPointer ? NSControlStateValueOn : NSControlStateValueOff;
-    self.swapCmdAsCtrlCheckbox.state = prefs.swapCmdAsCtrl ? NSControlStateValueOn : NSControlStateValueOff;
-    self.multipleClientsCheckbox.state = prefs.multipleClientsEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.enableTCPListenerCheckbox.state = prefs.enableTCPListener ? NSControlStateValueOn : NSControlStateValueOff;
-    self.tcpListenerPortField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.tcpListenerPort];
-    self.waypipeRSSupportCheckbox.state = prefs.waypipeRSSupportEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    self.enableVulkanDriversCheckbox.state = [prefs vulkanDriversEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.enableEGLDriversCheckbox.state = [prefs eglDriversEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-    
-    self.waylandSocketDirField.stringValue = prefs.waylandSocketDir;
-    self.waylandDisplayNumberField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.waylandDisplayNumber];
-}
-
-// Action methods
-- (void)universalClipboardChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setUniversalClipboardEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)forceServerSideDecorationsChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setForceServerSideDecorations:sender.state == NSControlStateValueOn];
-}
-
-- (void)autoRetinaScalingChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setAutoRetinaScalingEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)colorSyncSupportChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setColorSyncSupportEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)nestedCompositorsChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setNestedCompositorsSupportEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)useMetal4ForNestedChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setUseMetal4ForNested:sender.state == NSControlStateValueOn];
-}
-
-- (void)renderMacOSPointerChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setRenderMacOSPointer:sender.state == NSControlStateValueOn];
-}
-
-- (void)swapCmdAsCtrlChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setSwapCmdAsCtrl:sender.state == NSControlStateValueOn];
-}
-
-- (void)multipleClientsChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setMultipleClientsEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)enableTCPListenerChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setEnableTCPListener:sender.state == NSControlStateValueOn];
-}
-
-- (void)tcpListenerPortChanged:(NSTextField *)sender {
-    NSInteger port = [sender.stringValue integerValue];
-    [[WawonaPreferencesManager sharedManager] setTCPListenerPort:port];
-}
-
-- (void)waypipeRSSupportChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setWaypipeRSSupportEnabled:sender.state == NSControlStateValueOn];
-}
-
-- (void)waylandDisplayNumberChanged:(NSTextField *)sender {
-    NSInteger number = [sender.stringValue integerValue];
-    [[WawonaPreferencesManager sharedManager] setWaylandDisplayNumber:number];
-}
-
-- (void)enableVulkanDriversChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setVulkanDriversEnabled:(sender.state == NSControlStateValueOn)];
-}
-
-- (void)enableEGLDriversChanged:(NSButton *)sender {
-    [[WawonaPreferencesManager sharedManager] setEglDriversEnabled:(sender.state == NSControlStateValueOn)];
 }
 
 - (void)showPreferences:(id)sender {
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    // iOS: Preferences UI not implemented yet
-    (void)sender;
-#else
-    if (!self.window) {
-        // Reinitialize if window was closed
-        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500)
-                                                         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
-                                                           backing:NSBackingStoreBuffered
-                                                             defer:NO];
-        [window setTitle:@"Wawona Preferences"];
-        [window setContentMinSize:NSMakeSize(600, 400)];
-        [window center];
-        [self setWindow:window];
-        [self setupToolbar];
-        [self setupViews];
-        [self loadPreferences];
-    }
-    [self.window makeKeyAndOrderFront:nil];
+    [self.window makeKeyAndOrderFront:sender];
     [NSApp activateIgnoringOtherApps:YES];
-#endif
 }
-
-- (void)browseSocketDir:(NSButton *)sender {
-    NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.canChooseFiles = NO;
-    panel.canChooseDirectories = YES;
-    panel.canCreateDirectories = YES;
-    panel.allowsMultipleSelection = NO;
-    
-    if ([panel runModal] == NSModalResponseOK) {
-        NSString *path = panel.URL.path;
-        self.waylandSocketDirField.stringValue = path;
-        [[WawonaPreferencesManager sharedManager] setWaylandSocketDir:path];
-    }
-}
-
-- (void)openDonateLink:(NSButton *)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://ko-fi.com/aspauldingcode"]];
-}
-
-- (void)openGitHubLink:(NSButton *)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/aspauldingcode"]];
-}
-
-- (void)openPortfolioLink:(NSButton *)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://aspauldingcode.com"]];
-}
-
-#pragma mark - NSToolbarDelegate
-
-- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
-    return @[@"Display", @"Color", @"Nested", @"Input", @"Clients", @"Wayland"];
-}
-
-- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
-    return [self toolbarDefaultItemIdentifiers:toolbar];
-}
-
-- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)itemIdentifier willBeInsertedIntoToolbar:(BOOL)flag {
-    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
-    
-    if ([itemIdentifier isEqualToString:@"Display"]) {
-        item.label = @"Display";
-        item.image = [NSImage imageWithSystemSymbolName:@"display" accessibilityDescription:@"Display"];
-        item.target = self;
-        item.action = @selector(showDisplay:);
-    } else if ([itemIdentifier isEqualToString:@"Color"]) {
-        item.label = @"Color";
-        item.image = [NSImage imageWithSystemSymbolName:@"paintpalette" accessibilityDescription:@"Color"];
-        item.target = self;
-        item.action = @selector(showColor:);
-    } else if ([itemIdentifier isEqualToString:@"Nested"]) {
-        item.label = @"Nested";
-        item.image = [NSImage imageWithSystemSymbolName:@"square.stack.3d.up" accessibilityDescription:@"Nested"];
-        item.target = self;
-        item.action = @selector(showNested:);
-    } else if ([itemIdentifier isEqualToString:@"Input"]) {
-        item.label = @"Input";
-        item.image = [NSImage imageWithSystemSymbolName:@"keyboard" accessibilityDescription:@"Input"];
-        item.target = self;
-        item.action = @selector(showInput:);
-    } else if ([itemIdentifier isEqualToString:@"Clients"]) {
-        item.label = @"Clients";
-        item.image = [NSImage imageWithSystemSymbolName:@"app.badge" accessibilityDescription:@"Clients"];
-        item.target = self;
-        item.action = @selector(showClients:);
-    } else if ([itemIdentifier isEqualToString:@"Wayland"]) {
-        item.label = @"Wayland";
-        item.image = [NSImage imageWithSystemSymbolName:@"gear" accessibilityDescription:@"Wayland"];
-        item.target = self;
-        item.action = @selector(showWayland:);
-    }
-    
-    return item;
-}
-
-- (void)showDisplay:(id)sender {
-    [self showView:self.displayView];
-}
-
-- (void)showColor:(id)sender {
-    [self showView:self.colorManagementView];
-}
-
-- (void)showNested:(id)sender {
-    [self showView:self.nestedCompositorsView];
-}
-
-- (void)showInput:(id)sender {
-    [self showView:self.inputView];
-}
-
-- (void)showClients:(id)sender {
-    [self showView:self.clientManagementView];
-}
-
-- (void)showWayland:(id)sender {
-    [self showView:self.waylandConfigView];
-}
-
 
 @end
+
 #endif

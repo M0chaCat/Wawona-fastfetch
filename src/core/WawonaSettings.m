@@ -12,16 +12,17 @@ bool WawonaSettings_GetForceServerSideDecorations(void) {
 }
 
 bool WawonaSettings_GetAutoRetinaScalingEnabled(void) {
-    return [[WawonaPreferencesManager sharedManager] autoRetinaScalingEnabled];
+    // Use new unified key, fallback to legacy for backward compatibility
+    return [[WawonaPreferencesManager sharedManager] autoScale];
 }
 
 bool WawonaSettings_GetRespectSafeArea(void) {
-    // Default to true for now, or add to WawonaPreferencesManager if needed
-    return true;
+    return [[WawonaPreferencesManager sharedManager] respectSafeArea];
 }
 
 bool WawonaSettings_GetColorSyncSupportEnabled(void) {
-    return [[WawonaPreferencesManager sharedManager] colorSyncSupportEnabled];
+    // Use new unified key, fallback to legacy for backward compatibility
+    return [[WawonaPreferencesManager sharedManager] colorOperations];
 }
 
 bool WawonaSettings_GetNestedCompositorsSupportEnabled(void) {
@@ -37,7 +38,8 @@ bool WawonaSettings_GetRenderMacOSPointer(void) {
 }
 
 bool WawonaSettings_GetSwapCmdAsCtrl(void) {
-    return [[WawonaPreferencesManager sharedManager] swapCmdAsCtrl];
+    // Use new unified key (SwapCmdWithAlt), fallback to legacy for backward compatibility
+    return [[WawonaPreferencesManager sharedManager] swapCmdWithAlt];
 }
 
 bool WawonaSettings_GetMultipleClientsEnabled(void) {

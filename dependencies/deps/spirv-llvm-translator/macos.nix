@@ -1,4 +1,9 @@
-{ lib, pkgs, common, buildModule }:
+{
+  lib,
+  pkgs,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -10,18 +15,22 @@ let
     rev = "v21.1.0";
     sha256 = "sha256-kk8BbPl/UBW1gaO/cuOQ9OsiNTEk0TkvRDLKUAh6exk=";
   };
-  spirvToolsMacOS = buildModule.buildForMacOS "spirv-tools" {};
+  spirvToolsMacOS = buildModule.buildForMacOS "spirv-tools" { };
 in
 pkgs.stdenv.mkDerivation {
   name = "spirv-llvm-translator-macos";
   inherit src;
-  patches = [];
-  nativeBuildInputs = with pkgs; [ cmake pkg-config ninja ];
+  patches = [ ];
+  nativeBuildInputs = with pkgs; [
+    cmake
+    pkg-config
+    ninja
+  ];
   buildInputs = [
     pkgs.llvmPackages.llvm.dev
     spirvToolsMacOS
   ];
-  
+
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
@@ -35,15 +44,15 @@ pkgs.stdenv.mkDerivation {
         export CXX="$XCODE_APP/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
       fi
     fi
-    
+
     # Symlink SPIRV-Headers to expected location to bypass download/lookup issues
     mkdir -p build/SPIRV-Headers
     ln -s ${pkgs.spirv-headers.src}/include build/SPIRV-Headers/include
   '';
-  
+
   configurePhase = ''
     runHook preConfigure
-    
+
     cmake . -B build -GNinja \
       -DCMAKE_INSTALL_PREFIX=$out \
       -DCMAKE_BUILD_TYPE=Release \
@@ -61,13 +70,13 @@ pkgs.stdenv.mkDerivation {
       
     runHook postConfigure
   '';
-  
+
   buildPhase = ''
     runHook preBuild
     cmake --build build
     runHook postBuild
   '';
-  
+
   installPhase = ''
     runHook preInstall
     cmake --install build

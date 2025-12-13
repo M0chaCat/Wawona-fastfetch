@@ -1,4 +1,9 @@
-{ lib, pkgs, common, buildModule }:
+{
+  lib,
+  pkgs,
+  common,
+  buildModule,
+}:
 
 let
   xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
@@ -19,9 +24,14 @@ in
 pkgs.stdenv.mkDerivation {
   name = "spirv-tools-macos";
   inherit src;
-  
-  nativeBuildInputs = with pkgs; [ cmake pkg-config ninja python3 ];
-  
+
+  nativeBuildInputs = with pkgs; [
+    cmake
+    pkg-config
+    ninja
+    python3
+  ];
+
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
@@ -35,18 +45,18 @@ pkgs.stdenv.mkDerivation {
         export CXX="$XCODE_APP/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
       fi
     fi
-    
+
     # Fix SPIRV-Headers detection
     mkdir -p external
     cp -r --no-preserve=mode ${spirvHeaders} external/spirv-headers
-    
+
     # Disable tests
     sed -i 's|add_subdirectory(test)|# add_subdirectory(test)|g' CMakeLists.txt
   '';
-  
+
   configurePhase = ''
     runHook preConfigure
-    
+
     cmake . -B build -GNinja \
       -DCMAKE_INSTALL_PREFIX=$out \
       -DCMAKE_BUILD_TYPE=Release \
@@ -60,13 +70,13 @@ pkgs.stdenv.mkDerivation {
       
     runHook postConfigure
   '';
-  
+
   buildPhase = ''
     runHook preBuild
     cmake --build build
     runHook postBuild
   '';
-  
+
   installPhase = ''
     runHook preInstall
     cmake --install build

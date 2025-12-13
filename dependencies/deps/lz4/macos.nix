@@ -1,4 +1,9 @@
-{ lib, pkgs, common, buildModule }:
+{
+  lib,
+  pkgs,
+  common,
+  buildModule,
+}:
 
 let
   # lz4 source - fetch from GitHub
@@ -12,26 +17,29 @@ in
 pkgs.stdenv.mkDerivation {
   name = "lz4-macos";
   inherit src;
-  patches = [];
-  nativeBuildInputs = with pkgs; [ cmake pkg-config ];
-  buildInputs = [];
-  
+  patches = [ ];
+  nativeBuildInputs = with pkgs; [
+    cmake
+    pkg-config
+  ];
+  buildInputs = [ ];
+
   MACOS_SDK = "${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
   preConfigure = ''
     export SDKROOT="$MACOS_SDK"
     export MACOSX_DEPLOYMENT_TARGET="26.0"
   '';
-  
+
   # lz4 has CMakeLists.txt in build/cmake subdirectory
   sourceRoot = "source/build/cmake";
-  
+
   cmakeFlags = [
     "-DBUILD_SHARED_LIBS=ON"
     "-DBUILD_STATIC_LIBS=ON"
     "-DCMAKE_OSX_ARCHITECTURES=arm64"
     "-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0"
   ];
-  
+
   NIX_CFLAGS_COMPILE = "-mmacosx-version-min=26.0";
   NIX_CXXFLAGS_COMPILE = "-mmacosx-version-min=26.0";
   # CMAKE_OSX_DEPLOYMENT_TARGET handles linker flags automatically

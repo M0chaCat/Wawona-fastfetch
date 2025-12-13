@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   fetchSource = common.fetchSource;
@@ -12,13 +18,18 @@ let
   };
   src = fetchSource libxml2Source;
   buildFlags = [ "--without-python" ];
-  patches = [];
+  patches = [ ];
 in
 pkgs.stdenv.mkDerivation {
   name = "libxml2-ios";
   inherit src patches;
-  nativeBuildInputs = with buildPackages; [ autoconf automake libtool pkg-config ];
-  buildInputs = [];
+  nativeBuildInputs = with buildPackages; [
+    autoconf
+    automake
+    libtool
+    pkg-config
+  ];
+  buildInputs = [ ];
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
@@ -49,7 +60,9 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
-    ./configure --prefix=$out --host=arm-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --host=arm-apple-darwin ${
+      lib.concatMapStringsSep " " (flag: flag) buildFlags
+    }
     runHook postConfigure
   '';
   configureFlags = buildFlags;

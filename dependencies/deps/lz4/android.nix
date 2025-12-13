@@ -1,4 +1,10 @@
-{ lib, pkgs, buildPackages, common, buildModule }:
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
 
 let
   androidToolchain = import ../../common/android-toolchain.nix { inherit lib pkgs; };
@@ -13,10 +19,13 @@ in
 pkgs.stdenv.mkDerivation {
   name = "lz4-android";
   inherit src;
-  patches = [];
-  nativeBuildInputs = with buildPackages; [ cmake pkg-config ];
-  buildInputs = [];
-  
+  patches = [ ];
+  nativeBuildInputs = with buildPackages; [
+    cmake
+    pkg-config
+  ];
+  buildInputs = [ ];
+
   preConfigure = ''
     export CC="${androidToolchain.androidCC}"
     export CXX="${androidToolchain.androidCXX}"
@@ -27,10 +36,10 @@ pkgs.stdenv.mkDerivation {
     export CXXFLAGS="--target=${androidToolchain.androidTarget} -fPIC"
     export LDFLAGS="--target=${androidToolchain.androidTarget}"
   '';
-  
+
   # lz4 has CMakeLists.txt in build/cmake subdirectory
   sourceRoot = "source/build/cmake";
-  
+
   cmakeFlags = [
     "-DCMAKE_SYSTEM_NAME=Android"
     "-DCMAKE_ANDROID_ARCH_ABI=arm64-v8a"
