@@ -164,8 +164,9 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
   if (![defaults objectForKey:kWawonaPrefsWaypipeVideoBpf]) {
     [defaults setObject:@"" forKey:kWawonaPrefsWaypipeVideoBpf];
   }
+  // SSH is always enabled on iOS/macOS, so set it to YES by default
   if (![defaults objectForKey:kWawonaPrefsWaypipeSSHEnabled]) {
-    [defaults setBool:NO forKey:kWawonaPrefsWaypipeSSHEnabled];
+    [defaults setBool:YES forKey:kWawonaPrefsWaypipeSSHEnabled];
   }
   if (![defaults objectForKey:kWawonaPrefsWaypipeSSHHost]) {
     [defaults setObject:@"" forKey:kWawonaPrefsWaypipeSSHHost];
@@ -681,8 +682,8 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 }
 
 - (BOOL)waypipeSSHEnabled {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kWawonaPrefsWaypipeSSHEnabled];
+  // SSH is always enabled on iOS/macOS
+  return YES;
 }
 
 - (void)setWaypipeSSHEnabled:(BOOL)enabled {

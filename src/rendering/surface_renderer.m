@@ -304,29 +304,81 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
                 dmabuf_buffer = dmabuf_buffer_get(surface->buffer_resource);
                 if (dmabuf_buffer && dmabuf_buffer->iosurface) {
                     // Zero-copy path: Set IOSurface directly as layer contents
-                // This is much more efficient than creating a CGImage
-                // CALayer supports IOSurfaceRef as contents on macOS
-                NSLog(@"[RENDERER] Using zero-copy path for dmabuf (size: %dx%d)", dmabuf_buffer->width, dmabuf_buffer->height);
-                
-                CALayer *layer = self.compositorView.layer;
-                if (layer) {
-                    [CATransaction begin];
-                    [CATransaction setDisableActions:YES];
-                    layer.contents = (__bridge id)dmabuf_buffer->iosurface;
-                    // Reset transform if needed, though usually handled by view
-                    [CATransaction commit];
-                }
-                
-                // Release buffer to client and request next frame
-                wl_buffer_send_release(surface->buffer_resource);
-                
-                // Send frame callback if requested
-                if (surface->frame_callback) {
-                    wl_callback_send_done(surface->frame_callback, get_time_in_milliseconds());
-                    wl_resource_destroy(surface->frame_callback);
-                    surface->frame_callback = NULL;
-                }
-                return;
+                    // This is much more efficient than creating a CGImage
+                    // CALayer supports IOSurfaceRef as contents on macOS
+                    NSLog(@"[RENDERER] Using zero-copy path for dmabuf (size: %dx%d)", dmabuf_buffer->width, dmabuf_buffer->height);
+                    
+                    // Update surface dimensions from dmabuf buffer
+                    // CRITICAL: This must be done before rendering to ensure proper sizing
+                    surface->width = dmabuf_buffer->width;
+                    surface->height = dmabuf_buffer->height;
+                    surface->buffer_width = dmabuf_buffer->width;
+                    surface->buffer_height = dmabuf_buffer->height;
+                    
+                    // Get or create surface image entry for tracking
+                    NSNumber *key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)surface];
+                    SurfaceImage *surfaceImage = self.surfaceImages[key];
+                    if (!surfaceImage) {
+                        surfaceImage = [[SurfaceImage alloc] init];
+                        surfaceImage.surface = surface;
+                        self.surfaceImages[key] = surfaceImage;
+                    }
+                    
+                    // Update frame dimensions
+                    struct wl_viewport_impl *vp_dest = wl_viewport_from_surface(surface);
+                    CGFloat destW = dmabuf_buffer->width;
+                    CGFloat destH = dmabuf_buffer->height;
+                    if (vp_dest && vp_dest->has_destination) {
+                        destW = vp_dest->dst_width;
+                        destH = vp_dest->dst_height;
+                    }
+                    CGFloat clampedWidth = (destW < maxWidth) ? destW : maxWidth;
+                    CGFloat clampedHeight = (destH < maxHeight) ? destH : maxHeight;
+                    surfaceImage.frame = CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
+                    
+                    // Set IOSurface as layer contents
+                    CALayer *layer = self.compositorView.layer;
+                    if (layer) {
+                        [CATransaction begin];
+                        [CATransaction setDisableActions:YES];
+                        // CRITICAL: Update layer contents with new IOSurface
+                        // This handles resize properly by setting the new IOSurface
+                        layer.contents = (__bridge id)dmabuf_buffer->iosurface;
+                        // Update layer frame to match surface dimensions
+                        layer.frame = surfaceImage.frame;
+                        [CATransaction commit];
+                    }
+                    
+                    // Update cached buffer info to detect changes
+                    surfaceImage.lastWidth = dmabuf_buffer->width;
+                    surfaceImage.lastHeight = dmabuf_buffer->height;
+                    surfaceImage.lastFormat = dmabuf_buffer->format;
+                    
+                    // Trigger redraw
+                    if (self.compositorView) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+                        [self.compositorView setNeedsDisplay];
+#else
+                        [self.compositorView setNeedsDisplay:YES];
+#endif
+                    }
+                    
+                    // Release buffer to client and request next frame
+                    if (!surface->buffer_release_sent) {
+                        struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+                        if (release_buffer_client) {
+                            wl_buffer_send_release(surface->buffer_resource);
+                            surface->buffer_release_sent = true;
+                        }
+                    }
+                    
+                    // Send frame callback if requested
+                    if (surface->frame_callback) {
+                        wl_callback_send_done(surface->frame_callback, get_time_in_milliseconds());
+                        wl_resource_destroy(surface->frame_callback);
+                        surface->frame_callback = NULL;
+                    }
+                    return;
             }
              } else if (buf_data && buf_data->data) {
             // Custom buffer with buffer_data (from wayland_shm.c)
@@ -516,72 +568,53 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         return;
     }
     
-    // OPTIMIZED: Check if we can reuse existing CGImage
-    // Only recreate if buffer data pointer, dimensions, or format changed
+    // CRITICAL: Always create a new CGImage from buffer data when renderSurface is called
+    // This is because renderSurface is only called on surface commit, which means
+    // there's NEW CONTENT in the buffer, even if the buffer pointer is the same.
+    // Waypipe and other clients reuse buffers - same pointer, different content!
+    // The optimization to reuse images was causing stale content to be displayed.
     NSNumber *key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)surface];
     SurfaceImage *surfaceImage = self.surfaceImages[key];
-    BOOL needsNewImage = YES;
     
-    if (surfaceImage && surfaceImage.image) {
-        // Check if buffer data, dimensions, or format changed
-        if (surfaceImage.lastBufferData == data &&
-            surfaceImage.lastWidth == width &&
-            surfaceImage.lastHeight == height &&
-            surfaceImage.lastFormat == format) {
-            // Buffer hasn't changed - reuse existing CGImage
-            needsNewImage = NO;
-        }
+    if (!surfaceImage) {
+        surfaceImage = [[SurfaceImage alloc] init];
+        surfaceImage.surface = surface;
+        self.surfaceImages[key] = surfaceImage;
     }
     
-    CGImageRef image = NULL;
-    if (needsNewImage) {
-        // Convert buffer to CGImage using direct data access
-        image = createCGImageFromData(data, width, height, stride, format);
-        
-        // End access if using standard SHM buffer (must be before using image)
-        if (shm_buffer) {
-            wl_shm_buffer_end_access(shm_buffer);
-        }
-        if (dmabuf_buffer && dmabuf_buffer->iosurface) {
-            IOSurfaceUnlock(dmabuf_buffer->iosurface, kIOSurfaceLockReadOnly, NULL);
-        }
-        
-        if (!surfaceImage) {
-            surfaceImage = [[SurfaceImage alloc] init];
-            surfaceImage.surface = surface;
-            self.surfaceImages[key] = surfaceImage;
-        }
-        
-        // Update image (apply viewporter source crop if present) and cache buffer info
-        if (surfaceImage.image) {
-            CGImageRelease(surfaceImage.image);
-        }
-        CGImageRef finalImage = image;
-        struct wl_viewport_impl *vp_crop = wl_viewport_from_surface(surface);
-        if (image && vp_crop && vp_crop->has_source) {
-            CGRect srcRect = CGRectMake(vp_crop->src_x, vp_crop->src_y, vp_crop->src_width, vp_crop->src_height);
-            CGImageRef cropped = CGImageCreateWithImageInRect(image, srcRect);
-            if (cropped) {
-                CGImageRelease(finalImage);
-                finalImage = cropped;
-                width = (int32_t)vp_crop->src_width;
-                height = (int32_t)vp_crop->src_height;
-            }
-        }
-        surfaceImage.image = finalImage ? CGImageRetain(finalImage) : NULL;
-        surfaceImage.lastBufferData = data;
-        surfaceImage.lastWidth = width;
-        surfaceImage.lastHeight = height;
-        surfaceImage.lastFormat = format;
-    } else {
-        // Reuse existing image - just end buffer access
-        if (shm_buffer) {
-            wl_shm_buffer_end_access(shm_buffer);
-        }
-        if (dmabuf_buffer && dmabuf_buffer->iosurface) {
-            IOSurfaceUnlock(dmabuf_buffer->iosurface, kIOSurfaceLockReadOnly, NULL);
+    // Always create new CGImage from current buffer data
+    // This ensures we always show the latest content, even if buffer pointer is reused
+    CGImageRef image = createCGImageFromData(data, width, height, stride, format);
+    
+    // End access if using standard SHM buffer (must be before using image)
+    if (shm_buffer) {
+        wl_shm_buffer_end_access(shm_buffer);
+    }
+    if (dmabuf_buffer && dmabuf_buffer->iosurface) {
+        IOSurfaceUnlock(dmabuf_buffer->iosurface, kIOSurfaceLockReadOnly, NULL);
+    }
+    
+    // Update image (apply viewporter source crop if present) and cache buffer info
+    if (surfaceImage.image) {
+        CGImageRelease(surfaceImage.image);
+    }
+    CGImageRef finalImage = image;
+    struct wl_viewport_impl *vp_crop = wl_viewport_from_surface(surface);
+    if (image && vp_crop && vp_crop->has_source) {
+        CGRect srcRect = CGRectMake(vp_crop->src_x, vp_crop->src_y, vp_crop->src_width, vp_crop->src_height);
+        CGImageRef cropped = CGImageCreateWithImageInRect(image, srcRect);
+        if (cropped) {
+            CGImageRelease(finalImage);
+            finalImage = cropped;
+            width = (int32_t)vp_crop->src_width;
+            height = (int32_t)vp_crop->src_height;
         }
     }
+    surfaceImage.image = finalImage ? CGImageRetain(finalImage) : NULL;
+    surfaceImage.lastBufferData = data;
+    surfaceImage.lastWidth = width;
+    surfaceImage.lastHeight = height;
+    surfaceImage.lastFormat = format;
     
     if (surfaceImage && surfaceImage.image) {
         
@@ -611,12 +644,22 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             CGImageRelease(image);
         }
         
-        // Trigger redraw
+        // Trigger redraw - force immediate display update
         if (self.compositorView) {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
             [self.compositorView setNeedsDisplay];
+            // Force immediate redraw on iOS
+            if ([self.compositorView respondsToSelector:@selector(setNeedsDisplay)]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.compositorView setNeedsDisplay];
+                });
+            }
 #else
             [self.compositorView setNeedsDisplay:YES];
+            // Force immediate redraw on macOS - displayIfNeeded will redraw if marked as needing display
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.compositorView displayIfNeeded];
+            });
 #endif
         }
     } else {

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -78,24 +79,27 @@ static inline int
 memfd_create(const char *name, unsigned int flags)
 {
 	int fd;
-	char shm_name[NAME_MAX];
+	char tmp_path[PATH_MAX];
 	static int counter = 0;
 
-	// Create a unique name for the shared memory object
-	// shm_open requires names starting with '/'
-	snprintf(shm_name, sizeof(shm_name), "/%s.%d.%d", 
+	// On macOS, shm_open + shm_unlink has issues with SCM_RIGHTS transfer
+	// Use a temporary file instead, which transfers reliably via SCM_RIGHTS
+	// The file is unlinked immediately, making it anonymous (like memfd_create)
+	snprintf(tmp_path, sizeof(tmp_path), "/tmp/%s.%d.%d", 
 	         name ? name : "memfd", getpid(), counter++);
-
-	// Create shared memory object
-	fd = shm_open(shm_name, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
+	
+	fd = open(tmp_path, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
 	if (fd == -1) {
 		return -1;
 	}
 
-	// Unlink immediately so it's anonymous (like memfd_create)
-	// The object persists until all file descriptors are closed
-	shm_unlink(shm_name);
+	// Unlink immediately so file is deleted when fd closes (anonymous like memfd_create)
+	// The file persists until all file descriptors are closed
+	unlink(tmp_path);
 
+	// Ensure fd is readable and writable
+	fcntl(fd, F_SETFD, 0); // Clear any flags that might interfere
+	
 	// Set CLOEXEC flag if requested
 	if (flags & MFD_CLOEXEC) {
 		fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -103,7 +107,7 @@ memfd_create(const char *name, unsigned int flags)
 
 	// Note: macOS doesn't support file sealing (F_ADD_SEALS, F_SEAL_*)
 	// The MFD_ALLOW_SEALING and MFD_NOEXEC_SEAL flags are ignored
-	// This is acceptable as the shared memory object behaves similarly
+	// This is acceptable as the file behaves similarly to memfd_create
 
 	return fd;
 }

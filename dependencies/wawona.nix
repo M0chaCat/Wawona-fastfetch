@@ -44,6 +44,7 @@ let
   macosDeps = commonDeps ++ [
     "kosmickrisp"
     "epoll-shim"
+    "xkbcommon"
   ];
   # For iOS Simulator, use macOS waypipe since simulator runs on macOS
   # Rust's aarch64-apple-ios target compiles for device, not simulator, so use macOS waypipe
@@ -55,6 +56,7 @@ let
     "spirv-tools"
     "zlib"
     "pixman"
+    "xkbcommon"
   ];
   androidDeps = commonDeps ++ [
     "swiftshader"
@@ -80,6 +82,11 @@ let
         pkgs.vulkan-headers
       else if name == "vulkan-loader" then
         pkgs.vulkan-loader
+      else if name == "xkbcommon" then
+        if platform == "ios" then
+          buildModule.buildForIOS "xkbcommon" { }
+        else
+          pkgs.libxkbcommon
       else
         buildModule.${platform}.${name}
     ) depNames;
@@ -563,6 +570,7 @@ in
       pkgs.pixman
       pkgs.vulkan-headers
       pkgs.vulkan-loader
+      pkgs.libxkbcommon
     ];
 
     # Fix gbm-wrapper.c include path and egl_buffer_handler.h for macOS
@@ -790,6 +798,8 @@ in
       # Try linking with Vulkan first, fall back to without if it fails
       if [ -n "$VULKAN_LIB" ] && echo "$OBJ_FILES" | grep -q "vulkan_renderer"; then
         set +e
+        # Get xkbcommon libs explicitly
+        XKBCOMMON_LIBS=$(pkg-config --libs libxkbcommon 2>/dev/null || echo "-Lmacos-dependencies/lib -lxkbcommon")
         $CC $OBJ_FILES libgbm.a \
            -Lmacos-dependencies/lib \
            -framework Cocoa -framework QuartzCore -framework CoreVideo \
@@ -797,6 +807,7 @@ in
            -framework Metal -framework MetalKit -framework IOSurface \
            -framework VideoToolbox -framework AVFoundation \
            $(pkg-config --libs wayland-server wayland-client pixman-1) \
+           $XKBCOMMON_LIBS \
            $VULKAN_LIB \
            -fobjc-arc -flto -O3 \
            -Wl,-rpath,\$PWD/macos-dependencies/lib \
@@ -806,6 +817,8 @@ in
         if [ $LINK_RESULT -ne 0 ]; then
           # Remove vulkan_renderer object file and link without it
           OBJ_FILES_NO_VULKAN=$(echo "$OBJ_FILES" | sed 's/rendering_vulkan_renderer\.m\.o//g')
+          # Get xkbcommon libs explicitly
+          XKBCOMMON_LIBS=$(pkg-config --libs libxkbcommon 2>/dev/null || echo "-Lmacos-dependencies/lib -lxkbcommon")
           $CC $OBJ_FILES_NO_VULKAN libgbm.a \
              -Lmacos-dependencies/lib \
              -framework Cocoa -framework QuartzCore -framework CoreVideo \
@@ -813,12 +826,15 @@ in
              -framework Metal -framework MetalKit -framework IOSurface \
              -framework VideoToolbox -framework AVFoundation \
              $(pkg-config --libs wayland-server wayland-client pixman-1) \
+             $XKBCOMMON_LIBS \
              -fobjc-arc -flto -O3 \
              -Wl,-rpath,\$PWD/macos-dependencies/lib \
              -o Wawona
         fi
       else
         # No Vulkan needed
+        # Get xkbcommon libs explicitly
+        XKBCOMMON_LIBS=$(pkg-config --libs libxkbcommon 2>/dev/null || echo "-Lmacos-dependencies/lib -lxkbcommon")
         $CC $OBJ_FILES libgbm.a \
            -Lmacos-dependencies/lib \
            -framework Cocoa -framework QuartzCore -framework CoreVideo \
@@ -826,6 +842,7 @@ in
            -framework Metal -framework MetalKit -framework IOSurface \
            -framework VideoToolbox -framework AVFoundation \
            $(pkg-config --libs wayland-server wayland-client pixman-1) \
+           $XKBCOMMON_LIBS \
            -fobjc-arc -flto -O3 \
            -Wl,-rpath,\$PWD/macos-dependencies/lib \
            -o Wawona
@@ -1135,6 +1152,7 @@ in
                ${lib.concatStringsSep " " commonObjCFlags} \
                ${lib.concatStringsSep " " releaseObjCFlags} \
                -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+               -DTARGET_OS_IPHONE=1 \
                -DHAVE_VULKAN=0 \
                -o "$obj_file"
           else
@@ -1154,6 +1172,29 @@ in
         fi
       done
 
+      # Get xkbcommon libs explicitly
+      # xkbcommon from nixpkgs is built for macOS, not iOS
+      # For iOS, we need to find it in buildInputs or use pkg-config
+      XKBCOMMON_LIBS=""
+      for dep in $buildInputs; do
+        if [ -f "$dep/lib/libxkbcommon.a" ]; then
+          XKBCOMMON_LIBS="-L$dep/lib -lxkbcommon"
+          echo "Found xkbcommon static library: $dep/lib/libxkbcommon.a"
+          break
+        elif [ -f "$dep/lib/libxkbcommon.dylib" ]; then
+          XKBCOMMON_LIBS="-L$dep/lib -lxkbcommon"
+          echo "Found xkbcommon dynamic library: $dep/lib/libxkbcommon.dylib"
+          break
+        fi
+      done
+      
+      # Fallback to pkg-config or ios-dependencies
+      if [ -z "$XKBCOMMON_LIBS" ]; then
+        XKBCOMMON_LIBS=$(pkg-config --libs libxkbcommon 2>/dev/null || echo "-Lios-dependencies/lib -lxkbcommon")
+      fi
+      
+      echo "Linking with xkbcommon: $XKBCOMMON_LIBS"
+      
       # Link executable
       $CC $OBJ_FILES libgbm.a \
          -Lios-dependencies/lib \
@@ -1162,6 +1203,7 @@ in
          -framework Metal -framework MetalKit -framework IOSurface \
          -framework VideoToolbox -framework AVFoundation \
          $(pkg-config --libs wayland-server wayland-client pixman-1) \
+         $XKBCOMMON_LIBS \
          -fobjc-arc -flto -O3 -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
          -Wl,-rpath,@executable_path/Frameworks \
          -o Wawona
@@ -1303,6 +1345,39 @@ in
                   install_name_tool -change "$dep_path" "@rpath/$dep_name" "$EXECUTABLE"
                 fi
               done
+            fi
+            
+            # Copy Waypipe binary into app bundle
+            # Find waypipe in buildInputs
+            WAYPIPE_BIN=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/bin/waypipe" ]; then
+                WAYPIPE_BIN="$dep/bin/waypipe"
+                echo "Found Waypipe binary at: $WAYPIPE_BIN"
+                break
+              fi
+            done
+            
+            if [ -n "$WAYPIPE_BIN" ] && [ -f "$WAYPIPE_BIN" ]; then
+              # Copy to multiple locations for maximum compatibility
+              # 1. In bin/ subdirectory (preferred location)
+              mkdir -p $out/Applications/Wawona.app/bin
+              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/bin/waypipe
+              chmod +x $out/Applications/Wawona.app/bin/waypipe
+              
+              # 2. In bundle root (fallback for iOS Simulator)
+              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe
+              chmod +x $out/Applications/Wawona.app/waypipe
+              
+              # 3. Next to executable (another fallback)
+              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe-bin
+              chmod +x $out/Applications/Wawona.app/waypipe-bin
+              
+              echo "Copied Waypipe binary to app bundle (bin/, root, and waypipe-bin)"
+              echo "Waypipe binary size: $(ls -lh "$WAYPIPE_BIN" | awk '{print $5}')"
+            else
+              echo "Warning: Waypipe binary not found in buildInputs"
+              echo "Searched in: $buildInputs"
             fi
             
             runHook postInstall

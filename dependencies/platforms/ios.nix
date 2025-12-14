@@ -145,6 +145,16 @@ in
           buildModule
           ;
       }
+    else if name == "xkbcommon" then
+      (import ../deps/xkbcommon/ios.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          buildModule
+          ;
+      }
     else
       let
         src = if entry.source == "system" then null else fetchSource entry;

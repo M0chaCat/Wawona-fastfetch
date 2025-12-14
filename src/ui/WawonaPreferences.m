@@ -3,1206 +3,1882 @@
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <ifaddrs.h>
 #import <net/if.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
+#import <spawn.h>
+#import <sys/wait.h>
+#import <sys/stat.h>
+#import <string.h>
+#import <errno.h>
 
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
-// iOS: Full implementation with table view
-#import "WawonaAboutPanel.h"
+#else
+#import <AppKit/AppKit.h>
+#endif
 
-@interface WawonaPreferences () <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) NSArray<NSDictionary *> *settingsSections;
+// MARK: - Data Models
+
+typedef NS_ENUM(NSInteger, WawonaSettingType) {
+  WawonaSettingTypeSwitch,
+  WawonaSettingTypeText,
+  WawonaSettingTypeNumber,
+  WawonaSettingTypePopup,
+  WawonaSettingTypeButton,
+  WawonaSettingTypeInfo
+};
+
+@interface WawonaSettingItem : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *key;
+@property(nonatomic, copy) NSString *desc;
+@property(nonatomic, assign) WawonaSettingType type;
+@property(nonatomic, strong) id defaultValue;
+@property(nonatomic, strong) NSArray *options;
+@property(nonatomic, copy) void (^actionBlock)(void);
++ (instancetype)itemWithTitle:(NSString *)title
+                          key:(NSString *)key
+                         type:(WawonaSettingType)type
+                      default:(id)def
+                         desc:(NSString *)desc;
 @end
+
+@implementation WawonaSettingItem
++ (instancetype)itemWithTitle:(NSString *)title
+                          key:(NSString *)key
+                         type:(WawonaSettingType)type
+                      default:(id)def
+                         desc:(NSString *)desc {
+  WawonaSettingItem *item = [[WawonaSettingItem alloc] init];
+  item.title = title;
+  item.key = key;
+  item.type = type;
+  item.defaultValue = def;
+  item.desc = desc;
+  return item;
+}
+@end
+
+@interface WawonaPreferencesSection : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *icon;
+#if TARGET_OS_IPHONE
+@property(nonatomic, strong) UIColor *iconColor;
+#else
+@property(nonatomic, strong) NSColor *iconColor;
+#endif
+@property(nonatomic, strong) NSArray<WawonaSettingItem *> *items;
+@end
+
+@implementation WawonaPreferencesSection
+@end
+
+// MARK: - Helper Class Interfaces
+
+#if !TARGET_OS_IPHONE
+@interface WawonaPreferencesSidebar
+    : NSViewController <NSOutlineViewDataSource, NSOutlineViewDelegate>
+@property(nonatomic, weak) WawonaPreferences *parent;
+@property(nonatomic, strong) NSOutlineView *outlineView;
+@end
+
+@interface WawonaPreferencesContent
+    : NSViewController <NSTableViewDataSource, NSTableViewDelegate>
+@property(nonatomic, strong) WawonaPreferencesSection *section;
+@property(nonatomic, strong) NSTableView *tableView;
+@end
+#endif
+
+// MARK: - Main Class Extension
+
+@interface WawonaPreferences ()
+#if !TARGET_OS_IPHONE
+<NSToolbarDelegate>
+#endif
+@property(nonatomic, strong) NSArray<WawonaPreferencesSection *> *sections;
+#if !TARGET_OS_IPHONE
+@property(nonatomic, strong) NSSplitViewController *splitVC;
+@property(nonatomic, strong) WawonaPreferencesSidebar *sidebar;
+@property(nonatomic, strong) WawonaPreferencesContent *content;
+@property(nonatomic, strong) NSWindowController *winController;
+#endif
+- (NSArray<WawonaPreferencesSection *> *)buildSections;
+- (void)runWaypipe;
+- (void)handleSSHPasswordPrompt:(NSString *)prompt;
+- (void)handleSSHError:(NSString *)error;
+#if !TARGET_OS_IPHONE
+- (void)showSection:(NSInteger)idx;
+#endif
+@end
+
+// MARK: - Main Implementation
 
 @implementation WawonaPreferences
 
 + (instancetype)sharedPreferences {
-    static WawonaPreferences *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[self alloc] init];
-    });
-    return sharedInstance;
+  static WawonaPreferences *sharedInstance = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    sharedInstance = [[self alloc] init];
+  });
+  return sharedInstance;
 }
 
+#if !TARGET_OS_IPHONE
 - (instancetype)init {
-    self = [super init];
-    if (self) {
-        self.title = @"Wawona Settings";
-        self.modalPresentationStyle = UIModalPresentationPageSheet;
-        [self loadSettingsFromBundle];
-    }
-    return self;
+  if (self = [super init]) {
+    self.sections = [self buildSections];
+  }
+  return self;
 }
-
-- (void)loadSettingsFromBundle {
-    NSMutableArray *sections = [NSMutableArray array];
-    
-    NSString *settingsBundlePath = [[NSBundle mainBundle] pathForResource:@"Settings" ofType:@"bundle"];
-    NSString *rootPlistPath = [settingsBundlePath stringByAppendingPathComponent:@"Root.plist"];
-    NSDictionary *rootDict = [NSDictionary dictionaryWithContentsOfFile:rootPlistPath];
-    NSArray *specifiers = rootDict[@"PreferenceSpecifiers"];
-    
-    NSMutableDictionary *currentSection = nil;
-    NSMutableArray *currentItems = nil;
-    
-    for (NSDictionary *specifier in specifiers) {
-        NSString *type = specifier[@"Type"];
-        
-        if ([type isEqualToString:@"PSGroupSpecifier"]) {
-            // Start new section
-            if (currentSection) {
-                currentSection[@"items"] = [currentItems copy];
-                [sections addObject:[currentSection copy]];
-            }
-            currentSection = [NSMutableDictionary dictionary];
-            currentItems = [NSMutableArray array];
-            currentSection[@"title"] = specifier[@"Title"] ? specifier[@"Title"] : @"";
-        } else if ([type isEqualToString:@"PSToggleSwitchSpecifier"]) {
-            // Switch item
-            if (!currentSection) {
-                currentSection = [NSMutableDictionary dictionary];
-                currentItems = [NSMutableArray array];
-                currentSection[@"title"] = @"General";
-            }
-            [currentItems addObject:@{
-                @"title": specifier[@"Title"],
-                @"key": specifier[@"Key"],
-                @"type": @"switch",
-                @"default": specifier[@"DefaultValue"] ? specifier[@"DefaultValue"] : @NO
-            }];
-        } else if ([type isEqualToString:@"PSTextFieldSpecifier"]) {
-             // Text field item
-             [currentItems addObject:@{
-                @"title": specifier[@"Title"],
-                @"key": specifier[@"Key"],
-                @"type": @"textfield",
-                @"keyboard": specifier[@"KeyboardType"] ? specifier[@"KeyboardType"] : @"Alphabet"
-            }];
-        }
-    }
-    
-    // Add last section
-    if (currentSection) {
-        currentSection[@"items"] = [currentItems copy];
-        [sections addObject:[currentSection copy]];
-    }
-    
-    // Append manual About section
-    [sections addObject:@{
-        @"title": @"About",
-        @"items": @[
-            @{@"title": @"Version", @"key": @"version", @"type": @"info"},
-            @{@"title": @"About Wawona", @"key": @"about", @"type": @"button"}
-        ]
-    }];
-    
-    self.settingsSections = sections;
-}
-
-- (void)loadView {
-    self.view = [[UIView alloc] init];
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
-    
-    // Create table view
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
-    self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.tableView.dataSource = self;
-    self.tableView.delegate = self;
-    [self.view addSubview:self.tableView];
-    
-    // Layout constraints
-    [NSLayoutConstraint activateConstraints:@[
-        [self.tableView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    ]];
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    // Add close button
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] 
+#else
+- (instancetype)init {
+  if (self = [super initWithStyle:UITableViewStyleInsetGrouped]) {
+    self.title = @"Settings";
+    self.sections = [self buildSections];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-        target:self
-        action:@selector(dismissSettings:)];
+                             target:self
+                             action:@selector(dismissSelf)];
+  }
+  return self;
+}
+#endif
+
+- (NSString *)localIPAddress {
+  struct ifaddrs *interfaces = NULL;
+  struct ifaddrs *temp_addr = NULL;
+  NSString *address = @"Unavailable";
+  if (getifaddrs(&interfaces) == 0) {
+    temp_addr = interfaces;
+    while (temp_addr != NULL) {
+      if (temp_addr->ifa_addr->sa_family == AF_INET) {
+        NSString *name = [NSString stringWithUTF8String:temp_addr->ifa_name];
+        if ([name isEqualToString:@"en0"] || [name isEqualToString:@"en1"]) {
+          address =
+              [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)
+                                                            temp_addr->ifa_addr)
+                                                           ->sin_addr)];
+          break;
+        }
+      }
+      temp_addr = temp_addr->ifa_next;
+    }
+  }
+  freeifaddrs(interfaces);
+  return address;
 }
 
-- (void)dismissSettings:(id)sender {
-    [self dismissViewControllerAnimated:YES completion:nil];
+- (NSArray<WawonaPreferencesSection *> *)buildSections {
+  NSMutableArray *sects = [NSMutableArray array];
+
+  // DISPLAY
+  WawonaPreferencesSection *display = [[WawonaPreferencesSection alloc] init];
+  display.title = @"Display";
+  display.icon = @"display";
+#if TARGET_OS_IPHONE
+  display.iconColor = [UIColor systemBlueColor];
+#else
+  display.iconColor = [NSColor systemBlueColor];
+#endif
+  display.items = @[
+    [WawonaSettingItem itemWithTitle:@"Force Server-Side Decorations"
+                                 key:@"ForceServerSideDecorations"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Forces macOS-style window decorations."],
+    [WawonaSettingItem itemWithTitle:@"Show macOS Cursor"
+                                 key:@"RenderMacOSPointer"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Toggles macOS cursor visibility."],
+    [WawonaSettingItem itemWithTitle:@"Auto Scale"
+                                 key:@"AutoScale"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Matches macOS UI Scaling."],
+    [WawonaSettingItem itemWithTitle:@"Respect Safe Area"
+                                 key:@"RespectSafeArea"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Avoids notch areas."]
+  ];
+  [sects addObject:display];
+
+  // INPUT
+  WawonaPreferencesSection *input = [[WawonaPreferencesSection alloc] init];
+  input.title = @"Input";
+  input.icon = @"keyboard";
+#if TARGET_OS_IPHONE
+  input.iconColor = [UIColor systemPurpleColor];
+#else
+  input.iconColor = [NSColor systemPurpleColor];
+#endif
+  input.items = @[
+    [WawonaSettingItem itemWithTitle:@"Swap CMD with ALT"
+                                 key:@"SwapCmdWithAlt"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Swaps Command and Alt keys."],
+    [WawonaSettingItem itemWithTitle:@"Universal Clipboard"
+                                 key:@"UniversalClipboardEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Syncs clipboard with macOS."]
+  ];
+  [sects addObject:input];
+
+  // GRAPHICS
+  WawonaPreferencesSection *graphics = [[WawonaPreferencesSection alloc] init];
+  graphics.title = @"Graphics";
+  graphics.icon = @"cpu";
+#if TARGET_OS_IPHONE
+  graphics.iconColor = [UIColor systemRedColor];
+#else
+  graphics.iconColor = [NSColor systemRedColor];
+#endif
+  graphics.items = @[
+    [WawonaSettingItem itemWithTitle:@"Enable Vulkan Drivers"
+                                 key:@"VulkanDriversEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Experimental Vulkan support."],
+    [WawonaSettingItem itemWithTitle:@"Enable EGL Drivers"
+                                 key:@"EglDriversEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"EGL hardware acceleration."],
+    [WawonaSettingItem itemWithTitle:@"Enable DMABUF"
+                                 key:@"DmabufEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Zero-copy texture sharing."]
+  ];
+  [sects addObject:graphics];
+
+  // NETWORK
+  WawonaPreferencesSection *network = [[WawonaPreferencesSection alloc] init];
+  network.title = @"Network";
+  network.icon = @"network";
+#if TARGET_OS_IPHONE
+  network.iconColor = [UIColor systemOrangeColor];
+#else
+  network.iconColor = [NSColor systemOrangeColor];
+#endif
+  network.items = @[
+    [WawonaSettingItem itemWithTitle:@"TCP Port"
+                                 key:@"TCPListenerPort"
+                                type:WawonaSettingTypeNumber
+                             default:@6000
+                                desc:@"Port for TCP listener."],
+    [WawonaSettingItem itemWithTitle:@"Socket Directory"
+                                 key:@"WaylandSocketDir"
+                                type:WawonaSettingTypeInfo
+                             default:@"/tmp"
+                                desc:@"Directory for sockets (tap to copy)."],
+    [WawonaSettingItem itemWithTitle:@"Display Number"
+                                 key:@"WaylandDisplayNumber"
+                                type:WawonaSettingTypeNumber
+                             default:@0
+                                desc:@"Display number (e.g., 0)."]
+  ];
+  [sects addObject:network];
+
+  // ADVANCED
+  WawonaPreferencesSection *advanced = [[WawonaPreferencesSection alloc] init];
+  advanced.title = @"Advanced";
+  advanced.icon = @"gearshape.2";
+#if TARGET_OS_IPHONE
+  advanced.iconColor = [UIColor systemGrayColor];
+#else
+  advanced.iconColor = [NSColor systemGrayColor];
+#endif
+  advanced.items = @[
+    [WawonaSettingItem itemWithTitle:@"Color Operations"
+                                 key:@"ColorOperations"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Color profiles and HDR."],
+    [WawonaSettingItem itemWithTitle:@"Nested Compositors"
+                                 key:@"NestedCompositorsSupportEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Support for nested compositors."],
+    [WawonaSettingItem itemWithTitle:@"Multiple Clients"
+                                 key:@"MultipleClientsEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Allow multiple clients."]
+  ];
+  [sects addObject:advanced];
+
+  // WAYPIPE
+  WawonaPreferencesSection *waypipe = [[WawonaPreferencesSection alloc] init];
+  waypipe.title = @"Waypipe";
+  waypipe.icon = @"arrow.triangle.2.circlepath";
+#if TARGET_OS_IPHONE
+  waypipe.iconColor = [UIColor systemGreenColor];
+#else
+  waypipe.iconColor = [NSColor systemGreenColor];
+#endif
+
+  WawonaSettingItem *runBtn = [WawonaSettingItem
+      itemWithTitle:@"Run Waypipe"
+                key:@"WaypipeRun"
+               type:WawonaSettingTypeButton
+            default:nil
+               desc:@"Launch waypipe with current settings."];
+  __weak typeof(self) weakSelf = self;
+  runBtn.actionBlock = ^{
+    [weakSelf runWaypipe];
+  };
+
+  WawonaSettingItem *ipInfo =
+      [WawonaSettingItem itemWithTitle:@"Local IP"
+                                   key:nil
+                                  type:WawonaSettingTypeInfo
+                               default:[self localIPAddress]
+                                  desc:nil];
+
+  WawonaSettingItem *compressItem =
+      [WawonaSettingItem itemWithTitle:@"Compression"
+                                   key:@"WaypipeCompress"
+                                  type:WawonaSettingTypePopup
+                               default:@"lz4"
+                                  desc:@"Compression method."];
+  compressItem.options = @[ @"none", @"lz4", @"zstd" ];
+
+  WawonaSettingItem *videoItem =
+      [WawonaSettingItem itemWithTitle:@"Video Codec"
+                                   key:@"WaypipeVideo"
+                                  type:WawonaSettingTypePopup
+                               default:@"none"
+                                  desc:@"Lossy video codec."];
+  videoItem.options = @[ @"none", @"h264", @"vp9", @"av1" ];
+
+  WawonaSettingItem *vEnc =
+      [WawonaSettingItem itemWithTitle:@"Encoding"
+                                   key:@"WaypipeVideoEncoding"
+                                  type:WawonaSettingTypePopup
+                               default:@"hw"
+                                  desc:@"Hardware vs Software."];
+  vEnc.options = @[ @"hw", @"sw", @"hwenc", @"swenc" ];
+
+  WawonaSettingItem *vDec =
+      [WawonaSettingItem itemWithTitle:@"Decoding"
+                                   key:@"WaypipeVideoDecoding"
+                                  type:WawonaSettingTypePopup
+                               default:@"hw"
+                                  desc:@"Hardware vs Software."];
+  vDec.options = @[ @"hw", @"sw", @"hwdec", @"swdec" ];
+
+  waypipe.items = @[
+    ipInfo,
+    [WawonaSettingItem itemWithTitle:@"Display"
+                                 key:@"WaypipeDisplay"
+                                type:WawonaSettingTypeText
+                             default:@"wayland-0"
+                                desc:@"Socket name."],
+    compressItem,
+    [WawonaSettingItem itemWithTitle:@"Comp. Level"
+                                 key:@"WaypipeCompressLevel"
+                                type:WawonaSettingTypeNumber
+                             default:@7
+                                desc:@"Zstd level (1-22)."],
+    [WawonaSettingItem itemWithTitle:@"Threads"
+                                 key:@"WaypipeThreads"
+                                type:WawonaSettingTypeNumber
+                             default:@0
+                                desc:@"0 = auto."],
+    videoItem,
+    vEnc,
+    vDec,
+    [WawonaSettingItem itemWithTitle:@"Bits Per Frame"
+                                 key:@"WaypipeVideoBpf"
+                                type:WawonaSettingTypeNumber
+                             default:@""
+                                desc:@"Target bit rate."],
+    [WawonaSettingItem itemWithTitle:@"Enable SSH"
+                                 key:@"WaypipeSSHEnabled"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Use SSH."],
+    [WawonaSettingItem itemWithTitle:@"SSH Host"
+                                 key:@"WaypipeSSHHost"
+                                type:WawonaSettingTypeText
+                             default:@""
+                                desc:@"Remote host."],
+    [WawonaSettingItem itemWithTitle:@"SSH User"
+                                 key:@"WaypipeSSHUser"
+                                type:WawonaSettingTypeText
+                             default:@""
+                                desc:@"SSH Username."],
+    [WawonaSettingItem itemWithTitle:@"Remote Command"
+                                 key:@"WaypipeRemoteCommand"
+                                type:WawonaSettingTypeText
+                             default:@""
+                                desc:@"Command to run remotely."],
+    [WawonaSettingItem itemWithTitle:@"Debug Mode"
+                                 key:@"WaypipeDebug"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Print debug logs."],
+    [WawonaSettingItem itemWithTitle:@"Disable GPU"
+                                 key:@"WaypipeNoGpu"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Block GPU protocols."],
+    [WawonaSettingItem itemWithTitle:@"One-shot"
+                                 key:@"WaypipeOneshot"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Exit when client disconnects."],
+    [WawonaSettingItem itemWithTitle:@"Unlink Socket"
+                                 key:@"WaypipeUnlinkSocket"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Unlink socket on exit."],
+    [WawonaSettingItem itemWithTitle:@"Login Shell"
+                                 key:@"WaypipeLoginShell"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Run in login shell."],
+    [WawonaSettingItem itemWithTitle:@"VSock"
+                                 key:@"WaypipeVsock"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Use VSock."],
+    [WawonaSettingItem itemWithTitle:@"XWayland"
+                                 key:@"WaypipeXwls"
+                                type:WawonaSettingTypeSwitch
+                             default:@NO
+                                desc:@"Enable XWayland support."],
+    [WawonaSettingItem itemWithTitle:@"Title Prefix"
+                                 key:@"WaypipeTitlePrefix"
+                                type:WawonaSettingTypeText
+                             default:@""
+                                desc:@"Prefix for titles."],
+    [WawonaSettingItem itemWithTitle:@"Sec Context"
+                                 key:@"WaypipeSecCtx"
+                                type:WawonaSettingTypeText
+                             default:@""
+                                desc:@"SELinux context."],
+    runBtn
+  ];
+  [sects addObject:waypipe];
+
+  return sects;
 }
 
-#pragma mark - UITableViewDataSource
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.settingsSections.count;
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return self.settingsSections[section][@"title"];
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    NSArray *items = self.settingsSections[section][@"items"];
-    return items.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSArray *items = self.settingsSections[indexPath.section][@"items"];
-    NSDictionary *item = items[indexPath.row];
-    NSString *type = item[@"type"];
-    NSString *title = item[@"title"];
+- (NSString *)findWaypipeBinary {
+  // Check common locations for Waypipe binary
+  NSMutableArray *possiblePaths = [NSMutableArray array];
+  
+  // Helper function to safely add path if not nil
+  void (^addPathIfNotNil)(NSString *) = ^(NSString *path) {
+    if (path && path.length > 0) {
+      [possiblePaths addObject:path];
+    }
+  };
+  
+  // In app bundle (most common for iOS)
+  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+  NSString *executablePath = [[NSBundle mainBundle] executablePath];
+  NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
+  NSString *executableDir = executablePath ? [executablePath stringByDeletingLastPathComponent] : nil;
+  
+  // On iOS Simulator, bundlePath and resourcePath might be the same
+  // But let's check both to be safe
+  if (resourcePath && ![resourcePath isEqualToString:bundlePath]) {
+    NSLog(@"[WawonaPreferences] Resource path differs from bundle path: %@", resourcePath);
+  }
+  
+  // pathForResource:ofType: can return nil, so check before adding
+  NSString *resourcePath1 = [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:nil];
+  addPathIfNotNil(resourcePath1);
+  
+  NSString *resourcePath2 = [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:@"bin"];
+  addPathIfNotNil(resourcePath2);
+  
+  // Check bundle root first (iOS Simulator might not preserve bin/ directory)
+  addPathIfNotNil([bundlePath stringByAppendingPathComponent:@"waypipe"]);
+  addPathIfNotNil([bundlePath stringByAppendingPathComponent:@"waypipe-bin"]);
+  // Then check bin directory
+  addPathIfNotNil([bundlePath stringByAppendingPathComponent:@"bin/waypipe"]);
+  addPathIfNotNil([bundlePath stringByAppendingPathComponent:@"Frameworks/waypipe"]);
+  
+  // Also check resource path if different
+  if (resourcePath && ![resourcePath isEqualToString:bundlePath]) {
+    addPathIfNotNil([resourcePath stringByAppendingPathComponent:@"waypipe"]);
+    addPathIfNotNil([resourcePath stringByAppendingPathComponent:@"waypipe-bin"]);
+    addPathIfNotNil([resourcePath stringByAppendingPathComponent:@"bin/waypipe"]);
+  }
+  
+  // Next to the app executable
+  if (executableDir) {
+    addPathIfNotNil([executableDir stringByAppendingPathComponent:@"waypipe"]);
+    addPathIfNotNil([executableDir stringByAppendingPathComponent:@"bin/waypipe"]);
+  }
+  
+  // System paths (for development/testing on macOS)
+#if !TARGET_OS_IPHONE
+  addPathIfNotNil(@"/usr/local/bin/waypipe");
+  addPathIfNotNil(@"/opt/homebrew/bin/waypipe");
+  addPathIfNotNil(@"/nix/var/nix/profiles/default/bin/waypipe");
+#endif
+  
+  // Environment variable (if set)
+  NSString *envPath = [[NSProcessInfo processInfo] environment][@"WAYPIPE_BIN"];
+  if (envPath) {
+    addPathIfNotNil([envPath stringByStandardizingPath]);
+  }
+  
+  // Check Nix store paths from environment (for development)
+  NSDictionary *env = [[NSProcessInfo processInfo] environment];
+  for (NSString *key in env.allKeys) {
+    if ([key hasPrefix:@"NIX_STORE"] || [key containsString:@"waypipe"]) {
+      NSString *value = env[key];
+      if (value && [value containsString:@"waypipe"] && [value hasPrefix:@"/"]) {
+        addPathIfNotNil(value);
+      }
+    }
+  }
+  
+  NSLog(@"[WawonaPreferences] Searching for Waypipe binary...");
+  NSLog(@"[WawonaPreferences] Bundle path: %@", bundlePath);
+  NSLog(@"[WawonaPreferences] Executable path: %@", executablePath);
+  
+  // Debug: List bundle contents to see what's actually there
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSArray *bundleContents = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
+  NSLog(@"[WawonaPreferences] Bundle contents: %@", bundleContents);
+  
+  // Check if bin directory exists
+  NSString *binDir = [bundlePath stringByAppendingPathComponent:@"bin"];
+  BOOL binDirExists = [fm fileExistsAtPath:binDir isDirectory:nil];
+  NSLog(@"[WawonaPreferences] bin directory exists: %@ at %@", binDirExists ? @"YES" : @"NO", binDir);
+  if (binDirExists) {
+    NSArray *binContents = [fm contentsOfDirectoryAtPath:binDir error:nil];
+    NSLog(@"[WawonaPreferences] bin directory contents: %@", binContents);
+  }
+  
+  for (NSString *path in possiblePaths) {
+    BOOL exists = [fm fileExistsAtPath:path];
+    BOOL isExecutable = exists ? [fm isExecutableFileAtPath:path] : NO;
     
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingsCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"SettingsCell"];
+    // Also check if it's a directory (shouldn't be, but let's be thorough)
+    BOOL isDirectory = NO;
+    if (exists) {
+      [fm fileExistsAtPath:path isDirectory:&isDirectory];
     }
     
-    // Reset all cell properties to avoid reuse issues
-    cell.textLabel.text = title;
-    cell.detailTextLabel.text = nil; // Clear detail text to prevent version from appearing in reused cells
-    cell.accessoryView = nil;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    NSLog(@"[WawonaPreferences] Checking: %@ (exists: %@, executable: %@, isDirectory: %@)", 
+          path, exists ? @"YES" : @"NO", isExecutable ? @"YES" : @"NO", isDirectory ? @"YES" : @"NO");
     
-    if ([type isEqualToString:@"switch"]) {
-        NSString *key = item[@"key"];
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        
-        // Get value from defaults, or use bundle default if not set
-        BOOL value = NO;
-        if ([defaults objectForKey:key]) {
-            value = [defaults boolForKey:key];
-        } else {
-            value = [item[@"default"] boolValue];
-        }
-        
-        UISwitch *switchView = [[UISwitch alloc] init];
-        switchView.on = value;
-        [switchView addTarget:self action:@selector(switchValueChanged:) forControlEvents:UIControlEventValueChanged];
-        switchView.tag = indexPath.section * 1000 + indexPath.row;
-        cell.accessoryView = switchView;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if ([type isEqualToString:@"textfield"]) {
-        NSString *key = item[@"key"];
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        
-        UITextField *textField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 100, 30)];
-        textField.textAlignment = NSTextAlignmentRight;
-        textField.textColor = [UIColor secondaryLabelColor];
-        if ([item[@"keyboard"] isEqualToString:@"NumberPad"]) {
-            textField.keyboardType = UIKeyboardTypeNumberPad;
-        }
-        
-        // Value
-        if ([defaults objectForKey:key]) {
-            if ([item[@"keyboard"] isEqualToString:@"NumberPad"]) {
-                textField.text = [NSString stringWithFormat:@"%ld", (long)[defaults integerForKey:key]];
-            } else {
-                textField.text = [defaults stringForKey:key];
-            }
-        } else {
-            textField.text = @"";
-        }
-        
-        [textField addTarget:self action:@selector(textFieldChanged:) forControlEvents:UIControlEventEditingDidEnd];
-        textField.tag = indexPath.section * 1000 + indexPath.row;
-        
-        cell.accessoryView = textField;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if ([type isEqualToString:@"info"]) {
-        // Only set version for info type cells
-        NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-        NSString *build = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
-        if (version) {
-            // Format as v0.0.1 (build)
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"v%@ (%@)", version, build ? build : @"1"];
-        } else {
-            cell.detailTextLabel.text = @"Unknown";
-        }
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if ([type isEqualToString:@"button"]) {
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    if (exists && !isDirectory && isExecutable) {
+      NSLog(@"[WawonaPreferences] ✅ Found Waypipe at: %@", path);
+      return path;
     }
     
-    return cell;
+    // If file exists but isn't executable, try to make it executable
+    if (exists && !isDirectory && !isExecutable) {
+      NSLog(@"[WawonaPreferences] ⚠️ Waypipe found but not executable, attempting to fix permissions...");
+      
+      // Try using NSFileManager first
+      NSDictionary *attrs = @{NSFilePosixPermissions: @0755};
+      NSError *permError = nil;
+      if ([fm setAttributes:attrs ofItemAtPath:path error:&permError]) {
+        isExecutable = [fm isExecutableFileAtPath:path];
+        if (isExecutable) {
+          NSLog(@"[WawonaPreferences] ✅ Fixed permissions via NSFileManager, found Waypipe at: %@", path);
+          return path;
+        }
+      } else {
+        NSLog(@"[WawonaPreferences] NSFileManager setAttributes failed: %@", permError.localizedDescription);
+      }
+      
+      // Fallback: Use chmod system call
+      const char *cPath = [path UTF8String];
+      if (chmod(cPath, 0755) == 0) {
+        isExecutable = [fm isExecutableFileAtPath:path];
+        if (isExecutable) {
+          NSLog(@"[WawonaPreferences] ✅ Fixed permissions via chmod, found Waypipe at: %@", path);
+          return path;
+        } else {
+          NSLog(@"[WawonaPreferences] chmod succeeded but file still not executable");
+        }
+      } else {
+        NSLog(@"[WawonaPreferences] chmod failed: %s", strerror(errno));
+      }
+    }
+  }
+  
+  NSLog(@"[WawonaPreferences] ❌ Waypipe binary not found in any checked location");
+  NSLog(@"[WawonaPreferences] Checked %lu locations", (unsigned long)possiblePaths.count);
+  
+  // Final attempt: search recursively in bundle
+  NSLog(@"[WawonaPreferences] Attempting recursive search in bundle...");
+  NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:bundlePath];
+  NSString *file;
+  while ((file = [enumerator nextObject])) {
+    if ([file.lastPathComponent isEqualToString:@"waypipe"] || [file.lastPathComponent isEqualToString:@"waypipe-bin"]) {
+      NSString *fullPath = [bundlePath stringByAppendingPathComponent:file];
+      BOOL isDirectory = NO;
+      BOOL exists = [fm fileExistsAtPath:fullPath isDirectory:&isDirectory];
+      BOOL isExecutable = exists && !isDirectory ? [fm isExecutableFileAtPath:fullPath] : NO;
+      NSLog(@"[WawonaPreferences] Found waypipe via recursive search: %@ (exists: %@, executable: %@, isDirectory: %@)", 
+            fullPath, exists ? @"YES" : @"NO", isExecutable ? @"YES" : @"NO", isDirectory ? @"YES" : @"NO");
+      
+      if (exists && !isDirectory && isExecutable) {
+        NSLog(@"[WawonaPreferences] ✅ Found Waypipe at: %@", fullPath);
+        return fullPath;
+      }
+      
+      // Try to fix permissions if file exists but isn't executable
+      if (exists && !isDirectory && !isExecutable) {
+        NSLog(@"[WawonaPreferences] ⚠️ Waypipe found via recursive search but not executable, fixing permissions...");
+        const char *cPath = [fullPath UTF8String];
+        if (chmod(cPath, 0755) == 0) {
+          isExecutable = [fm isExecutableFileAtPath:fullPath];
+          if (isExecutable) {
+            NSLog(@"[WawonaPreferences] ✅ Fixed permissions via chmod, found Waypipe at: %@", fullPath);
+            return fullPath;
+          }
+        }
+      }
+    }
+  }
+  
+  return nil;
 }
 
-- (void)switchValueChanged:(UISwitch *)sender {
-    NSInteger section = sender.tag / 1000;
-    NSInteger row = sender.tag % 1000;
-    NSArray *items = self.settingsSections[section][@"items"];
-    NSDictionary *item = items[row];
-    NSString *key = item[@"key"];
+- (NSArray *)buildWaypipeArguments:(WawonaPreferencesManager *)prefs {
+  NSMutableArray *args = [NSMutableArray array];
+  
+  // Display socket
+  NSString *display = prefs.waypipeDisplay;
+  if (display && display.length > 0) {
+    [args addObject:@"--display"];
+    [args addObject:display];
+  }
+  
+  // Socket path
+  NSString *socket = prefs.waypipeSocket;
+  if (socket && socket.length > 0) {
+    [args addObject:@"--socket"];
+    [args addObject:socket];
+  }
+  
+  // Compression
+  NSString *compress = prefs.waypipeCompress;
+  if (compress && compress.length > 0 && ![compress isEqualToString:@"none"]) {
+    [args addObject:@"--compress"];
+    [args addObject:compress];
     
-    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:key];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-- (void)textFieldChanged:(UITextField *)sender {
-    NSInteger section = sender.tag / 1000;
-    NSInteger row = sender.tag % 1000;
-    NSArray *items = self.settingsSections[section][@"items"];
-    NSDictionary *item = items[row];
-    NSString *key = item[@"key"];
+    if ([compress isEqualToString:@"zstd"]) {
+      NSString *level = prefs.waypipeCompressLevel;
+      if (level && level.length > 0) {
+        [args addObject:@"--compress-level"];
+        [args addObject:level];
+      }
+    }
+  }
+  
+  // Threads
+  NSString *threads = prefs.waypipeThreads;
+  if (threads && threads.length > 0 && ![threads isEqualToString:@"0"]) {
+    [args addObject:@"--threads"];
+    [args addObject:threads];
+  }
+  
+  // Video codec
+  NSString *video = prefs.waypipeVideo;
+  if (video && video.length > 0 && ![video isEqualToString:@"none"]) {
+    [args addObject:@"--video"];
+    [args addObject:video];
     
-    if ([item[@"keyboard"] isEqualToString:@"NumberPad"]) {
-        [[NSUserDefaults standardUserDefaults] setInteger:[sender.text integerValue] forKey:key];
+    NSString *vEnc = prefs.waypipeVideoEncoding;
+    if (vEnc && vEnc.length > 0) {
+      [args addObject:@"--video-encoding"];
+      [args addObject:vEnc];
+    }
+    
+    NSString *vDec = prefs.waypipeVideoDecoding;
+    if (vDec && vDec.length > 0) {
+      [args addObject:@"--video-decoding"];
+      [args addObject:vDec];
+    }
+    
+    NSString *bpf = prefs.waypipeVideoBpf;
+    if (bpf && bpf.length > 0) {
+      [args addObject:@"--video-bpf"];
+      [args addObject:bpf];
+    }
+  }
+  
+  // Debug mode
+  if (prefs.waypipeDebug) {
+    [args addObject:@"--debug"];
+  }
+  
+  // No GPU
+  if (prefs.waypipeNoGpu) {
+    [args addObject:@"--no-gpu"];
+  }
+  
+  // One-shot
+  if (prefs.waypipeOneshot) {
+    [args addObject:@"--oneshot"];
+  }
+  
+  // Unlink socket
+  if (prefs.waypipeUnlinkSocket) {
+    [args addObject:@"--unlink-socket"];
+  }
+  
+  // Login shell
+  if (prefs.waypipeLoginShell) {
+    [args addObject:@"--login-shell"];
+  }
+  
+  // VSock
+  if (prefs.waypipeVsock) {
+    [args addObject:@"--vsock"];
+  }
+  
+  // XWayland
+  if (prefs.waypipeXwls) {
+    [args addObject:@"--xwls"];
+  }
+  
+  // Title prefix
+  NSString *titlePrefix = prefs.waypipeTitlePrefix;
+  if (titlePrefix && titlePrefix.length > 0) {
+    [args addObject:@"--title-prefix"];
+    [args addObject:titlePrefix];
+  }
+  
+  // Security context
+  NSString *secCtx = prefs.waypipeSecCtx;
+  if (secCtx && secCtx.length > 0) {
+    [args addObject:@"--sec-ctx"];
+    [args addObject:secCtx];
+  }
+  
+  // SSH mode (always enabled on iOS/macOS)
+  // Note: Waypipe uses "ssh" as a subcommand, not a binary path
+  // The actual SSH binary path is handled via PATH environment variable
+  NSString *host = prefs.waypipeSSHHost;
+  NSString *user = prefs.waypipeSSHUser;
+  NSString *command = prefs.waypipeRemoteCommand;
+  
+  if (host && host.length > 0) {
+    // Waypipe expects "ssh" as a literal subcommand, not a path
+    [args addObject:@"ssh"];
+    
+    // Build SSH target: user@host or just host
+    NSString *sshTarget;
+    if (user && user.length > 0) {
+      sshTarget = [NSString stringWithFormat:@"%@@%@", user, host];
     } else {
-        [[NSUserDefaults standardUserDefaults] setObject:sender.text forKey:key];
+      sshTarget = host;
     }
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [args addObject:sshTarget];
+    
+    // Remote command
+    if (command && command.length > 0) {
+      [args addObject:command];
+    }
+  }
+  
+  return args;
 }
 
-#pragma mark - UITableViewDelegate
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
-    NSArray *items = self.settingsSections[indexPath.section][@"items"];
-    NSDictionary *item = items[indexPath.row];
-    NSString *key = item[@"key"];
-    
-    if ([key isEqualToString:@"about"]) {
-        WawonaAboutPanel *aboutPanel = [[WawonaAboutPanel alloc] init];
-        UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:aboutPanel];
-        [self presentViewController:navController animated:YES completion:nil];
+- (void)runWaypipe {
+  WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
+  NSString *host = prefs.waypipeSSHHost;
+  
+  // SSH is always enabled on iOS/macOS
+  if (!host || host.length == 0) {
+#if TARGET_OS_OSX
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"SSH Host Required";
+    alert.informativeText = @"Please enter an SSH host in the Waypipe settings.";
+    [alert runModal];
+#else
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SSH Host Required"
+                                                                   message:@"Please enter an SSH host in the Waypipe settings."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+    [alert addAction:okAction];
+    [self presentViewController:alert animated:YES completion:nil];
+#endif
+    return;
+  }
+  
+  // Find Waypipe binary
+  NSString *waypipePath = [self findWaypipeBinary];
+  if (!waypipePath) {
+    NSString *errorMsg = @"Waypipe binary not found. Please ensure Waypipe is bundled with the app.";
+    NSLog(@"[WawonaPreferences] ERROR: %@", errorMsg);
+#if TARGET_OS_OSX
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Waypipe Not Found";
+    alert.informativeText = errorMsg;
+    [alert runModal];
+#else
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Waypipe Not Found"
+                                                                   message:errorMsg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+    [alert addAction:okAction];
+    [self presentViewController:alert animated:YES completion:nil];
+#endif
+    return;
+  }
+  
+  // Build command arguments
+  NSArray *args = [self buildWaypipeArguments:prefs];
+  
+  // Log the command
+  NSMutableString *cmdString = [NSMutableString stringWithString:waypipePath];
+  for (NSString *arg in args) {
+    [cmdString appendFormat:@" %@", arg];
+  }
+  NSLog(@"[WawonaPreferences] Launching Waypipe: %@", cmdString);
+  
+#if TARGET_OS_IPHONE
+  // iOS: Use posix_spawn with pipes to capture output (fork is not available in sandbox)
+  const char *binaryPath = [waypipePath UTF8String];
+  
+  // Convert NSArray to C array
+  NSMutableArray *allArgs = [NSMutableArray arrayWithObject:waypipePath];
+  [allArgs addObjectsFromArray:args];
+  
+  const char **argv = malloc(sizeof(char *) * (allArgs.count + 1));
+  for (NSUInteger i = 0; i < allArgs.count; i++) {
+    argv[i] = [allArgs[i] UTF8String];
+  }
+  argv[allArgs.count] = NULL;
+  
+  // Set up environment
+  extern char **environ;
+  
+  // Prepare environment variables for Waypipe
+  NSMutableDictionary *envDict = [[[NSProcessInfo processInfo] environment] mutableCopy];
+  NSString *socketDir = prefs.waylandSocketDir;
+  NSString *display = prefs.waypipeDisplay;
+  if (socketDir && display) {
+    NSString *waylandDisplay = [NSString stringWithFormat:@"%@/%@", socketDir, display];
+    envDict[@"WAYLAND_DISPLAY"] = waylandDisplay;
+    NSLog(@"[WawonaPreferences] Setting WAYLAND_DISPLAY=%@", waylandDisplay);
+  }
+  // Set XDG_RUNTIME_DIR if not set
+  if (!envDict[@"XDG_RUNTIME_DIR"]) {
+    NSString *runtimeDir = NSTemporaryDirectory();
+    if (runtimeDir) {
+      envDict[@"XDG_RUNTIME_DIR"] = runtimeDir;
+      NSLog(@"[WawonaPreferences] Setting XDG_RUNTIME_DIR=%@", runtimeDir);
     }
+  }
+  
+#if TARGET_OS_IPHONE
+  // On iOS Simulator, ensure PATH includes /usr/bin so ssh can be found
+  NSString *currentPath = envDict[@"PATH"];
+  if (currentPath) {
+    if (![currentPath containsString:@"/usr/bin"]) {
+      envDict[@"PATH"] = [NSString stringWithFormat:@"%@:/usr/bin:/bin:/usr/sbin:/sbin", currentPath];
+      NSLog(@"[WawonaPreferences] Updated PATH to include /usr/bin: %@", envDict[@"PATH"]);
+    }
+  } else {
+    envDict[@"PATH"] = @"/usr/bin:/bin:/usr/sbin:/sbin";
+    NSLog(@"[WawonaPreferences] Set PATH=%@", envDict[@"PATH"]);
+  }
+  
+  // Also try to find ssh and verify it exists
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSArray *sshPaths = @[@"/usr/bin/ssh", @"/bin/ssh"];
+  NSString *sshPath = nil;
+  for (NSString *path in sshPaths) {
+    if ([fm isExecutableFileAtPath:path]) {
+      sshPath = path;
+      NSLog(@"[WawonaPreferences] Found SSH at: %@", sshPath);
+      break;
+    }
+  }
+  
+  if (!sshPath) {
+    NSLog(@"[WawonaPreferences] WARNING: SSH not found in standard locations");
+    // Show error to user
+    dispatch_async(dispatch_get_main_queue(), ^{
+      UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SSH Not Available"
+                                                                     message:@"SSH binary not found. iOS Simulator may have restrictions on executing system binaries."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+      UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+      [alert addAction:okAction];
+      [self presentViewController:alert animated:YES completion:nil];
+    });
+  } else {
+    // Verify we can actually access it (sandbox check)
+    NSLog(@"[WawonaPreferences] SSH path verified: %@", sshPath);
+  }
+#endif
+  
+  // Convert environment dictionary to C array
+  NSMutableArray *envArray = [NSMutableArray array];
+  for (NSString *key in envDict.allKeys) {
+    NSString *value = envDict[key];
+    [envArray addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
+    // Log PATH specifically to verify it's being set
+    if ([key isEqualToString:@"PATH"]) {
+      NSLog(@"[WawonaPreferences] Environment PATH=%@", value);
+    }
+  }
+  
+  NSLog(@"[WawonaPreferences] Total environment variables: %lu", (unsigned long)envArray.count);
+  
+  const char **envp = malloc(sizeof(char *) * (envArray.count + 1));
+  for (NSUInteger i = 0; i < envArray.count; i++) {
+    envp[i] = [envArray[i] UTF8String];
+    // Log PATH entry to verify
+    if (strncmp(envp[i], "PATH=", 5) == 0) {
+      NSLog(@"[WawonaPreferences] Environment array PATH entry: %s", envp[i]);
+    }
+  }
+  envp[envArray.count] = NULL;
+  
+  // Create pipes for stdout and stderr
+  int stdoutPipe[2];
+  int stderrPipe[2];
+  if (pipe(stdoutPipe) != 0 || pipe(stderrPipe) != 0) {
+    NSLog(@"[WawonaPreferences] ERROR: Failed to create pipes: %s", strerror(errno));
+    free(argv);
+    return;
+  }
+  
+  // Set up file actions for posix_spawn
+  posix_spawn_file_actions_t file_actions;
+  posix_spawn_file_actions_init(&file_actions);
+  posix_spawn_file_actions_adddup2(&file_actions, stdoutPipe[1], STDOUT_FILENO);
+  posix_spawn_file_actions_adddup2(&file_actions, stderrPipe[1], STDERR_FILENO);
+  posix_spawn_file_actions_addclose(&file_actions, stdoutPipe[0]);
+  posix_spawn_file_actions_addclose(&file_actions, stderrPipe[1]);
+  
+  // Debug: Print environment variables being passed (especially PATH)
+  NSLog(@"[WawonaPreferences] Environment variables being passed to Waypipe:");
+  for (NSUInteger i = 0; envp[i] != NULL; i++) {
+    if (strncmp(envp[i], "PATH=", 5) == 0) {
+      NSLog(@"[WawonaPreferences]   %s", envp[i]);
+    }
+  }
+  
+  // Launch process with custom environment
+  pid_t pid;
+  int status = posix_spawn(&pid, binaryPath, &file_actions, NULL, (char *const *)argv, envp);
+  
+  // Clean up file actions
+  posix_spawn_file_actions_destroy(&file_actions);
+  
+  // Close write ends of pipes (child has them now)
+  close(stdoutPipe[1]);
+  close(stderrPipe[1]);
+  
+  if (status != 0) {
+    NSLog(@"[WawonaPreferences] ERROR: Failed to launch Waypipe: posix_spawn returned %d", status);
+    NSString *errorMsg = [NSString stringWithFormat:@"Failed to launch Waypipe: %s", strerror(status)];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Launch Failed"
+                                                                   message:errorMsg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+    [alert addAction:okAction];
+    [self presentViewController:alert animated:YES completion:nil];
+    
+    close(stdoutPipe[0]);
+    close(stderrPipe[0]);
+    free(argv);
+    free(envp);
+    return;
+  }
+  
+  NSLog(@"[WawonaPreferences] Waypipe launched successfully (PID: %d)", pid);
+  
+  // Capture file descriptors for blocks (can't capture arrays directly)
+  int stdoutFd = stdoutPipe[0];
+  int stderrFd = stderrPipe[0];
+  
+  // Read output asynchronously
+  dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+  
+  // Read stdout
+  dispatch_async(queue, ^{
+    char buffer[4096];
+    NSMutableString *output = [NSMutableString string];
+    ssize_t bytesRead;
+    
+    while ((bytesRead = read(stdoutFd, buffer, sizeof(buffer) - 1)) > 0) {
+      buffer[bytesRead] = '\0';
+      NSString *chunk = [NSString stringWithUTF8String:buffer];
+      [output appendString:chunk];
+      NSLog(@"[Waypipe stdout] %@", chunk);
+      
+      // Check for password prompts
+      if ([chunk containsString:@"password:"] || [chunk containsString:@"Password:"] || [chunk containsString:@"passphrase"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self handleSSHPasswordPrompt:chunk];
+        });
+      }
+    }
+    
+    close(stdoutFd);
+  });
+  
+  // Read stderr
+  dispatch_async(queue, ^{
+    char buffer[4096];
+    NSMutableString *errorOutput = [NSMutableString string];
+    ssize_t bytesRead;
+    
+    while ((bytesRead = read(stderrFd, buffer, sizeof(buffer) - 1)) > 0) {
+      buffer[bytesRead] = '\0';
+      NSString *chunk = [NSString stringWithUTF8String:buffer];
+      [errorOutput appendString:chunk];
+      NSLog(@"[Waypipe stderr] %@", chunk);
+      
+      // Check for password prompts or errors
+      if ([chunk containsString:@"password:"] || [chunk containsString:@"Password:"] || [chunk containsString:@"passphrase"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self handleSSHPasswordPrompt:chunk];
+        });
+      } else if ([chunk containsString:@"Permission denied"] || [chunk containsString:@"Host key verification failed"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self handleSSHError:chunk];
+        });
+      }
+    }
+    
+    close(stderrFd);
+  });
+  
+  free(argv);
+  
+#else
+  // macOS: Use NSTask
+  NSTask *task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:waypipePath];
+  task.arguments = args;
+  
+  // Set up environment
+  NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
+  // Ensure WAYLAND_DISPLAY is set if needed
+  NSString *socketDir = prefs.waylandSocketDir;
+  NSString *display = prefs.waypipeDisplay;
+  if (socketDir && display) {
+    NSString *waylandDisplay = [NSString stringWithFormat:@"%@/%@", socketDir, display];
+    env[@"WAYLAND_DISPLAY"] = waylandDisplay;
+  }
+  task.environment = env;
+  
+  // Set up output pipes for logging
+  NSPipe *outputPipe = [NSPipe pipe];
+  NSPipe *errorPipe = [NSPipe pipe];
+  task.standardOutput = outputPipe;
+  task.standardError = errorPipe;
+  
+  // Read output asynchronously
+  outputPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+    NSData *data = handle.availableData;
+    if (data.length > 0) {
+      NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      NSLog(@"[Waypipe stdout] %@", output);
+    }
+  };
+  
+  errorPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+    NSData *data = handle.availableData;
+    if (data.length > 0) {
+      NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      NSLog(@"[Waypipe stderr] %@", output);
+    }
+  };
+  
+  NSError *error = nil;
+  if (![task launchAndReturnError:&error]) {
+    NSLog(@"[WawonaPreferences] ERROR: Failed to launch Waypipe: %@", error.localizedDescription);
+    
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Failed to Launch Waypipe";
+    alert.informativeText = error.localizedDescription ?: @"Unknown error";
+    [alert runModal];
+    return;
+  }
+  
+  NSLog(@"[WawonaPreferences] Waypipe launched successfully (PID: %d)", task.processIdentifier);
+  
+  // Don't wait for the task - let it run in background
+  // The readability handlers will log output as it comes
+#endif
 }
+
+- (void)handleSSHPasswordPrompt:(NSString *)prompt {
+  NSLog(@"[WawonaPreferences] SSH password prompt detected: %@", prompt);
+  
+#if TARGET_OS_IPHONE
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SSH Password Required"
+                                                                 message:@"Waypipe needs your SSH password to connect. Enter it below:"
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+  
+  [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+    textField.placeholder = @"Password";
+    textField.secureTextEntry = YES;
+  }];
+  
+  UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel"
+                                                         style:UIAlertActionStyleCancel
+                                                       handler:nil];
+  
+  UIAlertAction *submitAction = [UIAlertAction actionWithTitle:@"Submit"
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+    UITextField *passwordField = alert.textFields.firstObject;
+    NSString *password = passwordField.text;
+    
+    if (password && password.length > 0) {
+      NSLog(@"[WawonaPreferences] Password entered (length: %lu)", (unsigned long)password.length);
+      // Note: We can't directly send the password to the running process easily
+      // The user will need to configure SSH keys instead for a better experience
+      UIAlertController *infoAlert = [UIAlertController alertControllerWithTitle:@"SSH Key Recommended"
+                                                                        message:@"For better security and convenience, please configure SSH key authentication. You can add your SSH key in Settings > Waypipe."
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+      UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+      [infoAlert addAction:okAction];
+      [self presentViewController:infoAlert animated:YES completion:nil];
+    }
+  }];
+  
+  [alert addAction:cancelAction];
+  [alert addAction:submitAction];
+  
+  [self presentViewController:alert animated:YES completion:nil];
+#else
+  // macOS: Show password dialog
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = @"SSH Password Required";
+  alert.informativeText = @"Waypipe needs your SSH password to connect.";
+  [alert addButtonWithTitle:@"OK"];
+  [alert addButtonWithTitle:@"Cancel"];
+  [alert runModal];
+#endif
+}
+
+- (void)handleSSHError:(NSString *)error {
+  NSLog(@"[WawonaPreferences] SSH error detected: %@", error);
+  
+#if TARGET_OS_IPHONE
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SSH Connection Error"
+                                                                 message:error
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+  
+  UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil];
+  [alert addAction:okAction];
+  
+  // Add action to configure SSH keys if it's a permission/key error
+  if ([error containsString:@"Permission denied"] || [error containsString:@"Host key verification failed"]) {
+    UIAlertAction *configureAction = [UIAlertAction actionWithTitle:@"Configure SSH Keys"
+                                                               style:UIAlertActionStyleDefault
+                                                             handler:^(UIAlertAction *action) {
+      // TODO: Navigate to SSH key configuration in settings
+      NSLog(@"[WawonaPreferences] User wants to configure SSH keys");
+    }];
+    [alert addAction:configureAction];
+  }
+  
+  [self presentViewController:alert animated:YES completion:nil];
+#else
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = @"SSH Connection Error";
+  alert.informativeText = error;
+  [alert runModal];
+#endif
+}
+
+#if TARGET_OS_IPHONE
 
 - (void)showPreferences:(id)sender {
-    UIViewController *rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-    if (rootViewController) {
-        UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:self];
-        navController.modalPresentationStyle = UIModalPresentationPageSheet;
-        [rootViewController presentViewController:navController animated:YES completion:nil];
-    }
+  // On iOS, showPreferences is typically called to present the view controller
+  // Since WawonaPreferences is a UIViewController on iOS, this might be called
+  // from elsewhere. For now, we'll ensure the view is loaded.
+  [self loadViewIfNeeded];
 }
 
-@end
+- (void)dismissSelf {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
+  return self.sections.count;
+}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)sec {
+  return self.sections[sec].items.count;
+}
+- (NSString *)tableView:(UITableView *)tv
+    titleForHeaderInSection:(NSInteger)sec {
+  return self.sections[sec].title;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv
+         cellForRowAtIndexPath:(NSIndexPath *)ip {
+  WawonaSettingItem *item = self.sections[ip.section].items[ip.row];
+  UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"Cell"];
+  if (!cell)
+    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                  reuseIdentifier:@"Cell"];
+
+  cell.textLabel.text = item.title;
+  cell.detailTextLabel.text = nil;
+  cell.accessoryView = nil;
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+  if (item.type == WawonaSettingTypeSwitch) {
+    UISwitch *sw = [[UISwitch alloc] init];
+    sw.on = [[NSUserDefaults standardUserDefaults] boolForKey:item.key];
+    sw.tag = (ip.section * 1000) + ip.row;
+    [sw addTarget:self
+                  action:@selector(swChg:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = sw;
+  } else if (item.type == WawonaSettingTypeText ||
+             item.type == WawonaSettingTypeNumber) {
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:item.key]
+                 ?: item.defaultValue;
+    cell.detailTextLabel.text = [val description];
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  } else if (item.type == WawonaSettingTypePopup) {
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:item.key]
+                 ?: item.defaultValue;
+    cell.detailTextLabel.text = [val description];
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  } else if (item.type == WawonaSettingTypeButton) {
+    cell.textLabel.textColor = [UIColor systemBlueColor];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  } else if (item.type == WawonaSettingTypeInfo) {
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:item.key]
+                 ?: item.defaultValue;
+    cell.detailTextLabel.text = [val description];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+  }
+  return cell;
+}
+
+- (void)swChg:(UISwitch *)s {
+  WawonaSettingItem *item = self.sections[s.tag / 1000].items[s.tag % 1000];
+  [[NSUserDefaults standardUserDefaults] setBool:s.on forKey:item.key];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+  [tv deselectRowAtIndexPath:ip animated:YES];
+  WawonaSettingItem *item = self.sections[ip.section].items[ip.row];
+  
+  if (item.type == WawonaSettingTypeText || item.type == WawonaSettingTypeNumber) {
+    // Present text entry view controller
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.title
+                                                                     message:item.desc
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+      id currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.key] ?: item.defaultValue;
+      textField.text = [currentValue description];
+      if (item.type == WawonaSettingTypeNumber) {
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+      } else {
+        textField.keyboardType = UIKeyboardTypeDefault;
+      }
+      textField.placeholder = item.desc;
+    }];
+    
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel"
+                                                             style:UIAlertActionStyleCancel
+                                                           handler:nil];
+    UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"Save"
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+      UITextField *textField = alert.textFields.firstObject;
+      NSString *value = textField.text;
+      
+      if (item.type == WawonaSettingTypeNumber) {
+        NSNumber *numberValue = @([value doubleValue]);
+        [[NSUserDefaults standardUserDefaults] setObject:numberValue forKey:item.key];
+      } else {
+        [[NSUserDefaults standardUserDefaults] setObject:value forKey:item.key];
+      }
+      [[NSUserDefaults standardUserDefaults] synchronize];
+      
+      // Reload the table view to show updated value
+      [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+    }];
+    
+    [alert addAction:cancelAction];
+    [alert addAction:saveAction];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+  } else if (item.type == WawonaSettingTypeInfo) {
+    // For info items, show copy dialog
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:item.key] ?: item.defaultValue;
+    NSString *valueString = [val description];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.title
+                                                                   message:[NSString stringWithFormat:@"%@\n\n%@", item.desc, valueString]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    UIAlertAction *copyAction = [UIAlertAction actionWithTitle:@"Copy"
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+      UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+      pasteboard.string = valueString;
+    }];
+    
+    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"OK"
+                                                         style:UIAlertActionStyleCancel
+                                                       handler:nil];
+    
+    [alert addAction:copyAction];
+    [alert addAction:okAction];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+  } else if (item.type == WawonaSettingTypePopup) {
+    // Present popup selection
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.title
+                                                                   message:item.desc
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    id currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.key] ?: item.defaultValue;
+    NSString *currentValueString = [currentValue description];
+    
+    for (NSString *option in item.options) {
+      NSString *optionCopy = option; // Capture for block
+      UIAlertAction *optionAction = [UIAlertAction actionWithTitle:option
+                                                         style:UIAlertActionStyleDefault
+                                                       handler:^(UIAlertAction *alertAction) {
+        [[NSUserDefaults standardUserDefaults] setObject:optionCopy forKey:item.key];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        // Reload the table view to show updated value
+        [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+      }];
+      
+      // Mark current selection with checkmark
+      if ([option isEqualToString:currentValueString]) {
+        [optionAction setValue:@YES forKey:@"checked"];
+      }
+      
+      [alert addAction:optionAction];
+    }
+    
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel"
+                                                           style:UIAlertActionStyleCancel
+                                                         handler:nil];
+    [alert addAction:cancelAction];
+    
+    // For iPad, we need to set the popover presentation
+    if (alert.popoverPresentationController) {
+      UITableViewCell *cell = [tv cellForRowAtIndexPath:ip];
+      alert.popoverPresentationController.sourceView = cell;
+      alert.popoverPresentationController.sourceRect = cell.bounds;
+    }
+    
+    [self presentViewController:alert animated:YES completion:nil];
+  } else if (item.actionBlock) {
+    item.actionBlock();
+  }
+}
 
 #else
 
-// macOS Implementation with Modern Sidebar Style (Tahoe + 26)
-
-@class WawonaPreferencesContentViewController;
-
-// MARK: - Models
-
-@interface WawonaPreferencesItem : NSObject
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *identifier;
-@property (nonatomic, strong) NSImage *icon;
-@property (nonatomic, strong) NSColor *iconColor;
-@end
-
-@implementation WawonaPreferencesItem
-@end
-
-// MARK: - Sidebar View Controller
-
-@interface WawonaPreferencesSidebarViewController : NSViewController <NSOutlineViewDelegate, NSOutlineViewDataSource>
-@property (nonatomic, strong) NSOutlineView *outlineView;
-@property (nonatomic, strong) NSArray<WawonaPreferencesItem *> *items;
-@property (nonatomic, copy) void (^selectionHandler)(NSString *identifier);
-@end
-
-@implementation WawonaPreferencesSidebarViewController
-
-- (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 250, 500)];
-    
-    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:self.view.bounds];
-    scrollView.hasVerticalScroller = YES;
-    scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    scrollView.drawsBackground = NO;
-    
-    self.outlineView = [[NSOutlineView alloc] initWithFrame:scrollView.bounds];
-    self.outlineView.delegate = self;
-    self.outlineView.dataSource = self;
-    self.outlineView.headerView = nil;
-    self.outlineView.selectionHighlightStyle = NSTableViewSelectionHighlightStyleSourceList;
-    self.outlineView.backgroundColor = [NSColor clearColor];
-    
-    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"MainColumn"];
-    [self.outlineView addTableColumn:column];
-    self.outlineView.outlineTableColumn = column;
-    
-    scrollView.documentView = self.outlineView;
-    [self.view addSubview:scrollView];
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    [self setupItems];
-    [self.outlineView reloadData];
-    
-    // Select first item by default
-    if (self.items.count > 0) {
-        [self.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-    }
-}
-
-- (void)setupItems {
-    NSMutableArray *items = [NSMutableArray array];
-    
-    WawonaPreferencesItem *display = [[WawonaPreferencesItem alloc] init];
-    display.title = @"Display";
-    display.identifier = @"display";
-    display.icon = [NSImage imageWithSystemSymbolName:@"display" accessibilityDescription:@"Display"];
-    display.iconColor = [NSColor systemBlueColor];
-    [items addObject:display];
-    
-    WawonaPreferencesItem *input = [[WawonaPreferencesItem alloc] init];
-    input.title = @"Input";
-    input.identifier = @"input";
-    input.icon = [NSImage imageWithSystemSymbolName:@"keyboard" accessibilityDescription:@"Input"];
-    input.iconColor = [NSColor systemPurpleColor];
-    [items addObject:input];
-
-    WawonaPreferencesItem *graphics = [[WawonaPreferencesItem alloc] init];
-    graphics.title = @"Graphics";
-    graphics.identifier = @"graphics";
-    graphics.icon = [NSImage imageWithSystemSymbolName:@"cpu" accessibilityDescription:@"Graphics"];
-    graphics.iconColor = [NSColor systemRedColor];
-    [items addObject:graphics];
-
-    WawonaPreferencesItem *network = [[WawonaPreferencesItem alloc] init];
-    network.title = @"Network";
-    network.identifier = @"network";
-    network.icon = [NSImage imageWithSystemSymbolName:@"network" accessibilityDescription:@"Network"];
-    network.iconColor = [NSColor systemOrangeColor];
-    [items addObject:network];
-    
-    WawonaPreferencesItem *advanced = [[WawonaPreferencesItem alloc] init];
-    advanced.title = @"Advanced";
-    advanced.identifier = @"advanced";
-    advanced.icon = [NSImage imageWithSystemSymbolName:@"gearshape.2" accessibilityDescription:@"Advanced"];
-    advanced.iconColor = [NSColor systemGrayColor];
-    [items addObject:advanced];
-    
-    WawonaPreferencesItem *waypipe = [[WawonaPreferencesItem alloc] init];
-    waypipe.title = @"Waypipe";
-    waypipe.identifier = @"waypipe";
-    waypipe.icon = [NSImage imageWithSystemSymbolName:@"network" accessibilityDescription:@"Waypipe"];
-    waypipe.iconColor = [NSColor systemGreenColor];
-    [items addObject:waypipe];
-    
-    self.items = items;
-}
-
-#pragma mark - NSOutlineViewDataSource
-
-- (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(id)item {
-    return item == nil ? self.items.count : 0;
-}
-
-- (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)index ofItem:(id)item {
-    return item == nil ? self.items[index] : nil;
-}
-
-- (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item {
-    return NO;
-}
-
-#pragma mark - NSOutlineViewDelegate
-
-- (NSView *)outlineView:(NSOutlineView *)outlineView viewForTableColumn:(NSTableColumn *)tableColumn item:(id)item {
-    if ([item isKindOfClass:[WawonaPreferencesItem class]]) {
-        WawonaPreferencesItem *prefItem = (WawonaPreferencesItem *)item;
-        NSTableCellView *cell = [outlineView makeViewWithIdentifier:@"Cell" owner:self];
-        
-        if (!cell) {
-            cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 200, 30)];
-            cell.identifier = @"Cell";
-            
-            NSImageView *imageView = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 6, 18, 18)];
-            imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
-            imageView.tag = 100;
-            [cell addSubview:imageView];
-            
-            NSTextField *textField = [[NSTextField alloc] initWithFrame:NSMakeRect(26, 6, 170, 18)];
-            textField.bordered = NO;
-            textField.drawsBackground = NO;
-            textField.editable = NO;
-            textField.tag = 101;
-            [cell addSubview:textField];
-        }
-        
-        NSImageView *img = [cell viewWithTag:100];
-        NSTextField *txt = [cell viewWithTag:101];
-        
-        img.image = prefItem.icon;
-        img.contentTintColor = prefItem.iconColor;
-        txt.stringValue = prefItem.title;
-        
-        return cell;
-    }
-    return nil;
-}
-
-- (void)outlineViewSelectionDidChange:(NSNotification *)notification {
-    NSInteger row = [self.outlineView selectedRow];
-    if (row >= 0 && row < (NSInteger)self.items.count) {
-        if (self.selectionHandler) {
-            self.selectionHandler(self.items[row].identifier);
-        }
-    }
-}
-
-- (CGFloat)outlineView:(NSOutlineView *)outlineView heightOfRowByItem:(id)item {
-    return 32.0;
-}
-
-@end
-
-// MARK: - Content View Controller
-
-@interface WawonaPreferencesContentViewController : NSViewController <NSTextFieldDelegate, NSTextViewDelegate>
-
-@property (nonatomic, strong) NSScrollView *scrollView;
-@property (nonatomic, strong) NSStackView *stackView;
-
-// Properties for bindings/updates
-@property (nonatomic, strong) NSButton *forceServerSideDecorationsCheckbox;
-@property (nonatomic, strong) NSButton *renderMacOSPointerCheckbox;
-@property (nonatomic, strong) NSButton *autoScaleCheckbox;
-@property (nonatomic, strong) NSButton *respectSafeAreaCheckbox;
-@property (nonatomic, strong) NSButton *swapCmdWithAltCheckbox;
-@property (nonatomic, strong) NSButton *universalClipboardCheckbox;
-@property (nonatomic, strong) NSButton *colorOperationsCheckbox;
-@property (nonatomic, strong) NSButton *nestedCompositorsCheckbox;
-@property (nonatomic, strong) NSButton *multipleClientsCheckbox;
-
-// Graphics
-@property (nonatomic, strong) NSButton *vulkanDriversCheckbox;
-@property (nonatomic, strong) NSButton *eglDriversCheckbox;
-@property (nonatomic, strong) NSButton *dmabufCheckbox;
-
-// Network
-@property (nonatomic, strong) NSButton *tcpListenerCheckbox;
-@property (nonatomic, strong) NSTextField *tcpPortField;
-@property (nonatomic, strong) NSTextField *socketDirField;
-@property (nonatomic, strong) NSTextField *displayNumField;
-
-@property (nonatomic, strong) NSTextField *waypipeDisplayField;
-@property (nonatomic, strong) NSTextField *waypipeSocketField;
-@property (nonatomic, strong) NSPopUpButton *waypipeCompressPopup;
-@property (nonatomic, strong) NSTextField *waypipeCompressLevelField;
-@property (nonatomic, strong) NSTextField *waypipeThreadsField;
-@property (nonatomic, strong) NSPopUpButton *waypipeVideoPopup;
-@property (nonatomic, strong) NSPopUpButton *waypipeVideoEncodingPopup;
-@property (nonatomic, strong) NSPopUpButton *waypipeVideoDecodingPopup;
-@property (nonatomic, strong) NSTextField *waypipeVideoBpfField;
-@property (nonatomic, strong) NSButton *waypipeSSHEnabledCheckbox;
-@property (nonatomic, strong) NSTextField *waypipeSSHHostField;
-@property (nonatomic, strong) NSTextField *waypipeSSHUserField;
-@property (nonatomic, strong) NSTextField *waypipeSSHBinaryField;
-@property (nonatomic, strong) NSTextField *waypipeRemoteCommandField;
-@property (nonatomic, strong) NSTextView *waypipeCustomScriptTextView;
-@property (nonatomic, strong) NSButton *waypipeDebugCheckbox;
-@property (nonatomic, strong) NSButton *waypipeNoGpuCheckbox;
-@property (nonatomic, strong) NSButton *waypipeOneshotCheckbox;
-@property (nonatomic, strong) NSButton *waypipeUnlinkSocketCheckbox;
-@property (nonatomic, strong) NSButton *waypipeLoginShellCheckbox;
-@property (nonatomic, strong) NSButton *waypipeVsockCheckbox;
-@property (nonatomic, strong) NSButton *waypipeXwlsCheckbox;
-@property (nonatomic, strong) NSTextField *waypipeTitlePrefixField;
-@property (nonatomic, strong) NSTextField *waypipeSecCtxField;
-
-- (void)showSection:(NSString *)identifier;
-
-@end
-
-@implementation WawonaPreferencesContentViewController
-
-- (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 500)];
-    
-    self.scrollView = [[NSScrollView alloc] initWithFrame:self.view.bounds];
-    self.scrollView.hasVerticalScroller = YES;
-    self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.scrollView.drawsBackground = NO;
-    self.scrollView.borderType = NSNoBorder;
-    
-    NSView *documentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 500)];
-    documentView.autoresizingMask = NSViewWidthSizable;
-    
-    self.stackView = [[NSStackView alloc] initWithFrame:documentView.bounds];
-    self.stackView.orientation = NSUserInterfaceLayoutOrientationVertical;
-    self.stackView.alignment = NSLayoutAttributeLeading;
-    self.stackView.spacing = 20;
-    self.stackView.edgeInsets = NSEdgeInsetsMake(20, 40, 20, 40);
-    self.stackView.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    [documentView addSubview:self.stackView];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.stackView.topAnchor constraintEqualToAnchor:documentView.topAnchor],
-        [self.stackView.leadingAnchor constraintEqualToAnchor:documentView.leadingAnchor],
-        [self.stackView.trailingAnchor constraintEqualToAnchor:documentView.trailingAnchor],
-        [self.stackView.bottomAnchor constraintEqualToAnchor:documentView.bottomAnchor]
-    ]];
-    
-    self.scrollView.documentView = documentView;
-    [self.view addSubview:self.scrollView];
-}
-
-- (void)showSection:(NSString *)identifier {
-    // Clear existing views
-    for (NSView *view in [self.stackView.arrangedSubviews copy]) {
-        [self.stackView removeArrangedSubview:view];
-        [view removeFromSuperview];
-    }
-    
-    // Build new section
-    if ([identifier isEqualToString:@"display"]) {
-        [self buildDisplaySection];
-    } else if ([identifier isEqualToString:@"input"]) {
-        [self buildInputSection];
-    } else if ([identifier isEqualToString:@"graphics"]) {
-        [self buildGraphicsSection];
-    } else if ([identifier isEqualToString:@"network"]) {
-        [self buildNetworkSection];
-    } else if ([identifier isEqualToString:@"advanced"]) {
-        [self buildAdvancedSection];
-    } else if ([identifier isEqualToString:@"waypipe"]) {
-        [self buildWaypipeSection];
-    }
-    
-    // Refresh data
-    [self loadPreferences];
-}
-
-// MARK: - Section Builders
-
-- (void)buildDisplaySection {
-    [self addSectionTitle:@"Display"];
-    
-    NSButton *ssd;
-    [self addCheckbox:@"Force Server-Side Decorations"
-          description:@"Forces Wayland clients to use macOS-style window decorations (titlebar, controls)."
-               action:@selector(forceServerSideDecorationsChanged:)
-             checkbox:&ssd];
-    self.forceServerSideDecorationsCheckbox = ssd;
-    
-    NSButton *cursor;
-    [self addCheckbox:@"Show macOS Cursor"
-          description:@"Toggles the visibility of the macOS cursor when the application is focused."
-               action:@selector(renderMacOSPointerChanged:)
-             checkbox:&cursor];
-    self.renderMacOSPointerCheckbox = cursor;
-    
-    NSButton *scale;
-    [self addCheckbox:@"Auto Scale"
-          description:@"Detects and matches macOS UI Scaling."
-               action:@selector(autoScaleChanged:)
-             checkbox:&scale];
-    self.autoScaleCheckbox = scale;
-
-    NSButton *safe;
-    [self addCheckbox:@"Respect Safe Area"
-          description:@"Avoids rendering content in notch/camera housing areas."
-               action:@selector(respectSafeAreaChanged:)
-             checkbox:&safe];
-    self.respectSafeAreaCheckbox = safe;
-}
-
-- (void)buildInputSection {
-    [self addSectionTitle:@"Input"];
-    
-    NSButton *swap;
-    [self addCheckbox:@"Swap CMD with ALT"
-          description:@"Swaps Command (⌘) and Alt (⌥) keys. Useful for Linux/Windows layouts."
-               action:@selector(swapCmdWithAltChanged:)
-             checkbox:&swap];
-    self.swapCmdWithAltCheckbox = swap;
-    
-    NSButton *clipboard;
-    [self addCheckbox:@"Universal Clipboard"
-          description:@"Enables clipboard synchronization between Wawona and macOS."
-               action:@selector(universalClipboardChanged:)
-             checkbox:&clipboard];
-    self.universalClipboardCheckbox = clipboard;
-}
-
-- (void)buildGraphicsSection {
-    [self addSectionTitle:@"Graphics"];
-    
-    NSButton *vulkan;
-    [self addCheckbox:@"Enable Vulkan Drivers"
-          description:@"Enables experimental Vulkan driver support."
-               action:@selector(vulkanDriversChanged:)
-             checkbox:&vulkan];
-    self.vulkanDriversCheckbox = vulkan;
-    
-    NSButton *egl;
-    [self addCheckbox:@"Enable EGL Drivers"
-          description:@"Enables EGL for hardware accelerated rendering."
-               action:@selector(eglDriversChanged:)
-             checkbox:&egl];
-    self.eglDriversCheckbox = egl;
-    
-    NSButton *dmabuf;
-    [self addCheckbox:@"Enable DMABUF"
-          description:@"Enables zero-copy texture sharing via IOSurface."
-               action:@selector(dmabufChanged:)
-             checkbox:&dmabuf];
-    self.dmabufCheckbox = dmabuf;
-}
-
-- (void)buildNetworkSection {
-    [self addSectionTitle:@"Network & Ports"];
-    
-    NSButton *tcp;
-    [self addCheckbox:@"Enable TCP Listener"
-          description:@"Allows external connections via TCP."
-               action:@selector(tcpListenerChanged:)
-             checkbox:&tcp];
-    self.tcpListenerCheckbox = tcp;
-    
-    NSTextField *port;
-    [self addTextField:@"TCP Listener Port"
-           description:@"Port number for TCP listener."
-               default:@"6000"
-                  icon:@"network"
-                 field:&port];
-    self.tcpPortField = port;
-    
-    NSTextField *sock;
-    [self addTextField:@"Wayland Socket Directory"
-           description:@"Directory for Wayland sockets."
-               default:@"/tmp"
-                  icon:@"folder"
-                 field:&sock];
-    self.socketDirField = sock;
-    
-    NSTextField *disp;
-    [self addTextField:@"Display Number"
-           description:@"Wayland display number (e.g., 0 for wayland-0)."
-               default:@"0"
-                  icon:@"display"
-                 field:&disp];
-    self.displayNumField = disp;
-}
-
-- (void)buildAdvancedSection {
-    [self addSectionTitle:@"Advanced"];
-    
-    NSButton *color;
-    [self addCheckbox:@"Color Operations"
-          description:@"Enables support for color profiles and HDR."
-               action:@selector(colorOperationsChanged:)
-             checkbox:&color];
-    self.colorOperationsCheckbox = color;
-    
-    NSButton *nested;
-    [self addCheckbox:@"Nested Compositors"
-          description:@"Enables support for running other Wayland compositors (e.g., Weston, Plasma)."
-               action:@selector(nestedCompositorsChanged:)
-             checkbox:&nested];
-    self.nestedCompositorsCheckbox = nested;
-    
-    NSButton *clients;
-    [self addCheckbox:@"Multiple Clients"
-          description:@"Allows multiple Wayland clients to connect simultaneously."
-               action:@selector(multipleClientsChanged:)
-             checkbox:&clients];
-    self.multipleClientsCheckbox = clients;
-}
-
-- (void)buildWaypipeSection {
-    [self addSectionTitle:@"Waypipe"];
-    
-    [self addInfoField:@"Local IP Address" value:[self getLocalIPAddress] icon:@"network"];
-    
-    NSTextField *display;
-    [self addTextField:@"Wayland Display"
-           description:@"Socket name (e.g., wayland-0)"
-               default:@"wayland-0"
-                  icon:@"display"
-                 field:&display];
-    self.waypipeDisplayField = display;
-    
-    NSTextField *socket;
-    NSString *socketPath = [[WawonaPreferencesManager sharedManager] waypipeSocket];
-    [self addTextField:@"Socket Path"
-           description:@"Unix socket path (read-only)."
-               default:socketPath
-                  icon:@"folder"
-                 field:&socket];
-    [socket setEditable:NO];
-    self.waypipeSocketField = socket;
-    
-    NSPopUpButton *compress;
-    [self addPopup:@"Compression"
-       description:@"Compression method."
-           options:@[@"none", @"lz4", @"zstd"]
-           default:@"lz4"
-              icon:@"archive"
-             popup:&compress];
-    self.waypipeCompressPopup = compress;
-    
-    NSTextField *level;
-    [self addTextField:@"Compression Level"
-           description:@"Zstd level (1-22)."
-               default:@"7"
-                  icon:@"slider.horizontal.3"
-                 field:&level];
-    self.waypipeCompressLevelField = level;
-    
-    NSTextField *threads;
-    [self addTextField:@"Threads"
-           description:@"Number of threads (0 = auto)."
-               default:@"0"
-                  icon:@"cpu"
-                 field:&threads];
-    self.waypipeThreadsField = threads;
-    
-    [self addSeparator];
-    [self addSectionTitle:@"Video Compression"];
-    
-    NSPopUpButton *video;
-    [self addPopup:@"Video Codec"
-       description:@"Lossy video codec for DMABUF."
-           options:@[@"none", @"h264", @"vp9", @"av1"]
-           default:@"none"
-              icon:@"video"
-             popup:&video];
-    self.waypipeVideoPopup = video;
-    
-    NSPopUpButton *vEnc;
-    [self addPopup:@"Encoding"
-       description:@"Hardware vs Software encoding."
-           options:@[@"hw", @"sw", @"hwenc", @"swenc"]
-           default:@"hw"
-              icon:@"gearshape"
-             popup:&vEnc];
-    self.waypipeVideoEncodingPopup = vEnc;
-    
-    NSPopUpButton *vDec;
-    [self addPopup:@"Decoding"
-       description:@"Hardware vs Software decoding."
-           options:@[@"hw", @"sw", @"hwdec", @"swdec"]
-           default:@"hw"
-              icon:@"gearshape"
-             popup:&vDec];
-    self.waypipeVideoDecodingPopup = vDec;
-    
-    NSTextField *bpf;
-    [self addTextField:@"Bits Per Frame"
-           description:@"Target bit rate per frame."
-               default:@""
-                  icon:@"speedometer"
-                 field:&bpf];
-    self.waypipeVideoBpfField = bpf;
-    
-    [self addSeparator];
-    [self addSectionTitle:@"SSH"];
-    
-    NSButton *ssh;
-    [self addCheckbox:@"Enable SSH"
-          description:@"Use SSH for remote connections."
-               action:@selector(waypipeSSHEnabledChanged:)
-             checkbox:&ssh];
-    self.waypipeSSHEnabledCheckbox = ssh;
-    
-    NSTextField *host;
-    [self addTextField:@"Host" description:@"Remote host address." default:@"" icon:@"server.rack" field:&host];
-    self.waypipeSSHHostField = host;
-    
-    NSTextField *user;
-    [self addTextField:@"User" description:@"SSH Username." default:@"" icon:@"person" field:&user];
-    self.waypipeSSHUserField = user;
-    
-    NSTextField *cmd;
-    [self addTextField:@"Remote Command" description:@"Command to run remotely." default:@"" icon:@"play.circle" field:&cmd];
-    self.waypipeRemoteCommandField = cmd;
-    
-    [self addSeparator];
-    [self addSectionTitle:@"Advanced"];
-    
-    NSButton *debug;
-    [self addCheckbox:@"Debug Mode" description:@"Print debug logs." action:@selector(waypipeDebugChanged:) checkbox:&debug];
-    self.waypipeDebugCheckbox = debug;
-    
-    NSButton *noGpu;
-    [self addCheckbox:@"Disable GPU" description:@"Block GPU protocols." action:@selector(waypipeNoGpuChanged:) checkbox:&noGpu];
-    self.waypipeNoGpuCheckbox = noGpu;
-
-    NSButton *oneshot;
-    [self addCheckbox:@"One-shot" description:@"Exit when the last client disconnects." action:@selector(waypipeOneshotChanged:) checkbox:&oneshot];
-    self.waypipeOneshotCheckbox = oneshot;
-
-    NSButton *unlink;
-    [self addCheckbox:@"Unlink Socket" description:@"Unlink socket on exit." action:@selector(waypipeUnlinkSocketChanged:) checkbox:&unlink];
-    self.waypipeUnlinkSocketCheckbox = unlink;
-    
-    NSButton *login;
-    [self addCheckbox:@"Login Shell" description:@"Run remote command in login shell." action:@selector(waypipeLoginShellChanged:) checkbox:&login];
-    self.waypipeLoginShellCheckbox = login;
-    
-    NSButton *vsock;
-    [self addCheckbox:@"VSock" description:@"Use VSock for communication." action:@selector(waypipeVsockChanged:) checkbox:&vsock];
-    self.waypipeVsockCheckbox = vsock;
-    
-    NSButton *xwls;
-    [self addCheckbox:@"XWayland Support" description:@"Enable XWayland support." action:@selector(waypipeXwlsChanged:) checkbox:&xwls];
-    self.waypipeXwlsCheckbox = xwls;
-    
-    NSTextField *prefix;
-    [self addTextField:@"Title Prefix" description:@"Prefix for window titles." default:@"" icon:@"text.format" field:&prefix];
-    self.waypipeTitlePrefixField = prefix;
-    
-    NSTextField *sec;
-    [self addTextField:@"Security Context" description:@"SELinux security context." default:@"" icon:@"lock" field:&sec];
-    self.waypipeSecCtxField = sec;
-}
-
-// MARK: - UI Helpers
-
-- (void)addSectionTitle:(NSString *)title {
-    NSTextField *field = [NSTextField labelWithString:title];
-    field.font = [NSFont systemFontOfSize:18 weight:NSFontWeightBold];
-    [self.stackView addArrangedSubview:field];
-}
-
-- (void)addCheckbox:(NSString *)title description:(NSString *)desc action:(SEL)action checkbox:(NSButton **)outBtn {
-    NSView *container = [[NSView alloc] init];
-    container.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    NSButton *btn = [NSButton checkboxWithTitle:title target:self action:action];
-    btn.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:btn];
-    
-    NSTextField *descField = [NSTextField labelWithString:desc];
-    descField.font = [NSFont systemFontOfSize:11];
-    descField.textColor = [NSColor secondaryLabelColor];
-    descField.translatesAutoresizingMaskIntoConstraints = NO;
-    descField.preferredMaxLayoutWidth = 400;
-    [container addSubview:descField];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [btn.topAnchor constraintEqualToAnchor:container.topAnchor],
-        [btn.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [descField.topAnchor constraintEqualToAnchor:btn.bottomAnchor constant:2],
-        [descField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:18],
-        [descField.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [descField.bottomAnchor constraintEqualToAnchor:container.bottomAnchor]
-    ]];
-    
-    [self.stackView addArrangedSubview:container];
-    if (outBtn) *outBtn = btn;
-}
-
-- (void)addTextField:(NSString *)title description:(NSString *)desc default:(NSString *)def icon:(NSString *)icon field:(NSTextField **)outField {
-    NSView *container = [[NSView alloc] init];
-    container.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    NSImageView *img = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:icon accessibilityDescription:nil]];
-    img.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:img];
-    
-    NSTextField *label = [NSTextField labelWithString:title];
-    label.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:label];
-    
-    NSTextField *textField = [NSTextField textFieldWithString:def];
-    textField.translatesAutoresizingMaskIntoConstraints = NO;
-    textField.delegate = self;
-    [container addSubview:textField];
-    
-    NSTextField *descLabel = [NSTextField labelWithString:desc];
-    descLabel.font = [NSFont systemFontOfSize:11];
-    descLabel.textColor = [NSColor secondaryLabelColor];
-    descLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:descLabel];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [img.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [img.topAnchor constraintEqualToAnchor:container.topAnchor constant:2],
-        [img.widthAnchor constraintEqualToConstant:16],
-        [img.heightAnchor constraintEqualToConstant:16],
-        
-        [label.leadingAnchor constraintEqualToAnchor:img.trailingAnchor constant:8],
-        [label.topAnchor constraintEqualToAnchor:container.topAnchor],
-        
-        [textField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24],
-        [textField.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:4],
-        [textField.widthAnchor constraintEqualToConstant:200],
-        
-        [descLabel.leadingAnchor constraintEqualToAnchor:textField.trailingAnchor constant:8],
-        [descLabel.centerYAnchor constraintEqualToAnchor:textField.centerYAnchor],
-        [descLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        
-        [container.bottomAnchor constraintEqualToAnchor:textField.bottomAnchor constant:8]
-    ]];
-    
-    [self.stackView addArrangedSubview:container];
-    if (outField) *outField = textField;
-}
-
-- (void)addPopup:(NSString *)title description:(NSString *)desc options:(NSArray *)opts default:(NSString *)def icon:(NSString *)icon popup:(NSPopUpButton **)outPopup {
-    NSView *container = [[NSView alloc] init];
-    container.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    NSImageView *img = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:icon accessibilityDescription:nil]];
-    img.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:img];
-    
-    NSTextField *label = [NSTextField labelWithString:title];
-    label.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:label];
-    
-    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [popup addItemsWithTitles:opts];
-    [popup selectItemWithTitle:def];
-    popup.translatesAutoresizingMaskIntoConstraints = NO;
-    popup.target = self;
-    popup.action = @selector(popupValueChanged:);
-    [container addSubview:popup];
-    
-    NSTextField *descLabel = [NSTextField labelWithString:desc];
-    descLabel.font = [NSFont systemFontOfSize:11];
-    descLabel.textColor = [NSColor secondaryLabelColor];
-    descLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:descLabel];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [img.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [img.topAnchor constraintEqualToAnchor:container.topAnchor constant:2],
-        [img.widthAnchor constraintEqualToConstant:16],
-        [img.heightAnchor constraintEqualToConstant:16],
-        
-        [label.leadingAnchor constraintEqualToAnchor:img.trailingAnchor constant:8],
-        [label.topAnchor constraintEqualToAnchor:container.topAnchor],
-        
-        [popup.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24],
-        [popup.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:4],
-        [popup.widthAnchor constraintEqualToConstant:150],
-        
-        [descLabel.leadingAnchor constraintEqualToAnchor:popup.trailingAnchor constant:8],
-        [descLabel.centerYAnchor constraintEqualToAnchor:popup.centerYAnchor],
-        [descLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        
-        [container.bottomAnchor constraintEqualToAnchor:popup.bottomAnchor constant:8]
-    ]];
-    
-    [self.stackView addArrangedSubview:container];
-    if (outPopup) *outPopup = popup;
-}
-
-- (void)addInfoField:(NSString *)title value:(NSString *)value icon:(NSString *)icon {
-    NSTextField *f;
-    [self addTextField:title description:@"(Read Only)" default:value icon:icon field:&f];
-    [f setEditable:NO];
-}
-
-- (void)addSeparator {
-    NSBox *box = [[NSBox alloc] init];
-    box.boxType = NSBoxSeparator;
-    [self.stackView addArrangedSubview:box];
-}
-
-// MARK: - Actions
-
-- (void)forceServerSideDecorationsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setForceServerSideDecorations:sender.state]; }
-- (void)renderMacOSPointerChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setRenderMacOSPointer:sender.state]; }
-- (void)autoScaleChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setAutoScale:sender.state]; }
-- (void)respectSafeAreaChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setRespectSafeArea:sender.state]; }
-
-- (void)swapCmdWithAltChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setSwapCmdWithAlt:sender.state]; }
-- (void)universalClipboardChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setUniversalClipboardEnabled:sender.state]; }
-
-- (void)vulkanDriversChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setVulkanDriversEnabled:sender.state]; }
-- (void)eglDriversChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setEglDriversEnabled:sender.state]; }
-- (void)dmabufChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setDmabufEnabled:sender.state]; }
-
-- (void)tcpListenerChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setEnableTCPListener:sender.state]; }
-
-- (void)colorOperationsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setColorOperations:sender.state]; }
-- (void)nestedCompositorsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setNestedCompositorsSupportEnabled:sender.state]; }
-- (void)multipleClientsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setMultipleClientsEnabled:sender.state]; }
-
-- (void)waypipeSSHEnabledChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeSSHEnabled:sender.state]; }
-- (void)waypipeDebugChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeDebug:sender.state]; }
-- (void)waypipeNoGpuChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeNoGpu:sender.state]; }
-- (void)waypipeOneshotChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeOneshot:sender.state]; }
-- (void)waypipeUnlinkSocketChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeUnlinkSocket:sender.state]; }
-- (void)waypipeLoginShellChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeLoginShell:sender.state]; }
-- (void)waypipeVsockChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeVsock:sender.state]; }
-- (void)waypipeXwlsChanged:(NSButton *)sender { [[WawonaPreferencesManager sharedManager] setWaypipeXwls:sender.state]; }
-
-- (void)popupValueChanged:(NSPopUpButton *)sender {
-    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
-    if (sender == self.waypipeCompressPopup) [prefs setWaypipeCompress:sender.selectedItem.title];
-    else if (sender == self.waypipeVideoPopup) [prefs setWaypipeVideo:sender.selectedItem.title];
-    else if (sender == self.waypipeVideoEncodingPopup) [prefs setWaypipeVideoEncoding:sender.selectedItem.title];
-    else if (sender == self.waypipeVideoDecodingPopup) [prefs setWaypipeVideoDecoding:sender.selectedItem.title];
-}
-
-- (void)controlTextDidChange:(NSNotification *)notification {
-    NSTextField *field = notification.object;
-    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
-    
-    if (field == self.waypipeDisplayField) [prefs setWaypipeDisplay:field.stringValue];
-    else if (field == self.waypipeCompressLevelField) [prefs setWaypipeCompressLevel:field.stringValue];
-    else if (field == self.waypipeThreadsField) [prefs setWaypipeThreads:field.stringValue];
-    else if (field == self.waypipeVideoBpfField) [prefs setWaypipeVideoBpf:field.stringValue];
-    else if (field == self.waypipeSSHHostField) [prefs setWaypipeSSHHost:field.stringValue];
-    else if (field == self.waypipeSSHUserField) [prefs setWaypipeSSHUser:field.stringValue];
-    else if (field == self.waypipeRemoteCommandField) [prefs setWaypipeRemoteCommand:field.stringValue];
-    
-    else if (field == self.tcpPortField) [prefs setTCPListenerPort:field.integerValue];
-    else if (field == self.socketDirField) [prefs setWaylandSocketDir:field.stringValue];
-    else if (field == self.displayNumField) [prefs setWaylandDisplayNumber:field.integerValue];
-    
-    else if (field == self.waypipeTitlePrefixField) [prefs setWaypipeTitlePrefix:field.stringValue];
-    else if (field == self.waypipeSecCtxField) [prefs setWaypipeSecCtx:field.stringValue];
-}
-
-- (void)loadPreferences {
-    WawonaPreferencesManager *prefs = [WawonaPreferencesManager sharedManager];
-    
-    if (self.forceServerSideDecorationsCheckbox) self.forceServerSideDecorationsCheckbox.state = prefs.forceServerSideDecorations;
-    if (self.renderMacOSPointerCheckbox) self.renderMacOSPointerCheckbox.state = prefs.renderMacOSPointer;
-    if (self.autoScaleCheckbox) self.autoScaleCheckbox.state = prefs.autoScale;
-    if (self.respectSafeAreaCheckbox) self.respectSafeAreaCheckbox.state = prefs.respectSafeArea;
-    
-    if (self.swapCmdWithAltCheckbox) self.swapCmdWithAltCheckbox.state = prefs.swapCmdWithAlt;
-    if (self.universalClipboardCheckbox) self.universalClipboardCheckbox.state = prefs.universalClipboardEnabled;
-    
-    if (self.vulkanDriversCheckbox) self.vulkanDriversCheckbox.state = prefs.vulkanDriversEnabled;
-    if (self.eglDriversCheckbox) self.eglDriversCheckbox.state = prefs.eglDriversEnabled;
-    if (self.dmabufCheckbox) self.dmabufCheckbox.state = prefs.dmabufEnabled;
-    
-    if (self.tcpListenerCheckbox) self.tcpListenerCheckbox.state = prefs.enableTCPListener;
-    if (self.tcpPortField) self.tcpPortField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.tcpListenerPort];
-    if (self.socketDirField) self.socketDirField.stringValue = prefs.waylandSocketDir ?: @"/tmp";
-    if (self.displayNumField) self.displayNumField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.waylandDisplayNumber];
-    
-    if (self.colorOperationsCheckbox) self.colorOperationsCheckbox.state = prefs.colorOperations;
-    if (self.nestedCompositorsCheckbox) self.nestedCompositorsCheckbox.state = prefs.nestedCompositorsSupportEnabled;
-    if (self.multipleClientsCheckbox) self.multipleClientsCheckbox.state = prefs.multipleClientsEnabled;
-    
-    if (self.waypipeDisplayField) self.waypipeDisplayField.stringValue = prefs.waypipeDisplay ?: @"wayland-0";
-    if (self.waypipeCompressPopup) [self.waypipeCompressPopup selectItemWithTitle:prefs.waypipeCompress ?: @"lz4"];
-    if (self.waypipeCompressLevelField) self.waypipeCompressLevelField.stringValue = prefs.waypipeCompressLevel ?: @"7";
-    if (self.waypipeThreadsField) self.waypipeThreadsField.stringValue = prefs.waypipeThreads ?: @"0";
-    if (self.waypipeVideoPopup) [self.waypipeVideoPopup selectItemWithTitle:prefs.waypipeVideo ?: @"none"];
-    if (self.waypipeVideoEncodingPopup) [self.waypipeVideoEncodingPopup selectItemWithTitle:prefs.waypipeVideoEncoding ?: @"hw"];
-    if (self.waypipeVideoDecodingPopup) [self.waypipeVideoDecodingPopup selectItemWithTitle:prefs.waypipeVideoDecoding ?: @"hw"];
-    if (self.waypipeVideoBpfField) self.waypipeVideoBpfField.stringValue = prefs.waypipeVideoBpf ?: @"";
-    if (self.waypipeSSHEnabledCheckbox) self.waypipeSSHEnabledCheckbox.state = prefs.waypipeSSHEnabled;
-    if (self.waypipeSSHHostField) self.waypipeSSHHostField.stringValue = prefs.waypipeSSHHost ?: @"";
-    if (self.waypipeSSHUserField) self.waypipeSSHUserField.stringValue = prefs.waypipeSSHUser ?: @"";
-    if (self.waypipeRemoteCommandField) self.waypipeRemoteCommandField.stringValue = prefs.waypipeRemoteCommand ?: @"";
-    if (self.waypipeDebugCheckbox) self.waypipeDebugCheckbox.state = prefs.waypipeDebug;
-    if (self.waypipeNoGpuCheckbox) self.waypipeNoGpuCheckbox.state = prefs.waypipeNoGpu;
-    if (self.waypipeOneshotCheckbox) self.waypipeOneshotCheckbox.state = prefs.waypipeOneshot;
-    if (self.waypipeUnlinkSocketCheckbox) self.waypipeUnlinkSocketCheckbox.state = prefs.waypipeUnlinkSocket;
-    if (self.waypipeLoginShellCheckbox) self.waypipeLoginShellCheckbox.state = prefs.waypipeLoginShell;
-    if (self.waypipeVsockCheckbox) self.waypipeVsockCheckbox.state = prefs.waypipeVsock;
-    if (self.waypipeXwlsCheckbox) self.waypipeXwlsCheckbox.state = prefs.waypipeXwls;
-    if (self.waypipeTitlePrefixField) self.waypipeTitlePrefixField.stringValue = prefs.waypipeTitlePrefix ?: @"";
-    if (self.waypipeSecCtxField) self.waypipeSecCtxField.stringValue = prefs.waypipeSecCtx ?: @"";
-}
-
-- (NSString *)getLocalIPAddress {
-    NSString *address = @"Unavailable";
-    struct ifaddrs *interfaces = NULL;
-    struct ifaddrs *temp_addr = NULL;
-    if (getifaddrs(&interfaces) == 0) {
-        temp_addr = interfaces;
-        while (temp_addr != NULL) {
-            if (temp_addr->ifa_addr->sa_family == AF_INET) {
-                if ([[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en0"] ||
-                    [[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en1"]) {
-                    address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
-                    break;
-                }
-            }
-            temp_addr = temp_addr->ifa_next;
-        }
-    }
-    freeifaddrs(interfaces);
-    return address;
-}
-
-@end
-
-// MARK: - Split View Controller
-
-@interface WawonaPreferencesSplitViewController : NSSplitViewController
-@property (nonatomic, strong) WawonaPreferencesSidebarViewController *sidebarVC;
-@property (nonatomic, strong) WawonaPreferencesContentViewController *contentVC;
-@end
-
-@implementation WawonaPreferencesSplitViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    self.sidebarVC = [[WawonaPreferencesSidebarViewController alloc] init];
-    self.contentVC = [[WawonaPreferencesContentViewController alloc] init];
-    
-    NSSplitViewItem *sidebarItem = [NSSplitViewItem sidebarWithViewController:self.sidebarVC];
-    NSSplitViewItem *contentItem = [NSSplitViewItem contentListWithViewController:self.contentVC];
-    
-    [self addSplitViewItem:sidebarItem];
-    [self addSplitViewItem:contentItem];
-    
-    // Connect sidebar selection
-    __weak typeof(self) weakSelf = self;
-    self.sidebarVC.selectionHandler = ^(NSString *identifier) {
-        [weakSelf.contentVC showSection:identifier];
-    };
-}
-
-@end
-
-// MARK: - Main Window Controller Implementation
-
-@interface WawonaPreferences ()
-@property (nonatomic, strong) WawonaPreferencesSplitViewController *splitViewController;
-@end
-
-@implementation WawonaPreferences
-
-+ (instancetype)sharedPreferences {
-    static WawonaPreferences *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[self alloc] init];
-    });
-    return sharedInstance;
-}
-
-- (instancetype)init {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 550)
-                                                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
-                                                     backing:NSBackingStoreBuffered
-                                                       defer:NO];
-    [window setTitle:@"Wawona Settings"];
-    [window setContentMinSize:NSMakeSize(600, 400)];
-    [window center];
-    [window setToolbarStyle:NSWindowToolbarStyleUnified];
-    
-    self = [super initWithWindow:window];
-    if (self) {
-        self.splitViewController = [[WawonaPreferencesSplitViewController alloc] init];
-        self.contentViewController = self.splitViewController;
-    }
-    return self;
-}
+// MARK: - macOS Interface
 
 - (void)showPreferences:(id)sender {
-    [self.window makeKeyAndOrderFront:sender];
-    [NSApp activateIgnoringOtherApps:YES];
+  if (self.winController) {
+    [self.winController.window makeKeyAndOrderFront:sender];
+    return;
+  }
+
+  NSWindow *win = [[NSWindow alloc]
+      initWithContentRect:NSMakeRect(0, 0, 700, 500)
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                          NSWindowStyleMaskResizable
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  win.title = @"Wawona Settings";
+  win.titleVisibility = NSWindowTitleVisible;
+  win.titlebarAppearsTransparent = YES;
+  win.styleMask |= NSWindowStyleMaskFullSizeContentView;
+  win.movableByWindowBackground = YES;
+
+  // Add Toolbar (Liquid Glass Style)
+  NSToolbar *toolbar =
+      [[NSToolbar alloc] initWithIdentifier:@"WawonaPreferencesToolbar"];
+  toolbar.delegate = self;
+  toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+  win.toolbar = toolbar;
+
+  NSVisualEffectView *v =
+      [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 700, 500)];
+  v.material = NSVisualEffectMaterialSidebar;
+  v.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+  v.state = NSVisualEffectStateActive;
+  win.contentView = v;
+
+  self.sidebar = [[WawonaPreferencesSidebar alloc] init];
+  self.sidebar.parent = self;
+  self.content = [[WawonaPreferencesContent alloc] init];
+
+  self.splitVC = [[NSSplitViewController alloc] init];
+  NSSplitViewItem *sItem =
+      [NSSplitViewItem sidebarWithViewController:self.sidebar];
+  sItem.minimumThickness = 130;
+  sItem.maximumThickness = 160;
+  NSSplitViewItem *cItem =
+      [NSSplitViewItem contentListWithViewController:self.content];
+  [self.splitVC addSplitViewItem:sItem];
+  [self.splitVC addSplitViewItem:cItem];
+
+  // Embed SplitVC in Visual Effect View
+  self.splitVC.view.frame = v.bounds;
+  self.splitVC.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [v addSubview:self.splitVC.view];
+
+  self.winController = [[NSWindowController alloc] initWithWindow:win];
+  [win center];
+  [win makeKeyAndOrderFront:sender];
+
+  if (self.sections.count > 0) {
+    [self.sidebar.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
+                          byExtendingSelection:NO];
+  }
+}
+
+- (void)showSection:(NSInteger)idx {
+  self.content.section = self.sections[idx];
+  [self.content.tableView reloadData];
+}
+
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:
+    (NSToolbar *)toolbar {
+  return @[
+    @"com.apple.NSToolbar.toggleSidebar", NSToolbarFlexibleSpaceItemIdentifier
+  ];
+}
+
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:
+    (NSToolbar *)toolbar {
+  return @[ @"com.apple.NSToolbar.toggleSidebar" ];
+}
+
+- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar
+        itemForItemIdentifier:(NSToolbarItemIdentifier)itemIdentifier
+    willBeInsertedIntoToolbar:(BOOL)flag {
+  if ([itemIdentifier isEqualToString:@"com.apple.NSToolbar.toggleSidebar"]) {
+    NSToolbarItem *item =
+        [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
+    item.label = @"Toggle Sidebar";
+    item.paletteLabel = @"Toggle Sidebar";
+    item.toolTip = @"Toggle Sidebar";
+    item.image = [NSImage imageWithSystemSymbolName:@"sidebar.left"
+                           accessibilityDescription:nil];
+    item.target = nil; // First Responder
+    item.action = @selector(toggleSidebar:);
+    return item;
+  }
+  return nil;
+}
+
+- (void)toggleSidebar:(id)sender {
+  [NSApp sendAction:@selector(toggleSidebar:) to:nil from:sender];
+}
+
+#endif
+
+@end
+
+// MARK: - Helper Implementations
+
+#if !TARGET_OS_IPHONE
+
+@implementation WawonaPreferencesSidebar
+- (void)loadView {
+  NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 200, 400)];
+  self.view = v;
+  NSScrollView *sv = [[NSScrollView alloc] initWithFrame:v.bounds];
+  sv.drawsBackground = NO;
+  sv.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  self.outlineView = [[NSOutlineView alloc] initWithFrame:sv.bounds];
+  self.outlineView.dataSource = self;
+  self.outlineView.delegate = self;
+  self.outlineView.headerView = nil;
+  self.outlineView.rowHeight = 28.0; // Standard sidebar height
+  NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"M"];
+  [self.outlineView addTableColumn:col];
+  self.outlineView.outlineTableColumn = col;
+  sv.documentView = self.outlineView;
+  [v addSubview:sv];
+}
+- (NSInteger)outlineView:(NSOutlineView *)ov numberOfChildrenOfItem:(id)item {
+  return item ? 0 : self.parent.sections.count;
+}
+- (BOOL)outlineView:(NSOutlineView *)ov isItemExpandable:(id)item {
+  return NO;
+}
+- (id)outlineView:(NSOutlineView *)ov child:(NSInteger)idx ofItem:(id)item {
+  return self.parent.sections[idx];
+}
+- (NSView *)outlineView:(NSOutlineView *)ov
+     viewForTableColumn:(NSTableColumn *)tc
+                   item:(id)item {
+  WawonaPreferencesSection *s = item;
+  NSTableCellView *cell = [ov makeViewWithIdentifier:@"Cell" owner:self];
+  if (!cell) {
+    cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 100, 28)];
+    cell.identifier = @"Cell";
+
+    NSImageView *iv = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    iv.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell addSubview:iv];
+    cell.imageView = iv;
+
+    NSTextField *tf = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    tf.translatesAutoresizingMaskIntoConstraints = NO;
+    tf.bordered = NO;
+    tf.drawsBackground = NO;
+    tf.editable = NO;
+    [tf setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                 forOrientation:
+                                     NSLayoutConstraintOrientationHorizontal]; // Allow truncation if needed
+    [cell addSubview:tf];
+    cell.textField = tf;
+
+    [NSLayoutConstraint activateConstraints:@[
+      [iv.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:5],
+      [iv.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+      [iv.widthAnchor constraintEqualToConstant:20],
+      [iv.heightAnchor constraintEqualToConstant:20],
+
+      [tf.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:5],
+      [tf.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor
+                                        constant:-5],
+      [tf.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]
+    ]];
+  }
+  cell.imageView.image =
+      [NSImage imageWithSystemSymbolName:s.icon accessibilityDescription:nil];
+  cell.imageView.contentTintColor = s.iconColor;
+  cell.textField.stringValue = s.title;
+  return cell;
+}
+- (void)outlineViewSelectionDidChange:(NSNotification *)n {
+  NSInteger row = self.outlineView.selectedRow;
+  if (row >= 0)
+    [self.parent showSection:row];
+}
+@end
+
+// MARK: - WawonaPreferenceCell
+// A robust, statically laid-out cell to prevent visual corruption and reduce
+// LOC.
+@interface WawonaPreferenceCell : NSTableCellView
+@property(strong) NSTextField *titleLabel;
+@property(strong) NSTextField *descLabel;
+@property(strong) NSSwitch *switchControl;
+@property(strong) NSTextField *textControl;
+@property(strong) NSButton *buttonControl;
+@property(strong) NSPopUpButton *popupControl;
+@property(strong) WawonaSettingItem *item;
+@end
+
+@implementation WawonaPreferenceCell
+- (instancetype)initWithFrame:(NSRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    self.identifier = @"PCell";
+
+    _titleLabel = [NSTextField labelWithString:@""];
+    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _titleLabel.font = [NSFont systemFontOfSize:13];
+    _titleLabel.textColor = [NSColor labelColor];
+    [_titleLabel
+        setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                 forOrientation:
+                                     NSLayoutConstraintOrientationVertical];
+    [self addSubview:_titleLabel];
+
+    _descLabel = [NSTextField labelWithString:@""];
+    _descLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _descLabel.font = [NSFont systemFontOfSize:11];
+    _descLabel.textColor = [NSColor secondaryLabelColor];
+    [_descLabel
+        setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                 forOrientation:
+                                     NSLayoutConstraintOrientationVertical];
+    [self addSubview:_descLabel];
+
+    // Initialize all potential controls hidden
+    _switchControl = [[NSSwitch alloc] init];
+    _switchControl.translatesAutoresizingMaskIntoConstraints = NO;
+    _switchControl.hidden = YES;
+    [self addSubview:_switchControl];
+
+    _textControl = [[NSTextField alloc] init];
+    _textControl.translatesAutoresizingMaskIntoConstraints = NO;
+    _textControl.hidden = YES;
+    [self addSubview:_textControl];
+
+    _buttonControl = [NSButton buttonWithTitle:@"Run" target:nil action:nil];
+    _buttonControl.translatesAutoresizingMaskIntoConstraints = NO;
+    _buttonControl.bezelStyle = NSBezelStyleRounded;
+    _buttonControl.hidden = YES;
+    [self addSubview:_buttonControl];
+
+    _popupControl =
+        [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    _popupControl.translatesAutoresizingMaskIntoConstraints = NO;
+    _popupControl.hidden = YES;
+    [self addSubview:_popupControl];
+
+    // Static Auto Layout
+    [NSLayoutConstraint activateConstraints:@[
+      [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                                constant:20],
+      [_titleLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
+
+      [_descLabel.leadingAnchor
+          constraintEqualToAnchor:_titleLabel.leadingAnchor],
+      [_descLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor
+                                           constant:2],
+
+      // Anchoring controls to trailing edge
+      [_switchControl.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                    constant:-20],
+      [_switchControl.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+
+      [_textControl.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                  constant:-20],
+      [_textControl.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+      [_textControl.widthAnchor constraintEqualToConstant:120],
+
+      [_buttonControl.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                    constant:-20],
+      [_buttonControl.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+
+      [_popupControl.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                   constant:-20],
+      [_popupControl.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+      [_popupControl.widthAnchor constraintEqualToConstant:100],
+
+      // Prevent Overlap (Leading <-> Control)
+      [_titleLabel.trailingAnchor
+          constraintLessThanOrEqualToAnchor:_switchControl.leadingAnchor
+                                   constant:-10],
+      [_titleLabel.trailingAnchor
+          constraintLessThanOrEqualToAnchor:_textControl.leadingAnchor
+                                   constant:-10],
+      [_titleLabel.trailingAnchor
+          constraintLessThanOrEqualToAnchor:_buttonControl.leadingAnchor
+                                   constant:-10],
+      [_titleLabel.trailingAnchor
+          constraintLessThanOrEqualToAnchor:_popupControl.leadingAnchor
+                                   constant:-10],
+    ]];
+  }
+  return self;
+}
+
+- (void)configureWithItem:(WawonaSettingItem *)item
+                   target:(id)target
+                   action:(SEL)action {
+  self.item = item;
+  self.titleLabel.stringValue = item.title;
+  self.descLabel.stringValue = item.desc ? item.desc : @"";
+
+  // Reset Visibility
+  self.switchControl.hidden = YES;
+  self.textControl.hidden = YES;
+  self.buttonControl.hidden = YES;
+  self.popupControl.hidden = YES;
+
+  NSControl *active = nil;
+
+  if (item.type == WawonaSettingTypeSwitch) {
+    self.switchControl.hidden = NO;
+    self.switchControl.state =
+        [[NSUserDefaults standardUserDefaults] boolForKey:item.key]
+            ? NSControlStateValueOn
+            : NSControlStateValueOff;
+    self.switchControl.target = target;
+    self.switchControl.action = action;
+    active = self.switchControl;
+  } else if (item.type == WawonaSettingTypeText ||
+             item.type == WawonaSettingTypeNumber) {
+    self.textControl.hidden = NO;
+    NSString *val =
+        [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
+    self.textControl.stringValue = val ? val : [item.defaultValue description];
+    self.textControl.target = target;
+    self.textControl.action = action;
+    active = self.textControl;
+  } else if (item.type == WawonaSettingTypeButton) {
+    self.buttonControl.hidden = NO;
+    self.buttonControl.target = target;
+    self.buttonControl.action = action;
+    active = self.buttonControl;
+  } else if (item.type == WawonaSettingTypePopup) {
+    self.popupControl.hidden = NO;
+    [self.popupControl removeAllItems];
+    [self.popupControl addItemsWithTitles:item.options];
+    NSString *val =
+        [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
+    [self.popupControl selectItemWithTitle:val ? val : item.defaultValue];
+    self.popupControl.target = target;
+    self.popupControl.action = action;
+    active = self.popupControl;
+  } else if (item.type == WawonaSettingTypeInfo) {
+    // Info type: show read-only text with copy button
+    self.textControl.hidden = NO;
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
+    self.textControl.stringValue = val ? val : [item.defaultValue description];
+    self.textControl.editable = NO;
+    self.textControl.selectable = YES;
+    self.textControl.bezeled = NO;
+    self.textControl.bordered = NO;
+    self.textControl.backgroundColor = [NSColor clearColor];
+    self.textControl.drawsBackground = NO;
+    // Add copy button functionality via right-click or double-click
+    active = self.textControl;
+  }
+}
+@end
+
+@interface WawonaSeparatorRowView : NSTableRowView
+@end
+@implementation WawonaSeparatorRowView
+- (void)drawSeparatorInRect:(NSRect)dirtyRect {
+  // Draw custom iOS-style separator
+  NSRect sRect =
+      NSMakeRect(20, 0, self.bounds.size.width - 20, 1.0); // Inset left
+  [[NSColor separatorColor] setFill];
+  NSRectFill(sRect);
+}
+@end
+
+@implementation WawonaPreferencesContent
+- (void)loadView {
+  NSView *v = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 400)];
+  self.view = v;
+  NSScrollView *sv = [[NSScrollView alloc] initWithFrame:v.bounds];
+  sv.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  sv.drawsBackground = NO; // Fix Unified Background
+
+  self.tableView = [[NSTableView alloc] initWithFrame:sv.bounds];
+  self.tableView.dataSource = self;
+  self.tableView.delegate = self;
+  self.tableView.headerView = nil;
+  self.tableView.backgroundColor =
+      [NSColor clearColor];                           // Fix Unified Background
+  self.tableView.gridStyleMask = NSTableViewGridNone; // Custom separators
+  self.tableView.intercellSpacing =
+      NSMakeSize(0, 0); // Tight packing for custom rows
+
+  NSTableColumn *c = [[NSTableColumn alloc] initWithIdentifier:@"C"];
+  c.width = 380;
+  [self.tableView addTableColumn:c];
+  sv.documentView = self.tableView;
+  [v addSubview:sv];
+}
+
+// Use custom row view for separators
+- (NSTableRowView *)tableView:(NSTableView *)tableView
+                rowViewForRow:(NSInteger)row {
+  WawonaSeparatorRowView *rv =
+      [tableView makeViewWithIdentifier:@"Row" owner:self];
+  if (!rv) {
+    rv = [[WawonaSeparatorRowView alloc] initWithFrame:NSZeroRect];
+    rv.identifier = @"Row";
+  }
+  return rv;
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tv {
+  return self.section.items.count;
+}
+
+- (NSView *)tableView:(NSTableView *)tv
+    viewForTableColumn:(NSTableColumn *)tc
+                   row:(NSInteger)row {
+  WawonaPreferenceCell *cell = [tv makeViewWithIdentifier:@"PCell" owner:self];
+  if (!cell) {
+    cell =
+        [[WawonaPreferenceCell alloc] initWithFrame:NSMakeRect(0, 0, 400, 50)];
+  }
+  WawonaSettingItem *item = self.section.items[row];
+  [cell configureWithItem:item target:self action:@selector(act:)];
+
+  // Ensure tags are set correctly for 'act:' lookup if needed (though we rely
+  // on sender usually)
+  if (!cell.switchControl.hidden)
+    cell.switchControl.tag = row;
+  if (!cell.textControl.hidden)
+    cell.textControl.tag = row;
+  if (!cell.buttonControl.hidden)
+    cell.buttonControl.tag = row;
+  if (!cell.popupControl.hidden)
+    cell.popupControl.tag = row;
+
+  return cell;
+}
+
+- (void)act:(id)sender {
+  NSInteger row = [sender tag];
+  if (row < 0 || row >= self.section.items.count)
+    return;
+
+  WawonaSettingItem *item = self.section.items[row];
+  if (item.type == WawonaSettingTypeButton) {
+    if (item.actionBlock)
+      item.actionBlock();
+    return;
+  }
+  
+  if (item.type == WawonaSettingTypeInfo) {
+    // For Info type, copy to clipboard on click
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
+    NSString *valueString = val ? val : [item.defaultValue description];
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    [pasteboard clearContents];
+    [pasteboard setString:valueString forType:NSPasteboardTypeString];
+    return;
+  }
+
+  id val = nil;
+  if ([sender isKindOfClass:[NSSwitch class]]) {
+    val = @([(NSSwitch *)sender state] == NSControlStateValueOn);
+  } else if ([sender isKindOfClass:[NSTextField class]]) {
+    val = [(NSTextField *)sender stringValue];
+  } else if ([sender isKindOfClass:[NSPopUpButton class]]) {
+    val = [(NSPopUpButton *)sender titleOfSelectedItem];
+  }
+
+  if (val && item.key) {
+    [[NSUserDefaults standardUserDefaults] setObject:val forKey:item.key];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"WawonaPreferencesChanged"
+                      object:nil];
+  }
+}
+
+- (CGFloat)tableView:(NSTableView *)tv heightOfRow:(NSInteger)row {
+  return 50.0;
 }
 
 @end

@@ -2,6 +2,7 @@
 
 #include <wayland-server-core.h>
 #include <wayland-server.h>
+#include <xkbcommon/xkbcommon.h>
 
 struct wl_seat_impl {
     struct wl_global *global;
@@ -45,6 +46,13 @@ struct wl_seat_impl {
     struct wl_resource *cursor_surface;  // Current cursor surface (if any)
     int32_t cursor_hotspot_x;
     int32_t cursor_hotspot_y;
+    
+    // xkbcommon for keymap handling
+    struct xkb_context *xkb_context;
+    struct xkb_keymap *xkb_keymap;
+    struct xkb_state *xkb_state;
+    int keymap_fd;
+    uint32_t keymap_size;
 };
 
 struct wl_seat_impl *wl_seat_create(struct wl_display *display);

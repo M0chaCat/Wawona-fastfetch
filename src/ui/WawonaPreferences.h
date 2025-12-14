@@ -7,7 +7,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-@interface WawonaPreferences : UIViewController
+@interface WawonaPreferences : UITableViewController
 #else
 @interface WawonaPreferences : NSWindowController
 #endif

@@ -1,6 +1,6 @@
 #import "input_handler.h"
 #import "wayland_seat.h"
-#include "WawonaCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
+#import "WawonaCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
 #include <time.h>
@@ -242,7 +242,10 @@ static uint32_t getWaylandTime(void) {
     struct wl_surface_impl *surface = wl_get_all_surfaces();
     while (surface) {
         // In fullscreen mode, the surface covers the screen, so we just check if it has a resource
+        // Also check if the location is within the surface bounds
         if (surface->resource) {
+            // For now, if there's any surface with a resource, return it
+            // TODO: Proper hit testing based on surface->x, surface->y, surface->width, surface->height
             return surface;
         }
         surface = surface->next;
@@ -390,24 +393,150 @@ static uint32_t getWaylandTime(void) {
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 - (void)handleMouseEvent:(NSEvent *)event {
-    if (!_seat) return;
+    NSLog(@"[INPUT] handleMouseEvent called: type=%lu, locationInWindow=(%.1f, %.1f)", 
+          (unsigned long)[event type], [event locationInWindow].x, [event locationInWindow].y);
+    
+    if (!_seat) {
+        NSLog(@"[INPUT] ⚠️ No seat available for mouse event");
+        return;
+    }
+    
+    if (!_seat->pointer_resource) {
+        // Log warning but don't return - the send functions will safely handle NULL pointer_resource
+        // This allows us to see if events are being generated even if pointer isn't requested yet
+        static BOOL logged_warning = NO;
+        if (!logged_warning) {
+            NSLog(@"[INPUT] ⚠️ No pointer resource available (client hasn't requested pointer yet)");
+            NSLog(@"[INPUT]   Seat capabilities: 0x%x (KEYBOARD=0x%x, POINTER=0x%x, TOUCH=0x%x)", 
+                  _seat->capabilities, 
+                  WL_SEAT_CAPABILITY_KEYBOARD,
+                  WL_SEAT_CAPABILITY_POINTER,
+                  WL_SEAT_CAPABILITY_TOUCH);
+            NSLog(@"[INPUT]   Mouse events will be sent but may be ignored until client requests pointer");
+            logged_warning = YES;
+        }
+        // Continue - the send functions check for pointer_resource internally
+    }
     
     NSPoint locationInWindow = [event locationInWindow];
     NSPoint locationInView = [_window.contentView convertPoint:locationInWindow fromView:nil];
-    double x = locationInView.x;
-    double y = locationInView.y;
+    
+    // Convert to pixel coordinates (Wayland uses pixels, not points)
+    CGFloat scale = _window.backingScaleFactor;
+    double window_x = locationInView.x * scale;
+    double window_y = locationInView.y * scale;
     
     NSEventType eventType = [event type];
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint32_t time = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
     
+    // Find the surface under the cursor
+    struct wl_surface_impl *surface = [self pickSurfaceAt:locationInView];
+    
+    if (!surface || !surface->resource) {
+        NSLog(@"[INPUT] ⚠️ No surface found at (%.1f, %.1f) - cannot send mouse events", locationInView.x, locationInView.y);
+        return;
+    }
+    
+    NSLog(@"[INPUT] Found surface %p at window (%.1f, %.1f), surface pos=(%d, %d), size=(%d, %d)", 
+          (void *)surface, locationInView.x, locationInView.y, surface->x, surface->y, surface->width, surface->height);
+    
+    // CRITICAL: Convert window coordinates to surface-local coordinates
+    // Wayland protocol requires motion/enter events to use surface-local coordinates
+    // Surface position is in pixels, so we subtract surface position from window position
+    double surface_x = window_x - surface->x;
+    double surface_y = window_y - surface->y;
+    
+    // Ensure coordinates are non-negative (clamp to surface bounds)
+    if (surface_x < 0) surface_x = 0;
+    if (surface_y < 0) surface_y = 0;
+    if (surface->width > 0 && surface_x > surface->width) surface_x = surface->width;
+    if (surface->height > 0 && surface_y > surface->height) surface_y = surface->height;
+    
+    // Handle pointer enter/leave
+    static struct wl_surface_impl *last_pointer_surface = NULL;
+    static BOOL pointer_has_entered = NO;
+    
+    // Send initial enter event if pointer hasn't entered any surface yet
+    if (!pointer_has_entered && surface && surface->resource && _seat->pointer_resource) {
+        uint32_t serial = wl_seat_get_serial(_seat);
+        wl_seat_send_pointer_enter(_seat, surface->resource, serial, surface_x, surface_y);
+        wl_seat_send_pointer_frame(_seat);
+        NSLog(@"[INPUT] Pointer entered surface %p at surface-local (%.1f, %.1f) [window: (%.1f, %.1f), surface pos: (%d, %d)]", 
+              (void *)surface, surface_x, surface_y, window_x, window_y, surface->x, surface->y);
+        last_pointer_surface = surface;
+        pointer_has_entered = YES;
+        
+        // Flush enter event immediately
+        if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+            [_compositor sendFrameCallbacksImmediately];
+        }
+    } else if (surface != last_pointer_surface) {
+        // Leave old surface
+        if (last_pointer_surface && last_pointer_surface->resource && _seat->pointer_resource) {
+            uint32_t serial = wl_seat_get_serial(_seat);
+            wl_seat_send_pointer_leave(_seat, last_pointer_surface->resource, serial);
+            wl_seat_send_pointer_frame(_seat);
+            NSLog(@"[INPUT] Pointer left surface %p", (void *)last_pointer_surface);
+        }
+        // Enter new surface
+        if (surface && surface->resource && _seat->pointer_resource) {
+            uint32_t serial = wl_seat_get_serial(_seat);
+            wl_seat_send_pointer_enter(_seat, surface->resource, serial, surface_x, surface_y);
+            wl_seat_send_pointer_frame(_seat);
+            NSLog(@"[INPUT] Pointer entered surface %p at surface-local (%.1f, %.1f) [window: (%.1f, %.1f)]", 
+                  (void *)surface, surface_x, surface_y, window_x, window_y);
+        }
+        last_pointer_surface = surface;
+        
+        // Flush enter/leave events immediately so clients receive them right away
+        if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+            [_compositor sendFrameCallbacksImmediately];
+        }
+    }
+    
+    // Handle keyboard enter/leave when pointer enters/leaves surface
+    // Keyboard focus follows pointer on macOS
+    static struct wl_surface_impl *last_keyboard_surface = NULL;
+    if (surface != last_keyboard_surface) {
+        // Leave old surface
+        if (last_keyboard_surface && last_keyboard_surface->resource && _seat->keyboard_resource) {
+            uint32_t serial = wl_seat_get_serial(_seat);
+            wl_seat_send_keyboard_leave(_seat, last_keyboard_surface->resource, serial);
+            NSLog(@"[INPUT] Keyboard left surface %p", (void *)last_keyboard_surface);
+        }
+        // Enter new surface
+        if (surface && surface->resource && _seat->keyboard_resource) {
+            uint32_t serial = wl_seat_get_serial(_seat);
+            // Create empty keys array for keyboard enter (no pressed keys initially)
+            struct wl_array keys;
+            wl_array_init(&keys);
+            wl_seat_send_keyboard_enter(_seat, surface->resource, serial, &keys);
+            wl_array_release(&keys);
+            // Send current modifiers after enter
+            wl_seat_send_keyboard_modifiers(_seat, serial);
+            NSLog(@"[INPUT] Keyboard entered surface %p", (void *)surface);
+        }
+        last_keyboard_surface = surface;
+    }
+    
     switch (eventType) {
         case NSEventTypeMouseMoved:
         case NSEventTypeLeftMouseDragged:
         case NSEventTypeRightMouseDragged:
         case NSEventTypeOtherMouseDragged: {
-            wl_seat_send_pointer_motion(_seat, time, x, y);
+            // Use surface-local coordinates for motion events
+            NSLog(@"[INPUT] Mouse moved to surface-local (%.1f, %.1f) [window: (%.1f, %.1f)] - pointer_resource=%p", 
+                  surface_x, surface_y, window_x, window_y, (void *)_seat->pointer_resource);
+            wl_seat_send_pointer_motion(_seat, time, surface_x, surface_y);
+            wl_seat_send_pointer_frame(_seat);
+            
+            // Flush mouse events immediately so clients receive them right away
+            if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+                [_compositor sendFrameCallbacksImmediately];
+            }
+            
             [self triggerFrameCallback];
             break;
         }
@@ -416,7 +545,16 @@ static uint32_t getWaylandTime(void) {
         case NSEventTypeOtherMouseDown: {
             uint32_t serial = wl_seat_get_serial(_seat);
             uint32_t button = macButtonToWaylandButton(eventType, event);
+            NSLog(@"[INPUT] Mouse button down: button=%u at surface-local (%.1f, %.1f) [window: (%.1f, %.1f)] - pointer_resource=%p", 
+                  button, surface_x, surface_y, window_x, window_y, (void *)_seat->pointer_resource);
             wl_seat_send_pointer_button(_seat, serial, time, button, WL_POINTER_BUTTON_STATE_PRESSED);
+            wl_seat_send_pointer_frame(_seat);
+            
+            // Flush mouse events immediately so clients receive them right away
+            if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+                [_compositor sendFrameCallbacksImmediately];
+            }
+            
             [self triggerFrameCallback];
             break;
         }
@@ -425,13 +563,33 @@ static uint32_t getWaylandTime(void) {
         case NSEventTypeOtherMouseUp: {
             uint32_t serial = wl_seat_get_serial(_seat);
             uint32_t button = macButtonToWaylandButton(eventType, event);
+            NSLog(@"[INPUT] Mouse button up: button=%u at surface-local (%.1f, %.1f) [window: (%.1f, %.1f)]", 
+                  button, surface_x, surface_y, window_x, window_y);
             wl_seat_send_pointer_button(_seat, serial, time, button, WL_POINTER_BUTTON_STATE_RELEASED);
+            wl_seat_send_pointer_frame(_seat);
+            
+            // Flush mouse events immediately so clients receive them right away
+            if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+                [_compositor sendFrameCallbacksImmediately];
+            }
+            
             [self triggerFrameCallback];
             break;
         }
         case NSEventTypeScrollWheel: {
             double deltaY = [event scrollingDeltaY];
             if (deltaY != 0) {
+                // Send scroll event (axis event)
+                if (wl_resource_get_version(_seat->pointer_resource) >= WL_POINTER_AXIS_SINCE_VERSION) {
+                    wl_pointer_send_axis(_seat->pointer_resource, time, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_double(deltaY * 10));
+                    wl_seat_send_pointer_frame(_seat);
+                }
+                
+                // Flush scroll events immediately so clients receive them right away
+                if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+                    [_compositor sendFrameCallbacksImmediately];
+                }
+                
                 [self triggerFrameCallback];
             }
             break;
@@ -458,7 +616,33 @@ static uint32_t getWaylandTime(void) {
 - (void)scrollWheel:(NSEvent *)event { [self handleMouseEvent:event]; }
 
 - (void)handleKeyboardEvent:(NSEvent *)event {
-    if (!_seat) return;
+    if (!_seat) {
+        NSLog(@"[INPUT] ⚠️ No seat available for keyboard event");
+        return;
+    }
+    
+    if (!_seat->keyboard_resource) {
+        NSLog(@"[INPUT] ⚠️ No keyboard resource available (client hasn't requested keyboard)");
+        return;
+    }
+    
+    // Ensure keyboard enter has been sent to a surface
+    // Keyboard focus follows pointer, but if user types before moving mouse, send enter now
+    static struct wl_surface_impl *last_keyboard_surface_entered = NULL;
+    struct wl_surface_impl *surface = wl_get_all_surfaces();
+    while (surface && (!surface->resource)) {
+        surface = surface->next;
+    }
+    if (surface && surface->resource && surface != last_keyboard_surface_entered) {
+        uint32_t serial = wl_seat_get_serial(_seat);
+        struct wl_array keys;
+        wl_array_init(&keys);
+        NSLog(@"[INPUT] Sending keyboard enter to surface %p (first keyboard event)", (void *)surface);
+        wl_seat_send_keyboard_enter(_seat, surface->resource, serial, &keys);
+        wl_array_release(&keys);
+        wl_seat_send_keyboard_modifiers(_seat, serial);
+        last_keyboard_surface_entered = surface;
+    }
 
     NSEventType eventType = [event type];
     struct timespec ts;
@@ -467,6 +651,8 @@ static uint32_t getWaylandTime(void) {
     unsigned short macKeyCode = [event keyCode];
     NSString *charsIgnoringModifiers = [event charactersIgnoringModifiers];
     uint32_t linuxKeyCode = 0;
+    
+    NSLog(@"[INPUT] Keyboard event: type=%lu, keyCode=%u, chars=%@", (unsigned long)eventType, macKeyCode, charsIgnoringModifiers);
     
     linuxKeyCode = macKeyCodeToLinuxKeyCode(macKeyCode);
     
@@ -538,6 +724,9 @@ static uint32_t getWaylandTime(void) {
     
     if (old_mods_depressed != new_mods_depressed) {
         _seat->mods_depressed = new_mods_depressed;
+        // Send modifiers update
+        uint32_t serial = wl_seat_get_serial(_seat);
+        wl_seat_send_keyboard_modifiers(_seat, serial);
     }
     
     if (!(modifierFlags & NSEventModifierFlagCapsLock)) {
@@ -554,7 +743,13 @@ static uint32_t getWaylandTime(void) {
     }
     
     uint32_t serial = wl_seat_get_serial(_seat);
+    NSLog(@"[INPUT] Sending keyboard key: keyCode=%u, state=%u, serial=%u", linuxKeyCode, state, serial);
     wl_seat_send_keyboard_key(_seat, serial, time, linuxKeyCode, state);
+    
+    // Trigger immediate frame callback so client can redraw in response to keyboard input
+    if (_compositor && [_compositor respondsToSelector:@selector(sendFrameCallbacksImmediately)]) {
+        [_compositor sendFrameCallbacksImmediately];
+    }
     
     [self triggerRedraw];
 }

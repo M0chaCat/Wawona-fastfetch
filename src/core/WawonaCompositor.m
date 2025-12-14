@@ -10,6 +10,7 @@
 #endif
 #include "logging.h"
 #include "wayland_fullscreen_shell.h"
+#include "wayland_linux_dmabuf.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #ifdef __APPLE__
@@ -237,10 +238,24 @@ static void surface_attach(struct wl_client *client,
   (void)client;
   struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
 
+  // CRITICAL: Release old buffer if a new one is being attached
+  // This is required by Wayland protocol - when a new buffer is attached,
+  // the old one must be released (unless it's NULL, which means detach)
+  if (surface->buffer_resource && surface->buffer_resource != buffer && !surface->buffer_release_sent) {
+    struct wl_client *old_buffer_client = wl_resource_get_client(surface->buffer_resource);
+    if (old_buffer_client) {
+      wl_buffer_send_release(surface->buffer_resource);
+      surface->buffer_release_sent = true;
+    }
+  }
+
   // Pending state update
   surface->buffer_resource = buffer;
   // Reset release sent flag for the new buffer (or re-attached buffer)
-  surface->buffer_release_sent = false;
+  // If buffer is NULL (detach), keep the flag as-is
+  if (buffer) {
+    surface->buffer_release_sent = false;
+  }
   surface->x = x;
   surface->y = y;
 }
@@ -321,20 +336,34 @@ static void surface_commit(struct wl_client *client,
       surface->width = surface->buffer_width;
       surface->height = surface->buffer_height;
     } else {
+      // Check for dmabuf buffer first (before EGL)
+      // This is critical for waypipe which uses dmabuf buffers
+      if (is_dmabuf_buffer(surface->buffer_resource)) {
+        struct metal_dmabuf_buffer *dmabuf_buffer = dmabuf_buffer_get(surface->buffer_resource);
+        if (dmabuf_buffer) {
+          // Update surface dimensions from dmabuf buffer
+          surface->buffer_width = dmabuf_buffer->width;
+          surface->buffer_height = dmabuf_buffer->height;
+          surface->width = dmabuf_buffer->width;
+          surface->height = dmabuf_buffer->height;
+        }
+      }
       // EGL or other buffer. Width/height should be known or queried via EGL.
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-      struct egl_buffer_handler *egl_handler =
-          macos_compositor_get_egl_buffer_handler();
-      if (egl_handler) {
-        int32_t width, height;
-        EGLint format;
-        if (egl_buffer_handler_query_buffer(egl_handler,
-                                            surface->buffer_resource, &width,
-                                            &height, &format) == 0) {
-          surface->buffer_width = width;
-          surface->buffer_height = height;
-          surface->width = width;
-          surface->height = height;
+      else {
+        struct egl_buffer_handler *egl_handler =
+            macos_compositor_get_egl_buffer_handler();
+        if (egl_handler) {
+          int32_t width, height;
+          EGLint format;
+          if (egl_buffer_handler_query_buffer(egl_handler,
+                                              surface->buffer_resource, &width,
+                                              &height, &format) == 0) {
+            surface->buffer_width = width;
+            surface->buffer_height = height;
+            surface->width = width;
+            surface->height = height;
+          }
         }
       }
 #endif
@@ -815,17 +844,96 @@ struct wl_surface_impl *wl_get_all_surfaces(void) { return g_surface_list; }
   return YES;
 }
 
-- (BOOL)acceptsMouseMovedEvents {
-  return YES;
-}
-
 - (BOOL)acceptsFirstResponder {
   return YES;
 }
 
 - (BOOL)becomeFirstResponder {
   NSLog(@"[COMPOSITOR VIEW] Became first responder - ready for keyboard input");
-  return [super becomeFirstResponder];
+  BOOL result = [super becomeFirstResponder];
+  // Send keyboard enter to focused surface when view becomes first responder
+  if (result && self.inputHandler && self.inputHandler.seat) {
+    struct wl_surface_impl *surface = wl_get_all_surfaces();
+    // Find the first valid surface
+    while (surface && (!surface->resource || !self.inputHandler.seat->keyboard_resource)) {
+      surface = surface->next;
+    }
+    if (surface && surface->resource && self.inputHandler.seat->keyboard_resource) {
+      uint32_t serial = wl_seat_get_serial(self.inputHandler.seat);
+      struct wl_array keys;
+      wl_array_init(&keys);
+      wl_seat_send_keyboard_enter(self.inputHandler.seat, surface->resource, serial, &keys);
+      wl_array_release(&keys);
+      wl_seat_send_keyboard_modifiers(self.inputHandler.seat, serial);
+    }
+  }
+  return result;
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)mouseDown:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)mouseUp:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)rightMouseDown:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)rightMouseUp:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)otherMouseDown:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)otherMouseUp:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)rightMouseDragged:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)otherMouseDragged:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
+}
+
+- (void)scrollWheel:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleMouseEvent:event];
+  }
 }
 
 - (BOOL)resignFirstResponder {
@@ -1136,9 +1244,12 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
 #else
   } else if (g_compositor_instance.window &&
              g_compositor_instance.window.contentView) {
-    // macOS: Fallback for Cocoa backend
+    // macOS: Fallback for Cocoa backend - force immediate redraw
     dispatch_async(dispatch_get_main_queue(), ^{
-      [g_compositor_instance.window.contentView setNeedsDisplay:YES];
+      NSView *contentView = g_compositor_instance.window.contentView;
+      [contentView setNeedsDisplay:YES];
+      // Force immediate display update
+      [contentView displayIfNeeded];
     });
 #endif
   }
@@ -1395,74 +1506,14 @@ bool wl_has_pending_frame_callbacks(void) {
     // handling
     NSView *contentView = _window.contentView;
     if ([contentView isKindOfClass:[CompositorView class]]) {
-      ((CompositorView *)contentView).inputHandler = _inputHandler;
+      CompositorView *compositorView = (CompositorView *)contentView;
+      compositorView.inputHandler = _inputHandler;
     }
 
-    // Set up event monitoring for mouse events only
-    // Keyboard events are handled directly in CompositorView keyDown/keyUp
-    // methods
-    NSEventMask eventMask =
-        NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp |
-        NSEventMaskRightMouseDown | NSEventMaskRightMouseUp |
-        NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp |
-        NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged |
-        NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged |
-        NSEventMaskScrollWheel;
-
-    [NSEvent
-        addLocalMonitorForEventsMatchingMask:eventMask
-                                     handler:^NSEvent *(NSEvent *event) {
-                                       // CRITICAL: Always return the event to
-                                       // allow normal window processing We just
-                                       // observe events for Wayland clients,
-                                       // but don't consume them
-                                       if ([event window] == self.window) {
-                                         // Check if event is in content area
-                                         // (not title bar)
-                                         NSPoint locationInWindow =
-                                             [event locationInWindow];
-                                         NSRect contentRect =
-                                             [self.window.contentView frame];
-
-                                         // Only process events in content area
-                                         // - let window handle title bar events
-                                         if (locationInWindow.y <=
-                                                 contentRect.size.height &&
-                                             locationInWindow.y >= 0 &&
-                                             locationInWindow.x >= 0 &&
-                                             locationInWindow.x <=
-                                                 contentRect.size.width) {
-                                           NSEventType type = [event type];
-                                           if (type == NSEventTypeMouseMoved ||
-                                               type ==
-                                                   NSEventTypeLeftMouseDragged ||
-                                               type ==
-                                                   NSEventTypeRightMouseDragged ||
-                                               type ==
-                                                   NSEventTypeOtherMouseDragged ||
-                                               type ==
-                                                   NSEventTypeLeftMouseDown ||
-                                               type == NSEventTypeLeftMouseUp ||
-                                               type ==
-                                                   NSEventTypeRightMouseDown ||
-                                               type ==
-                                                   NSEventTypeRightMouseUp ||
-                                               type ==
-                                                   NSEventTypeOtherMouseDown ||
-                                               type ==
-                                                   NSEventTypeOtherMouseUp ||
-                                               type == NSEventTypeScrollWheel) {
-                                             // Forward to Wayland clients but
-                                             // don't consume the event
-                                             [self.inputHandler
-                                                 handleMouseEvent:event];
-                                           }
-                                         }
-                                       }
-                                       // ALWAYS return event - never consume
-                                       // it, so window controls work normally
-                                       return event;
-                                     }];
+    // Mouse events are now handled via NSResponder methods in CompositorView
+    // (mouseMoved, mouseDown, etc.) which forward to inputHandler
+    // We still set acceptsMouseMovedEvents on the window
+    [_window setAcceptsMouseMovedEvents:YES];
 
     NSLog(@"   ✓ Input handling set up (macOS)");
 #endif
@@ -2215,6 +2266,13 @@ displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeStamp *inNow,
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
   [_window becomeKeyWindow];
+  
+  // Make the compositor view first responder to receive keyboard events
+  // (contentView already declared above)
+  if ([contentView isKindOfClass:[CompositorView class]]) {
+    [_window makeFirstResponder:contentView];
+    NSLog(@"[INPUT] View set as first responder when window shown");
+  }
 #endif
 
   _windowShown = YES;
@@ -2588,6 +2646,28 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
   return YES;
 }
 
+// Idle helper to flush input events and trigger frame callback immediately
+// This is safe because it runs on the event thread
+static void flush_input_and_send_frame_callbacks_idle(void *data) {
+  WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
+  if (compositor) {
+    // CRITICAL: Flush clients immediately so they receive keyboard/input events
+    // This wakes up clients waiting on wl_display_dispatch() so they can process input
+    wl_display_flush_clients(compositor.display);
+    
+    // Send frame callbacks immediately if any are pending
+    // This allows clients to render immediately after processing input
+    if (wl_has_pending_frame_callbacks()) {
+      log_printf("[COMPOSITOR] ", "flush_input_and_send_frame_callbacks_idle: "
+                                  "Flushing input and sending frame callbacks immediately\n");
+      send_frame_callbacks_timer(data);
+    } else {
+      log_printf("[COMPOSITOR] ", "flush_input_and_send_frame_callbacks_idle: "
+                                  "Flushed input events (no pending frame callbacks)\n");
+    }
+  }
+}
+
 // Idle helper to trigger first frame callback immediately
 // This is safe because it runs on the event thread and only fires once
 static void trigger_first_frame_callback_idle(void *data) {
@@ -2718,14 +2798,15 @@ static int send_frame_callbacks_timer(void *data) {
 }
 
 - (void)sendFrameCallbacksImmediately {
-  // Force immediate frame callback dispatch - used after input events
-  // This allows clients to render updates immediately in response to input
-  // NOTE: Must be called from main thread, but the timer callback will run on
-  // event thread
-  if (_eventLoop && wl_has_pending_frame_callbacks()) {
-    // Ensure timer is running - use idle callback so logic executes on event
-    // thread
-    wl_event_loop_add_idle(_eventLoop, ensure_frame_callback_timer_idle,
+  // Force immediate flush of input events and frame callback dispatch
+  // This allows clients to receive keyboard events and render immediately
+  // NOTE: Must be called from main thread, but the callback will run on event thread
+  if (_eventLoop) {
+    // Flush input events AND send frame callbacks immediately via idle callback
+    // This ensures:
+    // 1. Clients receive keyboard/input events immediately (via flush)
+    // 2. Clients can render immediately if they have pending frame callbacks
+    wl_event_loop_add_idle(_eventLoop, flush_input_and_send_frame_callbacks_idle,
                            (__bridge void *)self);
   }
 }
@@ -2967,6 +3048,40 @@ static void disconnect_all_clients(struct wl_display *display) {
   if (_compositor) {
     wl_compositor_destroy(_compositor);
     _compositor = NULL;
+  }
+
+  // CRITICAL: Close TCP listening socket if it exists
+  // This prevents new connections from being accepted
+  if (_tcp_listen_fd >= 0) {
+    close(_tcp_listen_fd);
+    _tcp_listen_fd = -1;
+    log_printf("[COMPOSITOR] ", "🔌 Closed TCP listening socket\n");
+  }
+
+  // CRITICAL: Destroy the display to properly close sockets and clean up resources
+  // This ensures waypipe and other clients detect the disconnect
+  if (_display) {
+    // Destroy display (this closes all sockets and frees resources)
+    wl_display_destroy(_display);
+    _display = NULL;
+  }
+
+  // Clean up Unix socket file if it exists
+  // This ensures waypipe doesn't think the compositor is still running
+  // Note: wl_display_destroy() should close the socket, but we unlink the file
+  // to ensure it's removed from the filesystem
+  const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+  const char *socket_name = getenv("WAYLAND_DISPLAY");
+  if (runtime_dir && socket_name) {
+    char socket_path[512];
+    snprintf(socket_path, sizeof(socket_path), "%s/%s", runtime_dir, socket_name);
+    if (unlink(socket_path) == 0) {
+      log_printf("[COMPOSITOR] ", "🗑️ Removed socket file: %s\n", socket_path);
+    } else if (errno != ENOENT) {
+      // ENOENT means file doesn't exist, which is fine (might have been cleaned up already)
+      log_printf("[COMPOSITOR] ", "⚠️ Failed to remove socket file %s: %s\n", 
+                 socket_path, strerror(errno));
+    }
   }
 
   cleanup_logging();

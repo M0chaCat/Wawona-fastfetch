@@ -281,13 +281,7 @@
 			<key>KeyboardType</key>
 			<string>NumberPad</string>
 		</dict>
-		<!-- SSH Configuration -->
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>SSH Configuration</string>
-		</dict>
+		<!-- SSH Settings (part of Waypipe section, no separate header) -->
 		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>

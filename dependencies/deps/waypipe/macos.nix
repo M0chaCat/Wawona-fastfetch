@@ -313,12 +313,14 @@ pkgs.rustPlatform.buildRustPackage {
     ffmpeg # Video encoding/decoding
   ];
 
-  # Enable dmabuf and video features for waypipe-rs
+  # Enable video feature for waypipe-rs
   # Note: Vulkan is always enabled in waypipe-rs v0.10.6+ (not a feature)
-  # dmabuf enables DMABUF support via Vulkan
+  # dmabuf is DISABLED on macOS because kosmickrisp doesn't support DMA-BUF file descriptors
+  # macOS uses IOSurface instead, which is handled by the compositor directly
+  # waypipe will use SHM buffers on macOS, which works fine for remote display
   # video enables video encoding/decoding via FFmpeg
   buildFeatures = [
-    "dmabuf"
+    # "dmabuf"  # Disabled on macOS - kosmickrisp doesn't support VK_EXT_external_memory_dma_buf
     "video"
   ];
 
@@ -354,8 +356,10 @@ pkgs.rustPlatform.buildRustPackage {
 
   CARGO_BUILD_TARGET = "aarch64-apple-darwin";
 
-  # Patch waypipe to disable GBM requirement for dmabuf on macOS/iOS
-  # The dmabuf feature uses Vulkan on these platforms, not GBM
+  # Patch waypipe for macOS/iOS compatibility
+  # Note: dmabuf feature is disabled for macOS waypipe because kosmickrisp doesn't support
+  # DMA-BUF file descriptors (VK_EXT_external_memory_dma_buf). macOS uses IOSurface instead.
+  # Waypipe will use SHM buffers on macOS, which the compositor handles correctly.
   # Also patch other wrappers that may be built unconditionally
   postPatch = ''
         # Make source files writable for patching
@@ -1560,27 +1564,37 @@ RUST_EOF
     # Create a wrapper script that sets VK_ICD_FILENAMES/VK_DRIVER_FILES for kosmickrisp
     if [ -f "$out/bin/waypipe" ]; then
       mv "$out/bin/waypipe" "$out/bin/waypipe.bin"
-      {
-        echo '#!/bin/sh'
-        echo '# Set Vulkan ICD path for kosmickrisp driver'
-        echo '# Mesa/kosmickrisp installs ICD JSON to share/vulkan/icd.d/'
-        
-        # Find the ICD JSON file dynamically as it may contain architecture in the name
-        echo 'ICD_FILE=$(find "${kosmickrisp}/share/vulkan/icd.d" -name "*.json" | head -n 1)'
-        echo 'if [ -z "$ICD_FILE" ]; then'
-        echo '  # Fallback to lib/vulkan/icd.d if not found in share'
-        echo '  ICD_FILE=$(find "${kosmickrisp}/lib/vulkan/icd.d" -name "*.json" 2>/dev/null | head -n 1)'
-        echo 'fi'
-        
-        echo 'if [ -n "$ICD_FILE" ]; then'
-        echo '  export VK_DRIVER_FILES="$ICD_FILE"'
-        echo '  export VK_ICD_FILENAMES="$ICD_FILE"'
-        echo 'fi'
+      cat > "$out/bin/waypipe" <<'WRAPPER_EOF'
+#!/bin/sh
+# Set Vulkan ICD path for kosmickrisp driver
+# Mesa/kosmickrisp installs ICD JSON to share/vulkan/icd.d/
 
-        echo '# Add kosmickrisp and vulkan-loader libraries to library path'
-        echo 'export DYLD_LIBRARY_PATH="${kosmickrisp}/lib:${vulkan-loader}/lib:''${DYLD_LIBRARY_PATH:-}"'
-        echo 'exec -a waypipe "$out/bin/waypipe.bin" "$@"'
-      } > "$out/bin/waypipe"
+# Find the ICD JSON file dynamically as it may contain architecture in the name
+ICD_FILE=""
+if [ -d "${kosmickrisp}/share/vulkan/icd.d" ]; then
+  ICD_FILE=$(find "${kosmickrisp}/share/vulkan/icd.d" -name "*.json" 2>/dev/null | head -n 1)
+fi
+if [ -z "$ICD_FILE" ] && [ -d "${kosmickrisp}/lib/vulkan/icd.d" ]; then
+  # Fallback to lib/vulkan/icd.d if not found in share
+  ICD_FILE=$(find "${kosmickrisp}/lib/vulkan/icd.d" -name "*.json" 2>/dev/null | head -n 1)
+fi
+
+if [ -n "$ICD_FILE" ] && [ -f "$ICD_FILE" ]; then
+  export VK_DRIVER_FILES="$ICD_FILE"
+  export VK_ICD_FILENAMES="$ICD_FILE"
+  echo "Using Vulkan ICD: $ICD_FILE" >&2
+else
+  echo "Warning: kosmickrisp Vulkan ICD not found. Vulkan/dmabuf features may not work." >&2
+  echo "  Searched in: ${kosmickrisp}/share/vulkan/icd.d and ${kosmickrisp}/lib/vulkan/icd.d" >&2
+fi
+
+# Add kosmickrisp and vulkan-loader libraries to library path
+# Note: dmabuf feature is disabled on macOS - waypipe uses SHM buffers instead
+# Vulkan loader is still available for video encoding feature if needed
+export DYLD_LIBRARY_PATH="${kosmickrisp}/lib:${vulkan-loader}/lib:''${DYLD_LIBRARY_PATH:-}"
+
+exec -a waypipe "$out/bin/waypipe.bin" "$@"
+WRAPPER_EOF
       # Replace Nix variables after writing
       sed -i "s|\''${kosmickrisp}|${kosmickrisp}|g" "$out/bin/waypipe"
       sed -i "s|\''${vulkan-loader}|${vulkan-loader}|g" "$out/bin/waypipe"

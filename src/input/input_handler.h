@@ -27,6 +27,7 @@
 - (void)handleMouseEvent:(NSEvent *)event;
 - (void)handleKeyboardEvent:(NSEvent *)event;
 - (void)setupInputHandling;
+- (struct wl_surface_impl *)pickSurfaceAt:(CGPoint)location;
 #endif
 
 @end
