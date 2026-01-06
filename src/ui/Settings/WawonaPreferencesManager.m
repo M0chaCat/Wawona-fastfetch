@@ -1,4 +1,5 @@
 #import "WawonaPreferencesManager.h"
+#import <Security/Security.h>
 
 // Preferences keys
 NSString *const kWawonaPrefsUniversalClipboard = @"UniversalClipboard";
@@ -55,6 +56,36 @@ NSString *const kWawonaPrefsWaypipeVsock = @"WaypipeVsock";
 NSString *const kWawonaPrefsWaypipeXwls = @"WaypipeXwls";
 NSString *const kWawonaPrefsWaypipeTitlePrefix = @"WaypipeTitlePrefix";
 NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
+// SSH configuration keys (separate from Waypipe)
+NSString *const kWawonaPrefsSSHHost = @"SSHHost";
+NSString *const kWawonaPrefsSSHUser = @"SSHUser";
+NSString *const kWawonaPrefsSSHAuthMethod = @"SSHAuthMethod";
+NSString *const kWawonaPrefsSSHPassword = @"SSHPassword";
+NSString *const kWawonaPrefsSSHKeyPath = @"SSHKeyPath";
+NSString *const kWawonaPrefsSSHKeyPassphrase = @"SSHKeyPassphrase";
+NSString *const kWawonaPrefsWaypipeUseSSHConfig = @"WaypipeUseSSHConfig";
+
+static NSString *WawonaPreferredSharedRuntimeDir(void) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  NSURL *groupURL = [[NSFileManager defaultManager]
+      containerURLForSecurityApplicationGroupIdentifier:@"group.com.aspauldingcode.Wawona"];
+  if (groupURL) {
+    NSString *candidate = [groupURL.path stringByAppendingPathComponent:@"w"];
+    if (candidate.length > 0 && candidate.length <= 90) {
+      return candidate;
+    }
+  }
+  return @"/tmp/wawona-ios";
+#else
+  NSURL *groupURL = [[NSFileManager defaultManager]
+      containerURLForSecurityApplicationGroupIdentifier:@"group.com.aspauldingcode.Wawona"];
+  if (groupURL) {
+    return [groupURL.path stringByAppendingPathComponent:@"w"];
+  }
+  NSString *tmpDir = NSTemporaryDirectory();
+  return tmpDir.length > 0 ? tmpDir : @"/tmp";
+#endif
+}
 
 @implementation WawonaPreferencesManager
 
@@ -145,12 +176,25 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
   }
   // Waypipe configuration defaults
   if (![defaults objectForKey:kWawonaPrefsWaypipeDisplay]) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     [defaults setObject:@"wayland-0" forKey:kWawonaPrefsWaypipeDisplay];
+#else
+    [defaults setObject:@"wayland-0" forKey:kWawonaPrefsWaypipeDisplay];
+#endif
   }
   if (![defaults objectForKey:kWawonaPrefsWaypipeSocket]) {
-    NSString *tmpDir = NSTemporaryDirectory();
-    NSString *defaultSocket = [tmpDir stringByAppendingPathComponent:@"waypipe"];
-    [defaults setObject:defaultSocket forKey:kWawonaPrefsWaypipeSocket];
+    NSString *runtimeDir = WawonaPreferredSharedRuntimeDir();
+    NSString *display = [defaults stringForKey:kWawonaPrefsWaypipeDisplay];
+    if (display.length == 0) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+      display = @"wayland-0";
+#else
+      display = @"wayland-0";
+#endif
+    }
+    NSString *defaultSocket = [runtimeDir stringByAppendingPathComponent:display];
+    [defaults setObject:defaultSocket
+                forKey:kWawonaPrefsWaypipeSocket];
   }
   if (![defaults objectForKey:kWawonaPrefsWaypipeCompress]) {
     [defaults setObject:@"lz4" forKey:kWawonaPrefsWaypipeCompress];
@@ -199,7 +243,11 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
     [defaults setObject:@"" forKey:kWawonaPrefsWaypipeCustomScript];
   }
   if (![defaults objectForKey:kWawonaPrefsWaypipeDebug]) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    [defaults setBool:YES forKey:kWawonaPrefsWaypipeDebug];
+#else
     [defaults setBool:NO forKey:kWawonaPrefsWaypipeDebug];
+#endif
   }
   if (![defaults objectForKey:kWawonaPrefsWaypipeNoGpu]) {
     [defaults setBool:NO forKey:kWawonaPrefsWaypipeNoGpu];
@@ -225,6 +273,9 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
   if (![defaults objectForKey:kWawonaPrefsWaypipeSecCtx]) {
     [defaults setObject:@"" forKey:kWawonaPrefsWaypipeSecCtx];
   }
+  if (![defaults objectForKey:kWawonaPrefsWaypipeUseSSHConfig]) {
+    [defaults setBool:YES forKey:kWawonaPrefsWaypipeUseSSHConfig]; // Default to using SSH config from OpenSSH section
+  }
   if (![defaults objectForKey:kWawonaPrefsWaypipeRSSupport]) {
     [defaults setBool:NO forKey:kWawonaPrefsWaypipeRSSupport];
   }
@@ -236,10 +287,9 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
                   forKey:kWawonaPrefsTCPListenerPort]; // 0 means dynamic
   }
   if (![defaults objectForKey:kWawonaPrefsWaylandSocketDir]) {
-    NSString *tmpDir = NSTemporaryDirectory();
-    NSString *defaultDir =
-        [tmpDir stringByAppendingPathComponent:@"wayland-runtime"];
-    [defaults setObject:defaultDir forKey:kWawonaPrefsWaylandSocketDir];
+    NSString *defaultDir = WawonaPreferredSharedRuntimeDir();
+    [defaults setObject:defaultDir
+                forKey:kWawonaPrefsWaylandSocketDir];
   }
   if (![defaults objectForKey:kWawonaPrefsWaylandDisplayNumber]) {
     [defaults setInteger:0 forKey:kWawonaPrefsWaylandDisplayNumber];
@@ -443,18 +493,32 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 
 // Wayland Configuration
 - (NSString *)waylandSocketDir {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  NSString *preferred = WawonaPreferredSharedRuntimeDir();
+  if (preferred.length > 0) {
+    NSString *stored = [[NSUserDefaults standardUserDefaults]
+        stringForKey:kWawonaPrefsWaylandSocketDir];
+    if (![stored isEqualToString:preferred]) {
+      [[NSUserDefaults standardUserDefaults] setObject:preferred
+                                                forKey:kWawonaPrefsWaylandSocketDir];
+      [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+    return preferred;
+  }
+#endif
+
   NSString *dir = [[NSUserDefaults standardUserDefaults]
       stringForKey:kWawonaPrefsWaylandSocketDir];
   if (!dir) {
     const char *envDir = getenv("XDG_RUNTIME_DIR");
     if (envDir) {
-        dir = [NSString stringWithUTF8String:envDir];
+      dir = [NSString stringWithUTF8String:envDir];
     } else {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-        NSString *tmpDir = NSTemporaryDirectory();
-        dir = [tmpDir stringByAppendingPathComponent:@"wayland-runtime"];
+      NSString *tmpDir = NSTemporaryDirectory();
+      dir = [tmpDir stringByAppendingPathComponent:@"wayland-runtime"];
 #else
-        dir = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
+      dir = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
 #endif
     }
   }
@@ -611,28 +675,68 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 
 // Waypipe Configuration Methods
 - (NSString *)waypipeDisplay {
-  // Automatically compute from WaylandDisplayNumber to keep them in sync
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  NSString *value = [[NSUserDefaults standardUserDefaults]
+      stringForKey:kWawonaPrefsWaypipeDisplay];
+  if ([value isEqualToString:@"w0"] || [value isEqualToString:@"w-0"]) {
+    value = @"wayland-0";
+    [[NSUserDefaults standardUserDefaults] setObject:value
+                                               forKey:kWawonaPrefsWaypipeDisplay];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+  }
+  return value.length > 0 ? value : @"wayland-0";
+#else
   NSInteger displayNumber = [self waylandDisplayNumber];
   return [NSString stringWithFormat:@"wayland-%ld", (long)displayNumber];
+#endif
 }
 
 - (void)setWaypipeDisplay:(NSString *)display {
-  // Parse the display string to extract the number and update WaylandDisplayNumber
-  // Format: "wayland-{number}"
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  if ([display isEqualToString:@"w0"] || [display isEqualToString:@"w-0"]) {
+    display = @"wayland-0";
+  }
+  if (display.length > 0) {
+    [[NSUserDefaults standardUserDefaults] setObject:display
+                                               forKey:kWawonaPrefsWaypipeDisplay];
+  } else {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kWawonaPrefsWaypipeDisplay];
+  }
+  [[NSUserDefaults standardUserDefaults] synchronize];
+#else
   if (display && display.length > 0) {
     NSInteger number = 0;
     if ([display hasPrefix:@"wayland-"]) {
-      NSString *numberStr = [display substringFromIndex:8]; // "wayland-".length = 8
+      NSString *numberStr = [display substringFromIndex:8];
       number = [numberStr integerValue];
     } else {
-      // Try to parse as just a number
       number = [display integerValue];
     }
     [self setWaylandDisplayNumber:number];
   }
+#endif
 }
 
 - (NSString *)waypipeSocket {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  NSString *runtimeDir = WawonaPreferredSharedRuntimeDir();
+  if (runtimeDir.length > 0) {
+    NSString *display = [self waypipeDisplay];
+    if (display.length == 0) {
+      display = @"wayland-0";
+    }
+    NSString *preferred = [runtimeDir stringByAppendingPathComponent:display];
+    NSString *stored = [[NSUserDefaults standardUserDefaults]
+        stringForKey:kWawonaPrefsWaypipeSocket];
+    if (![stored isEqualToString:preferred]) {
+      [[NSUserDefaults standardUserDefaults] setObject:preferred
+                                                forKey:kWawonaPrefsWaypipeSocket];
+      [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+    return preferred;
+  }
+#endif
+
   NSString *value = [[NSUserDefaults standardUserDefaults]
       stringForKey:kWawonaPrefsWaypipeSocket];
   if (!value) {
@@ -806,7 +910,7 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 
 - (NSString *)waypipeSSHKeyPassphrase {
   // Store in Keychain for security
-  NSString *service = @"com.wawona.ssh";
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
   NSString *account = @"ssh_key_passphrase";
   
   NSDictionary *query = @{
@@ -829,7 +933,7 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 
 - (void)setWaypipeSSHKeyPassphrase:(NSString *)passphrase {
   // Store in Keychain for security
-  NSString *service = @"com.wawona.ssh";
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
   NSString *account = @"ssh_key_passphrase";
   
   // Delete existing item
@@ -854,7 +958,7 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 
 - (NSString *)waypipeSSHPassword {
   // Try Keychain first (more secure)
-  NSString *service = @"com.wawona.ssh";
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
   NSString *account = @"ssh_password";
   
   NSDictionary *query = @{
@@ -873,7 +977,8 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
   }
   
   // Fallback to NSUserDefaults if Keychain fails (e.g., missing entitlements in Simulator)
-  if (status == errSecMissingEntitlement || status == -34018) {
+  // Also check if we just got no result but have a stored preference
+  if (status != errSecSuccess) {
     NSString *fallback = [[NSUserDefaults standardUserDefaults] stringForKey:kWawonaPrefsWaypipeSSHPassword];
     return fallback ?: @"";
   }
@@ -882,8 +987,18 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
 }
 
 - (void)setWaypipeSSHPassword:(NSString *)password {
-  // Try Keychain first (more secure)
-  NSString *service = @"com.wawona.ssh";
+#if TARGET_OS_SIMULATOR
+  // Save to NSUserDefaults in Simulator where Keychain is restricted
+  if (password && password.length > 0) {
+      [[NSUserDefaults standardUserDefaults] setObject:password forKey:kWawonaPrefsWaypipeSSHPassword];
+  } else {
+      [[NSUserDefaults standardUserDefaults] removeObjectForKey:kWawonaPrefsWaypipeSSHPassword];
+  }
+  [[NSUserDefaults standardUserDefaults] synchronize];
+#endif
+
+  // Try Keychain (more secure, works on real devices)
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
   NSString *account = @"ssh_password";
   
   // Delete existing item
@@ -903,16 +1018,9 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
       (__bridge id)kSecValueData: data
     };
     OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    // Fallback to NSUserDefaults if Keychain fails (e.g., missing entitlements in Simulator)
-    if (addStatus == errSecMissingEntitlement || addStatus == -34018) {
-      [[NSUserDefaults standardUserDefaults] setObject:password forKey:kWawonaPrefsWaypipeSSHPassword];
-      [[NSUserDefaults standardUserDefaults] synchronize];
+    if (addStatus != errSecSuccess) {
+        NSLog(@"[WawonaPreferences] Keychain add failed: %d", (int)addStatus);
     }
-  } else {
-    // Also clear from NSUserDefaults fallback
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kWawonaPrefsWaypipeSSHPassword];
-    [[NSUserDefaults standardUserDefaults] synchronize];
   }
 }
 
@@ -1039,6 +1147,137 @@ NSString *const kWawonaPrefsWaypipeSecCtx = @"WaypipeSecCtx";
   [[NSUserDefaults standardUserDefaults] setObject:secCtx
                                              forKey:kWawonaPrefsWaypipeSecCtx];
   [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (BOOL)waypipeUseSSHConfig {
+  // Default to YES if not set (use SSH config from OpenSSH section by default)
+  if (![[NSUserDefaults standardUserDefaults] objectForKey:kWawonaPrefsWaypipeUseSSHConfig]) {
+    return YES;
+  }
+  return [[NSUserDefaults standardUserDefaults] boolForKey:kWawonaPrefsWaypipeUseSSHConfig];
+}
+
+- (void)setWaypipeUseSSHConfig:(BOOL)enabled {
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWawonaPrefsWaypipeUseSSHConfig];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// SSH Configuration (separate from Waypipe)
+- (NSString *)sshHost {
+  NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:kWawonaPrefsSSHHost];
+  return value ? value : @"";
+}
+
+- (void)setSshHost:(NSString *)host {
+  [[NSUserDefaults standardUserDefaults] setObject:host forKey:kWawonaPrefsSSHHost];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (NSString *)sshUser {
+  NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:kWawonaPrefsSSHUser];
+  return value ? value : @"";
+}
+
+- (void)setSshUser:(NSString *)user {
+  [[NSUserDefaults standardUserDefaults] setObject:user forKey:kWawonaPrefsSSHUser];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (NSInteger)sshAuthMethod {
+  return [[NSUserDefaults standardUserDefaults] integerForKey:kWawonaPrefsSSHAuthMethod];
+}
+
+- (void)setSshAuthMethod:(NSInteger)method {
+  [[NSUserDefaults standardUserDefaults] setInteger:method forKey:kWawonaPrefsSSHAuthMethod];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Helper methods for secure storage (keychain)
+- (NSString *)getSecureValueForKey:(NSString *)key {
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
+  NSString *account = key;
+  
+  NSDictionary *query = @{
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: service,
+    (__bridge id)kSecAttrAccount: account,
+    (__bridge id)kSecReturnData: @YES
+  };
+  
+  CFTypeRef result = NULL;
+  OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+  
+  if (status == errSecSuccess && result) {
+    NSData *data = (__bridge_transfer NSData *)result;
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  }
+  
+  // Fallback to NSUserDefaults if Keychain fails
+  NSString *fallback = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+  return fallback ?: @"";
+}
+
+- (void)setSecureValue:(NSString *)value forKey:(NSString *)key {
+#if TARGET_OS_SIMULATOR
+  // Save to NSUserDefaults in Simulator where Keychain is restricted
+  if (value && value.length > 0) {
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:key];
+  } else {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+  }
+  [[NSUserDefaults standardUserDefaults] synchronize];
+#endif
+
+  // Try Keychain (more secure, works on real devices)
+  NSString *service = @"com.aspauldingcode.wawona.ssh";
+  NSString *account = key;
+  
+  // Delete existing item
+  NSDictionary *deleteQuery = @{
+    (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService: service,
+    (__bridge id)kSecAttrAccount: account
+  };
+  SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+  
+  if (value && value.length > 0) {
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *addQuery = @{
+      (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService: service,
+      (__bridge id)kSecAttrAccount: account,
+      (__bridge id)kSecValueData: data
+    };
+    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+  }
+}
+
+- (NSString *)sshPassword {
+  // Use keychain for secure storage
+  return [self getSecureValueForKey:kWawonaPrefsSSHPassword];
+}
+
+- (void)setSshPassword:(NSString *)password {
+  [self setSecureValue:password forKey:kWawonaPrefsSSHPassword];
+}
+
+- (NSString *)sshKeyPath {
+  NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:kWawonaPrefsSSHKeyPath];
+  return value ? value : @"";
+}
+
+- (void)setSshKeyPath:(NSString *)keyPath {
+  [[NSUserDefaults standardUserDefaults] setObject:keyPath forKey:kWawonaPrefsSSHKeyPath];
+  [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (NSString *)sshKeyPassphrase {
+  // Use keychain for secure storage
+  return [self getSecureValueForKey:kWawonaPrefsSSHKeyPassphrase];
+}
+
+- (void)setSshKeyPassphrase:(NSString *)passphrase {
+  [self setSecureValue:passphrase forKey:kWawonaPrefsSSHKeyPassphrase];
 }
 
 @end

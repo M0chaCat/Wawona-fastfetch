@@ -7,6 +7,7 @@ extern bool wawona_is_egl_enabled(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "logging.h"
 
 // Define EGL extensions prototypes to use them directly
 #define EGL_EGLEXT_PROTOTYPES
@@ -75,20 +76,20 @@ int egl_buffer_handler_init(struct egl_buffer_handler *handler, struct wl_displa
     }
 
     if (handler->egl_display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "[EGL] Failed to get EGL display\n");
+        log_printf("EGL", "❌ Failed to get EGL display\n");
         return -1;
     }
 
     // 2. Initialize EGL
     EGLint major, minor;
     if (!eglInitialize(handler->egl_display, &major, &minor)) {
-        fprintf(stderr, "[EGL] Failed to initialize EGL\n");
+        log_printf("EGL", "❌ Failed to initialize EGL\n");
         return -1;
     }
-    printf("[EGL] Initialized EGL %d.%d\n", major, minor);
+    log_printf("EGL", "✓ Initialized EGL %d.%d\n", major, minor);
     
     const char *extensions = eglQueryString(handler->egl_display, EGL_EXTENSIONS);
-    printf("[EGL] Extensions: %s\n", extensions ? extensions : "NULL");
+    log_printf("EGL", "Extensions: %s\n", extensions ? extensions : "NULL");
 
     // 3. Bind Wayland Display
     // This allows creating EGLImages from Wayland buffers
@@ -99,13 +100,13 @@ int egl_buffer_handler_init(struct egl_buffer_handler *handler, struct wl_displa
         if (bindWaylandDisplay) {
             if (bindWaylandDisplay(handler->egl_display, display)) {
                 handler->display_bound = true;
-                printf("[EGL] Bound Wayland display successfully\n");
+                log_printf("EGL", "✓ Bound Wayland display successfully\n");
             } else {
-                fprintf(stderr, "[EGL] Failed to bind Wayland display\n");
+                log_printf("EGL", "❌ Failed to bind Wayland display\n");
             }
         }
     } else {
-        fprintf(stderr, "[EGL] EGL_WL_bind_wayland_display not supported\n");
+        log_printf("EGL", "⚠️ EGL_WL_bind_wayland_display not supported\n");
     }
 
     // 4. Create a context (optional, but good for verification)
@@ -130,12 +131,12 @@ int egl_buffer_handler_init(struct egl_buffer_handler *handler, struct wl_displa
         eglBindAPI(EGL_OPENGL_ES_API);
         handler->egl_context = eglCreateContext(handler->egl_display, handler->egl_config, EGL_NO_CONTEXT, context_attribs);
         if (handler->egl_context == EGL_NO_CONTEXT) {
-            fprintf(stderr, "[EGL] Failed to create EGL context\n");
+            log_printf("EGL", "❌ Failed to create EGL context\n");
         } else {
-            printf("[EGL] Created EGL context\n");
+            log_printf("EGL", "✓ Created EGL context\n");
         }
     } else {
-        fprintf(stderr, "[EGL] Failed to choose config\n");
+        log_printf("EGL", "❌ Failed to choose config\n");
     }
 
     handler->initialized = true;

@@ -52,45 +52,50 @@ static void signal_handler(int sig) {
     NSLog(@"   Rendering with Metal");
     NSLog(@"");
     
-    // Set up XDG_RUNTIME_DIR if not set (required for Wayland socket)
-    // Try /tmp on host filesystem first (shortest path), fall back to app container if needed
-    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
     NSString *runtimePath = nil;
     NSFileManager *fm = [NSFileManager defaultManager];
-    if (!runtime_dir) {
-        // Try /tmp on host filesystem first (shortest possible path: /tmp/wawona-ios/w0 = 18 bytes)
-        runtimePath = @"/tmp/wawona-ios";
-        NSError *error = nil;
-        BOOL created = [fm createDirectoryAtPath:runtimePath
-                     withIntermediateDirectories:YES
-                                      attributes:@{NSFilePosixPermissions: @0700}
-                                           error:&error];
-        if (!created && ![fm fileExistsAtPath:runtimePath]) {
-            NSLog(@"⚠️ Failed to create /tmp/wawona-ios: %@", error.localizedDescription);
-            NSLog(@"   Falling back to app container tmp directory...");
 
-            // Fall back to app's tmp directory (will be longer but should work)
-            NSString *tmpDir = NSTemporaryDirectory();
-            if (tmpDir) {
-                runtimePath = tmpDir; // Use tmp directly, no subdirectory
-                NSLog(@"   Using app tmp directory: %@", runtimePath);
-            } else {
-                NSLog(@"❌ Failed to get tmp directory");
-                return NO;
-            }
-        } else {
-            NSLog(@"✅ Using host /tmp directory: %@", runtimePath);
-        }
-        setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
-        // Set short socket name to minimize path length
-        setenv("WAYLAND_DISPLAY", "w0", 1);
-        runtime_dir = [runtimePath UTF8String];
-        NSLog(@"   Set XDG_RUNTIME_DIR to: %@", runtimePath);
-        NSLog(@"   Set WAYLAND_DISPLAY to: w0");
-    } else {
-        runtimePath = [NSString stringWithUTF8String:runtime_dir];
-        NSLog(@"   Using XDG_RUNTIME_DIR: %@", runtimePath);
+#if TARGET_OS_SIMULATOR
+    runtimePath = @"/tmp/wawona-ios";
+    NSError *tmpError = nil;
+    BOOL createdTmp = [fm createDirectoryAtPath:runtimePath
+                   withIntermediateDirectories:YES
+                                    attributes:@{NSFilePosixPermissions: @0700}
+                                         error:&tmpError];
+    if (!(createdTmp || [fm fileExistsAtPath:runtimePath])) {
+        runtimePath = nil;
     }
+#endif
+
+    if (!runtimePath) {
+        NSURL *groupURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:@"group.com.aspauldingcode.Wawona"];
+        if (groupURL) {
+            runtimePath = [groupURL.path stringByAppendingPathComponent:@"w"];
+            NSError *groupError = nil;
+            BOOL createdGroup = [fm createDirectoryAtPath:runtimePath
+                           withIntermediateDirectories:YES
+                                            attributes:@{NSFilePosixPermissions: @0700}
+                                                 error:&groupError];
+            if (!(createdGroup || [fm fileExistsAtPath:runtimePath])) {
+                runtimePath = nil;
+            }
+        }
+    }
+
+    if (!runtimePath) {
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (tmpDir) {
+            runtimePath = tmpDir;
+        } else {
+            return NO;
+        }
+    }
+
+    setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
+    setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    NSLog(@"   Using XDG_RUNTIME_DIR: %@", runtimePath);
+    NSLog(@"   Using WAYLAND_DISPLAY: wayland-0");
     
     // Verify directory exists and is writable
     BOOL isDir = NO;
@@ -115,7 +120,7 @@ static void signal_handler(int sig) {
     // Use wl_display_add_socket() with explicit name instead of wl_display_add_socket_auto()
     // to ensure we use the short socket name
     const char *wayland_display_env = getenv("WAYLAND_DISPLAY");
-    const char *socket_name = wayland_display_env ? wayland_display_env : "w0";
+    const char *socket_name = wayland_display_env ? wayland_display_env : "wayland-0";
     
     // Check path length
     NSString *socketName = [NSString stringWithUTF8String:socket_name];

@@ -9,32 +9,43 @@
 #include <wayland-server-core.h>
 
 // Wayland Client App Launcher
-// Handles discovery and launching of Wayland client applications
+// Handles discovery and launching of bundled Wayland client applications
+
+// App metadata for discovered applications
+@interface WaylandApp : NSObject
+@property (nonatomic, strong) NSString *appId;
+@property (nonatomic, strong) NSString *name;
+@property (nonatomic, strong) NSString *appDescription;
+@property (nonatomic, strong) NSString *iconPath;
+@property (nonatomic, strong) NSString *executablePath;
+@property (nonatomic, strong) NSArray<NSString *> *categories;
+@property (nonatomic, assign) BOOL isRunning;
+@property (nonatomic, assign) BOOL isBlacklisted;
+@end
 
 @interface WawonaAppScanner : NSObject
 
-@property(nonatomic, assign, readonly) struct wl_display *display;
-@property(nonatomic, strong, readonly) NSArray *availableApplications;
-@property(nonatomic, strong, readonly) NSArray *runningApplications;
+@property (nonatomic, assign, readonly) struct wl_display *display;
+@property (nonatomic, strong, readonly) NSArray<WaylandApp *> *availableApplications;
+@property (nonatomic, strong, readonly) NSArray<NSDictionary *> *runningApplications;
 
 - (instancetype)initWithDisplay:(struct wl_display *)display;
+
+// Application discovery
 - (void)scanForApplications;
+- (void)refreshApplicationList;
+
+// Application launching
 - (BOOL)launchApplication:(NSString *)appId;
+- (BOOL)launchApplicationAtPath:(NSString *)executablePath;
 - (void)terminateApplication:(NSString *)appId;
 - (BOOL)isApplicationRunning:(NSString *)appId;
+
 // Environment setup
 - (void)setupWaylandEnvironment;
 - (NSString *)waylandSocketPath;
 
-@end
+// Bundled application directories
++ (NSArray<NSString *> *)bundledApplicationSearchPaths;
 
-// App metadata
-@interface WaylandApp : NSObject
-@property(nonatomic, strong) NSString *appId;
-@property(nonatomic, strong) NSString *name;
-@property(nonatomic, strong) NSString *description;
-@property(nonatomic, strong) NSString *iconPath;
-@property(nonatomic, strong) NSString *executablePath;
-@property(nonatomic, strong) NSArray *categories;
-@property(nonatomic, assign) BOOL isRunning;
 @end

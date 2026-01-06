@@ -55,6 +55,14 @@ extern NSString *const kWawonaPrefsWaypipeVsock;
 extern NSString *const kWawonaPrefsWaypipeXwls;
 extern NSString *const kWawonaPrefsWaypipeTitlePrefix;
 extern NSString *const kWawonaPrefsWaypipeSecCtx;
+// SSH configuration keys (separate from Waypipe)
+extern NSString *const kWawonaPrefsSSHHost;
+extern NSString *const kWawonaPrefsSSHUser;
+extern NSString *const kWawonaPrefsSSHAuthMethod;
+extern NSString *const kWawonaPrefsSSHPassword;
+extern NSString *const kWawonaPrefsSSHKeyPath;
+extern NSString *const kWawonaPrefsSSHKeyPassphrase;
+extern NSString *const kWawonaPrefsWaypipeUseSSHConfig;
 
 @interface WawonaPreferencesManager : NSObject
 
@@ -188,6 +196,22 @@ extern NSString *const kWawonaPrefsWaypipeSecCtx;
 - (void)setWaypipeTitlePrefix:(NSString *)prefix;
 - (NSString *)waypipeSecCtx;
 - (void)setWaypipeSecCtx:(NSString *)secCtx;
+- (BOOL)waypipeUseSSHConfig;
+- (void)setWaypipeUseSSHConfig:(BOOL)enabled;
+
+// SSH Configuration (separate from Waypipe)
+- (NSString *)sshHost;
+- (void)setSshHost:(NSString *)host;
+- (NSString *)sshUser;
+- (void)setSshUser:(NSString *)user;
+- (NSInteger)sshAuthMethod; // 0 = password, 1 = public key
+- (void)setSshAuthMethod:(NSInteger)method;
+- (NSString *)sshPassword;
+- (void)setSshPassword:(NSString *)password;
+- (NSString *)sshKeyPath;
+- (void)setSshKeyPath:(NSString *)keyPath;
+- (NSString *)sshKeyPassphrase;
+- (void)setSshKeyPassphrase:(NSString *)passphrase;
 
 // Reset to defaults
 - (void)resetToDefaults;

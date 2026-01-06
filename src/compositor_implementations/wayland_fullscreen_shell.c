@@ -1,8 +1,8 @@
 #include "wayland_fullscreen_shell.h"
-#include "fullscreen-shell-unstable-v1-protocol.h"
+#include "../protocols/fullscreen-shell-unstable-v1-protocol.h"
 #include <stdlib.h>
 #include <stdio.h>
-#include "logging.h" // Assuming logging.h exists for log_printf
+#include "../logging/logging.h"
 
 // --- Forward Declarations ---
 // Need to handle surface role assignment if possible, or just track it.
@@ -32,7 +32,7 @@ fullscreen_shell_present_surface(struct wl_client *client, struct wl_resource *r
     // For Wawona, this might mean just setting the surface as the "main" surface or similar.
     // Weston uses this to map its surface.
     
-    log_printf("[FULLSCREEN-SHELL] ", "present_surface called (surface=%p, method=%u)\n", surface_resource, method);
+    log_printf("FULLSCREEN", "present_surface called (surface=%p, method=%u)\n", surface_resource, method);
     
     if (surface_resource) {
         // If we have a surface, we should probably map it.
@@ -57,7 +57,7 @@ fullscreen_shell_present_surface_for_mode(struct wl_client *client, struct wl_re
     struct wl_resource *feedback_resource;
     (void)resource;
     (void)output_resource;
-    log_printf("[FULLSCREEN-SHELL] ", "present_surface_for_mode called (surface=%p, framerate=%d)\n", surface_resource, framerate);
+    log_printf("FULLSCREEN", "present_surface_for_mode called (surface=%p, framerate=%d)\n", surface_resource, framerate);
     
     feedback_resource = 
         wl_resource_create(client, &zwp_fullscreen_shell_mode_feedback_v1_interface, 1, feedback_id);
@@ -97,10 +97,10 @@ bind_fullscreen_shell(struct wl_client *client, void *data, uint32_t version, ui
     // CRITICAL: Advertise ARBITRARY_MODES capability immediately upon binding!
     // This is what Weston checks for to determine arbitrary resolution support.
     // Must be sent before client queries capabilities.
-    log_printf("[FULLSCREEN-SHELL] ", "Binding client %p, sending ARBITRARY_MODES capability (value=%u)\n", 
+    log_printf("FULLSCREEN", "Binding client %p, sending ARBITRARY_MODES capability (value=%u)\n", 
                (void *)client, ZWP_FULLSCREEN_SHELL_V1_CAPABILITY_ARBITRARY_MODES);
     zwp_fullscreen_shell_v1_send_capability(resource, ZWP_FULLSCREEN_SHELL_V1_CAPABILITY_ARBITRARY_MODES);
-    log_printf("[FULLSCREEN-SHELL] ", "ARBITRARY_MODES capability sent successfully\n");
+    log_printf("FULLSCREEN", "ARBITRARY_MODES capability sent successfully\n");
 }
 
 void
@@ -112,6 +112,6 @@ wayland_fullscreen_shell_init(struct wl_display *display)
     shell->display = display;
     shell->global = wl_global_create(display, &zwp_fullscreen_shell_v1_interface, 1, shell, bind_fullscreen_shell);
     
-    log_printf("[FULLSCREEN-SHELL] ", "Initialized zwp_fullscreen_shell_v1\n");
+    log_printf("FULLSCREEN", "✓ Initialized zwp_fullscreen_shell_v1\n");
 }
 

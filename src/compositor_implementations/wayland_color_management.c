@@ -75,10 +75,21 @@ bind_color_manager(struct wl_client *client, void *data, uint32_t version, uint3
 }
 #endif
 
+static void
+bind_color_manager_macos(struct wl_client *client, void *data, uint32_t version, uint32_t id)
+{
+    struct wp_color_manager_impl *manager = data;
+    struct wl_resource *resource = wl_resource_create(client, &wp_color_manager_v1_interface, (int)version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &color_manager_impl, manager, wp_color_manager_destroy_resource);
+}
+
 struct wp_color_manager_impl *
 wp_color_manager_create(struct wl_display *display, struct wl_output_impl *output)
 {
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     struct wp_color_manager_impl *manager = calloc(1, sizeof(struct wp_color_manager_impl));
     if (!manager) return NULL;
 
@@ -88,16 +99,16 @@ wp_color_manager_create(struct wl_display *display, struct wl_output_impl *outpu
     manager->display_color_space = get_display_color_space();
     manager->hdr_supported = detect_hdr_support();
     
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     manager->global = wl_global_create(display, &wp_color_manager_v1_interface, 1, manager, bind_color_manager);
+#else
+    manager->global = wl_global_create(display, &wp_color_manager_v1_interface, 1, manager, bind_color_manager_macos);
+#endif
     if (!manager->global) {
         free(manager);
         return NULL;
     }
     return manager;
-#else
-    (void)display; (void)output;
-    return NULL;
-#endif
 }
 
 void

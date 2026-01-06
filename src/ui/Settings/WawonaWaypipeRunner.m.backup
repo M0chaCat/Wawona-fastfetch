@@ -1,0 +1,1059 @@
+#import "WawonaWaypipeRunner.h"
+#import <dlfcn.h> // For dlopen
+#import <errno.h>
+#import <fcntl.h>
+#import <objc/runtime.h> // For runtime inspection
+#import <spawn.h>
+#include <stdlib.h>
+#import <sys/select.h>
+#import <sys/socket.h>
+#import <sys/stat.h>
+#import <sys/syslimits.h> // For PATH_MAX
+#import <sys/un.h>
+#import <sys/wait.h>
+#import <unistd.h> // For getcwd, chdir
+
+#if TARGET_OS_IPHONE
+// Import Foundation for NSExtension API
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+// HIAHKernel handles process spawning via extension
+#import <HIAHKernel/HIAHKernel.h>
+
+// We'll use dynamic lookup for NSExtension to avoid linking issues and ensure
+// correct framework loading
+@protocol NSExtensionProtocol <NSObject>
+- (void)beginExtensionRequestWithInputItems:(NSArray *)inputItems
+                                 completion:
+                                     (void (^)(NSUUID *requestIdentifier))
+                                         completion;
+// Helper for dynamic lookup of class method (treated as instance method on
+// class object)
+- (void)extensionsWithMatchingAttributes:(NSDictionary *)attributes
+                              completion:
+                                  (void (^)(NSArray *extensions,
+                                            NSError *error))completionHandler;
+@end
+
+#else
+// macOS
+#import <AppKit/AppKit.h>
+#endif
+
+extern char **environ;
+
+// Emoji prefix/suffix for waypipe logs to make them visually distinct
+#define WAYPIPE_EMOJI @"🇺🇸"
+
+@interface WawonaWaypipeRunner ()
+@property(nonatomic, assign) pid_t currentPid;
+@property(nonatomic, assign) int stdinWriteFd;          // For password input
+@property(nonatomic, strong) NSFileHandle *stdinHandle; // For extension input
+@property(nonatomic, strong)
+    NSString *sshPassword; // Store password for prompt handling
+@property(nonatomic, strong) id currentExtension; // Keep extension alive
+@property(nonatomic, strong) NSDate *lastWaypipeActivityAt;
+@property(nonatomic, strong) dispatch_source_t extensionHangMonitor;
+@property(nonatomic, strong) NSDictionary *lastWaypipeEnv;
+@property(nonatomic, strong) NSArray<NSString *> *lastWaypipeArgs;
+- (NSString *)effectiveRemoteCommand:(WawonaPreferencesManager *)prefs;
+@end
+
+#if TARGET_OS_IPHONE
+@implementation WawonaWaypipeRunner
+
++ (instancetype)sharedRunner {
+  static WawonaWaypipeRunner *shared = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    shared = [[self alloc] init];
+  });
+  return shared;
+}
+
+- (NSString *)findSSHBinary {
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+
+  // For --ssh-bin, waypipe needs the actual executable (not .dylib)
+  // waypipe will spawn SSH as a real process with pipes
+  NSArray<NSString *> *candidates = @[
+    [bundlePath stringByAppendingPathComponent:@"bin/ssh"],
+    [bundlePath stringByAppendingPathComponent:@"ssh"],
+    // Fallback to .dylib only if executable not found (shouldn't happen)
+    [bundlePath stringByAppendingPathComponent:@"bin/ssh.dylib"],
+    [bundlePath stringByAppendingPathComponent:@"ssh.dylib"],
+  ];
+
+  for (NSString *candidate in candidates) {
+    if ([fm fileExistsAtPath:candidate]) {
+      // Prefer executable files, but if not code-signed, still return it
+      // The posix_spawn hook will handle .dylib -> executable conversion if
+      // needed
+      if ([candidate hasSuffix:@".dylib"]) {
+        // Check if corresponding executable exists
+        NSString *executableCandidate =
+            [candidate stringByReplacingOccurrencesOfString:@".dylib"
+                                                 withString:@""];
+        if ([fm fileExistsAtPath:executableCandidate]) {
+          return executableCandidate;
+        }
+      }
+      return candidate;
+    }
+  }
+
+#if TARGET_OS_SIMULATOR
+  if ([fm isExecutableFileAtPath:@"/usr/bin/ssh"]) {
+    return @"/usr/bin/ssh";
+  }
+#endif
+
+  return nil;
+}
+
+- (NSString *)findWaypipeBinary {
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+
+  NSMutableArray *bundleCandidates = [NSMutableArray array];
+
+#if TARGET_OS_IPHONE
+  // iOS paths (flat bundle structure)
+  [bundleCandidates
+      addObject:[bundlePath
+                    stringByAppendingPathComponent:@"bin/waypipe.dylib"]];
+  [bundleCandidates
+      addObject:[bundlePath stringByAppendingPathComponent:@"waypipe.dylib"]];
+  [bundleCandidates
+      addObject:[bundlePath stringByAppendingPathComponent:@"bin/waypipe"]];
+  [bundleCandidates
+      addObject:[bundlePath stringByAppendingPathComponent:@"waypipe"]];
+  [bundleCandidates
+      addObject:[bundlePath stringByAppendingPathComponent:@"waypipe-bin"]];
+#else
+  // macOS paths (Contents/MacOS structure)
+  [bundleCandidates
+      addObject:[bundlePath
+                    stringByAppendingPathComponent:@"Contents/MacOS/waypipe"]];
+  [bundleCandidates
+      addObject:[bundlePath stringByAppendingPathComponent:
+                                @"Contents/Resources/bin/waypipe"]];
+  // Also check flat paths in case running from nix-built executable directly
+  NSString *execPath = [[NSBundle mainBundle] executablePath];
+  NSString *execDir = [execPath stringByDeletingLastPathComponent];
+  [bundleCandidates
+      addObject:[execDir stringByAppendingPathComponent:@"waypipe"]];
+  [bundleCandidates
+      addObject:[execDir stringByAppendingPathComponent:@"../bin/waypipe"]];
+#endif
+
+  for (NSString *candidate in bundleCandidates) {
+    if (candidate.length == 0)
+      continue;
+    if ([fm fileExistsAtPath:candidate]) {
+      NSLog(@"[WaypipeRunner] Found waypipe at: %@", candidate);
+      return candidate;
+    }
+  }
+
+  NSLog(@"[WaypipeRunner] Waypipe not found in any of: %@", bundleCandidates);
+  return nil;
+}
+
+- (NSArray<NSString *> *)buildWaypipeArguments:
+    (WawonaPreferencesManager *)prefs {
+  NSMutableArray *args = [NSMutableArray array];
+
+#if TARGET_OS_IPHONE
+  // Compression
+  if (prefs.waypipeCompress && prefs.waypipeCompress.length > 0) {
+    NSString *compressValue = prefs.waypipeCompress;
+    // Add compression level if specified (but not for 'none' which doesn't
+    // support levels)
+    if (![compressValue isEqualToString:@"none"] &&
+        prefs.waypipeCompressLevel && prefs.waypipeCompressLevel.length > 0) {
+      compressValue = [NSString
+          stringWithFormat:@"%@=%@", compressValue, prefs.waypipeCompressLevel];
+    }
+    [args addObject:@"--compress"];
+    [args addObject:compressValue];
+  }
+
+  // Socket path
+  NSString *socketPath = prefs.waypipeSocket;
+  NSString *runtimeDir = prefs.waylandSocketDir;
+  if (runtimeDir.length > 0) {
+    NSString *display = prefs.waypipeDisplay;
+    if (display.length == 0)
+      display = @"wayland-0";
+    NSString *preferred = [runtimeDir stringByAppendingPathComponent:display];
+    if (socketPath.length == 0 || socketPath.length > 90 ||
+        ![socketPath hasPrefix:runtimeDir]) {
+      socketPath = preferred;
+    }
+  }
+  if (socketPath.length > 0) {
+    [args addObject:@"--socket"];
+    [args addObject:socketPath];
+  }
+
+  // Display
+  if (prefs.waypipeDisplay && prefs.waypipeDisplay.length > 0) {
+    [args addObject:@"--display"];
+    [args addObject:prefs.waypipeDisplay];
+  }
+
+  // Debug mode (only if enabled)
+  if (prefs.waypipeDebug) {
+    [args addObject:@"--debug"];
+  }
+
+  // No GPU
+  if (prefs.waypipeNoGpu) {
+    [args addObject:@"--no-gpu"];
+  }
+
+  // One-shot
+  BOOL oneshotEnabled = prefs.waypipeOneshot;
+  if (oneshotEnabled) {
+    [args addObject:@"--oneshot"];
+  }
+
+  // Unlink socket
+  if (prefs.waypipeUnlinkSocket) {
+    [args addObject:@"--unlink-socket"];
+  }
+
+  // VSock
+  if (prefs.waypipeVsock) {
+    [args addObject:@"--vsock"];
+  }
+
+  // XWayland (cannot be used with --oneshot)
+  BOOL xwlsEnabled = prefs.waypipeXwls;
+  if (xwlsEnabled && oneshotEnabled) {
+    // Conflict: --xwls cannot be used with --oneshot
+    // According to waypipe error: "Waypipe cannot run xwayland-satellite
+    // (option --xwls) in oneshot mode" We'll disable --xwls if --oneshot is
+    // enabled (oneshot takes precedence)
+    NSLog(@"%@ [Runner] WARNING: --xwls cannot be used with --oneshot, "
+          @"disabling --xwls",
+          WAYPIPE_EMOJI);
+    xwlsEnabled = NO;
+  }
+  if (xwlsEnabled) {
+    [args addObject:@"--xwls"];
+  }
+
+  // Threads
+  if (prefs.waypipeThreads && prefs.waypipeThreads.length > 0) {
+    [args addObject:@"--threads"];
+    [args addObject:prefs.waypipeThreads];
+  }
+
+  // Title prefix
+  if (prefs.waypipeTitlePrefix && prefs.waypipeTitlePrefix.length > 0) {
+    [args addObject:@"--title-prefix"];
+    [args addObject:prefs.waypipeTitlePrefix];
+  }
+
+  // Security context
+  if (prefs.waypipeSecCtx && prefs.waypipeSecCtx.length > 0) {
+    [args addObject:@"--secctx"];
+    [args addObject:prefs.waypipeSecCtx];
+  }
+
+  // Video codec options
+  if (prefs.waypipeVideo && prefs.waypipeVideo.length > 0 &&
+      ![prefs.waypipeVideo isEqualToString:@"none"]) {
+    NSMutableArray *videoOptions = [NSMutableArray array];
+    [videoOptions addObject:prefs.waypipeVideo];
+
+    // Add encoding option
+    if (prefs.waypipeVideoEncoding && prefs.waypipeVideoEncoding.length > 0) {
+      [videoOptions addObject:prefs.waypipeVideoEncoding];
+    }
+
+    // Add decoding option
+    if (prefs.waypipeVideoDecoding && prefs.waypipeVideoDecoding.length > 0) {
+      [videoOptions addObject:prefs.waypipeVideoDecoding];
+    }
+
+    // Add bits per frame
+    if (prefs.waypipeVideoBpf && prefs.waypipeVideoBpf.length > 0) {
+      [videoOptions
+          addObject:[NSString
+                        stringWithFormat:@"bpf=%@", prefs.waypipeVideoBpf]];
+    }
+
+    if (videoOptions.count > 0) {
+      [args addObject:@"--video"];
+      [args addObject:[videoOptions componentsJoinedByString:@","]];
+    }
+  }
+#endif
+
+  // Check if we should use SSH config from OpenSSH section
+  BOOL useSSHConfig = prefs.waypipeUseSSHConfig;
+  NSString *sshHost = useSSHConfig ? prefs.sshHost : prefs.waypipeSSHHost;
+  NSString *sshUser = useSSHConfig ? prefs.sshUser : prefs.waypipeSSHUser;
+  NSInteger sshAuthMethod =
+      useSSHConfig ? prefs.sshAuthMethod : prefs.waypipeSSHAuthMethod;
+  NSString *sshPassword =
+      useSSHConfig ? prefs.sshPassword : prefs.waypipeSSHPassword;
+  NSString *sshKeyPath =
+      useSSHConfig ? prefs.sshKeyPath : prefs.waypipeSSHKeyPath;
+
+  // Only use SSH if we have a host configured (and optionally user)
+  // Don't use SSH if waypipeSSHEnabled is true but no config is set up
+  BOOL shouldUseSSH = NO;
+  if (useSSHConfig) {
+    // If using SSH config, require at least host to be set
+    shouldUseSSH = (sshHost.length > 0);
+  } else {
+    // If using waypipe SSH config, require at least host to be set
+    shouldUseSSH = (prefs.waypipeSSHEnabled && sshHost.length > 0);
+  }
+
+  // Waypipe requires SSH for remote execution - validate SSH is configured
+  // According to waypipe man page, valid modes are:
+  // - waypipe ssh [ssh options] destination command...
+  // - waypipe client
+  // - waypipe server -- command...
+  // Since we're doing remote execution, we need SSH mode
+  // However, for preview purposes, we still want to show the command structure
+  // even if SSH isn't configured, so we'll add a placeholder
+
+  if (shouldUseSSH) {
+#if TARGET_OS_IPHONE
+    NSString *sshPath = [self findSSHBinary];
+    if (sshPath.length > 0) {
+      [args addObject:@"--ssh-bin"];
+      [args addObject:sshPath];
+    }
+#endif
+    [args addObject:@"ssh"];
+
+#if TARGET_OS_IPHONE
+    [args addObject:@"-vvv"];
+    [args addObject:@"-o"];
+    [args addObject:@"StrictHostKeyChecking=no"];
+    [args addObject:@"-o"];
+    [args addObject:@"UserKnownHostsFile=/dev/null"];
+    [args addObject:@"-o"];
+    [args addObject:@"ConnectTimeout=10"];
+    [args addObject:@"-o"];
+    [args addObject:@"NumberOfPasswordPrompts=1"];
+    [args addObject:@"-o"];
+    [args addObject:@"ServerAliveInterval=5"];
+    [args addObject:@"-o"];
+    [args addObject:@"ServerAliveCountMax=3"];
+    [args addObject:@"-o"];
+    [args addObject:@"LogLevel=DEBUG3"];
+    [args addObject:@"-4"];
+    [args addObject:@"-o"];
+    [args addObject:@"ControlMaster=no"];
+    [args addObject:@"-o"];
+    [args addObject:@"ControlPath=none"];
+
+    if (sshPassword.length > 0) {
+      [args addObject:@"-o"];
+      [args
+          addObject:@"PreferredAuthentications=password,keyboard-interactive"];
+      [args addObject:@"-o"];
+      [args addObject:@"PubkeyAuthentication=no"];
+    } else if (sshKeyPath.length > 0) {
+      [args addObject:@"-i"];
+      [args addObject:sshKeyPath];
+      [args addObject:@"-o"];
+      [args addObject:@"PreferredAuthentications=publickey"];
+    }
+#endif
+
+    NSString *sshTarget = nil;
+    if (sshUser.length > 0 && sshHost.length > 0) {
+      sshTarget = [NSString stringWithFormat:@"%@@%@", sshUser, sshHost];
+    } else if (sshHost.length > 0) {
+      sshTarget = sshHost;
+    }
+
+    if (sshTarget && sshTarget.length > 0) {
+      [args addObject:sshTarget];
+    }
+  } else {
+    // For preview: show placeholder if SSH not configured
+    [args addObject:@"ssh"];
+    [args addObject:@"[SSH_HOST_NOT_CONFIGURED]"];
+  }
+
+  // Remote command (always add for preview, even if SSH not configured)
+  NSString *remoteCommand = [self effectiveRemoteCommand:prefs];
+  if (prefs.waypipeLoginShell && remoteCommand.length > 0) {
+    [args addObject:@"sh"];
+    [args addObject:@"-lc"];
+    [args addObject:remoteCommand];
+  } else if (remoteCommand.length > 0) {
+    [args addObject:remoteCommand];
+  } else {
+    // For preview: show placeholder if no command configured
+    [args addObject:@"[REMOTE_COMMAND_NOT_SET]"];
+  }
+
+  return args;
+}
+
+- (NSString *)effectiveRemoteCommand:(WawonaPreferencesManager *)prefs {
+  if (prefs.waypipeCustomScript.length > 0)
+    return prefs.waypipeCustomScript;
+  return prefs.waypipeRemoteCommand;
+}
+
+- (NSString *)generateWaypipePreviewString:(WawonaPreferencesManager *)prefs {
+  NSString *bin = [self findWaypipeBinary];
+  if (!bin)
+    bin = @"waypipe";
+  NSArray *args = [self buildWaypipeArguments:prefs];
+
+  // Check if SSH is configured for proper validation message
+  BOOL useSSHConfig = prefs.waypipeUseSSHConfig;
+  NSString *sshHost = useSSHConfig ? prefs.sshHost : prefs.waypipeSSHHost;
+  BOOL sshConfigured = (sshHost.length > 0);
+
+  // Check for --xwls and --oneshot conflict
+  BOOL hasOneshot = prefs.waypipeOneshot;
+  BOOL hasXwls = prefs.waypipeXwls;
+  BOOL hasConflict = (hasOneshot && hasXwls);
+
+  NSString *cmdString = [NSString
+      stringWithFormat:@"%@ %@", bin, [args componentsJoinedByString:@" "]];
+
+  NSMutableArray *warnings = [NSMutableArray array];
+
+  // Add warning if SSH not configured
+  if (!sshConfigured) {
+    [warnings addObject:@"⚠️ Warning: SSH Host not configured. Please set SSH "
+                        @"Host in Settings."];
+  }
+
+  // Add warning if --xwls and --oneshot conflict exists
+  if (hasConflict) {
+    [warnings addObject:@"⚠️ Warning: --xwls cannot be used with --oneshot. "
+                        @"--xwls will be disabled when running."];
+  }
+
+  if (warnings.count > 0) {
+    cmdString =
+        [NSString stringWithFormat:@"%@\n\n%@", cmdString,
+                                   [warnings componentsJoinedByString:@"\n"]];
+  }
+
+  return cmdString;
+}
+
+- (void)launchWaypipe:(WawonaPreferencesManager *)prefs {
+#if TARGET_OS_IPHONE
+  [self launchWaypipeViaExtension:prefs];
+  return;
+#else
+  // macOS implementation using NSTask
+  [self launchWaypipeViaNSTask:prefs];
+#endif
+}
+
+- (void)stopWaypipe {
+  if (self.currentPid > 0) {
+    NSLog(@"%@ [Runner] Stopping waypipe process (PID: %d)", WAYPIPE_EMOJI,
+          self.currentPid);
+
+    // First try SIGTERM for graceful shutdown
+    kill(self.currentPid, SIGTERM);
+
+    // Give it a moment to terminate gracefully
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          // Check if still running and force kill if necessary
+          if (kill(self.currentPid, 0) == 0) {
+            NSLog(@"%@ [Runner] Waypipe didn't terminate gracefully, sending "
+                  @"SIGKILL",
+                  WAYPIPE_EMOJI);
+            kill(self.currentPid, SIGKILL);
+          }
+        });
+
+    // Close stdin if open
+    if (self.stdinWriteFd > 0) {
+      close(self.stdinWriteFd);
+      self.stdinWriteFd = -1;
+    }
+
+    self.currentPid = 0;
+  } else {
+    NSLog(@"%@ [Runner] No waypipe process to stop", WAYPIPE_EMOJI);
+  }
+}
+#endif
+
+#if !TARGET_OS_IPHONE
+- (void)launchWaypipeViaNSTask:(WawonaPreferencesManager *)prefs {
+  NSString *waypipePath = [self findWaypipeBinary];
+
+  if (!waypipePath) {
+    NSLog(@"%@ [Runner macOS] ERROR: Waypipe binary not found in app bundle",
+          WAYPIPE_EMOJI);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = @"Waypipe Not Found";
+      alert.informativeText =
+          @"Could not find bundled waypipe binary.\n\nThis is a build error - "
+          @"waypipe should be included in the Wawona application.";
+      alert.alertStyle = NSAlertStyleCritical;
+      [alert addButtonWithTitle:@"OK"];
+      [alert runModal];
+    });
+    return;
+  }
+
+  NSLog(@"%@ [Runner macOS] Using waypipe at: %@", WAYPIPE_EMOJI, waypipePath);
+
+  NSArray *args = [self buildWaypipeArgumentsForMacOS:prefs];
+
+  if (args.count == 0) {
+    NSLog(@"%@ [Runner macOS] ERROR: SSH not configured", WAYPIPE_EMOJI);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = @"SSH Not Configured";
+      alert.informativeText =
+          @"Waypipe requires SSH configuration.\n\nPlease configure SSH Host "
+          @"in Settings:\n- OpenSSH section (if 'Use SSH Config' is "
+          @"enabled)\n- Or set the Remote Command";
+      alert.alertStyle = NSAlertStyleWarning;
+      [alert addButtonWithTitle:@"OK"];
+      [alert runModal];
+    });
+    return;
+  }
+
+  NSLog(@"%@ [Runner macOS] Arguments: %@", WAYPIPE_EMOJI, args);
+
+  // Set up environment
+  NSMutableDictionary *env =
+      [[[NSProcessInfo processInfo] environment] mutableCopy];
+  NSString *runtimeDir = prefs.waylandSocketDir;
+  if (!runtimeDir || runtimeDir.length == 0) {
+    runtimeDir = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
+  }
+  env[@"XDG_RUNTIME_DIR"] = runtimeDir;
+
+  NSString *display = prefs.waypipeDisplay;
+  if (!display || display.length == 0) {
+    display = @"wayland-0";
+  }
+  env[@"WAYLAND_DISPLAY"] = display;
+
+  // Get SSH password for sshpass
+  BOOL useSSHConfig = prefs.waypipeUseSSHConfig;
+  NSString *sshPassword =
+      useSSHConfig ? prefs.sshPassword : prefs.waypipeSSHPassword;
+
+  // Check for sshpass (needed for password auth on macOS)
+  NSString *sshpassPath = nil;
+  if (sshPassword.length > 0) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *execPath = [[NSBundle mainBundle] executablePath];
+    NSString *execDir = [execPath stringByDeletingLastPathComponent];
+    // Look for bundled sshpass only - no Homebrew fallback
+    NSArray *sshpassPaths = @[
+      [bundlePath stringByAppendingPathComponent:@"Contents/MacOS/sshpass"],
+      [bundlePath
+          stringByAppendingPathComponent:@"Contents/Resources/bin/sshpass"],
+      [bundlePath stringByAppendingPathComponent:@"sshpass"],
+      [execDir stringByAppendingPathComponent:@"sshpass"],
+      [execDir stringByAppendingPathComponent:@"../bin/sshpass"]
+    ];
+    for (NSString *path in sshpassPaths) {
+      if ([fm isExecutableFileAtPath:path]) {
+        sshpassPath = path;
+        break;
+      }
+    }
+
+    if (sshpassPath) {
+      env[@"SSHPASS"] = sshPassword;
+    }
+  }
+
+  // Build final command
+  NSTask *task = [[NSTask alloc] init];
+
+  if (sshpassPath && sshPassword.length > 0) {
+    // Use sshpass to provide password
+    task.launchPath = sshpassPath;
+    NSMutableArray *sshpassArgs =
+        [NSMutableArray arrayWithObjects:@"-e", waypipePath, nil];
+    [sshpassArgs addObjectsFromArray:args];
+    task.arguments = sshpassArgs;
+    NSLog(@"%@ [Runner macOS] Using sshpass for password auth", WAYPIPE_EMOJI);
+  } else {
+    task.launchPath = waypipePath;
+    task.arguments = args;
+  }
+
+  task.environment = env;
+
+  // Set up output handling
+  NSPipe *outputPipe = [NSPipe pipe];
+  NSPipe *errorPipe = [NSPipe pipe];
+  task.standardOutput = outputPipe;
+  task.standardError = errorPipe;
+
+  __weak typeof(self) weakSelf = self;
+
+  // Read output asynchronously
+  outputPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+    NSData *data = [handle availableData];
+    if (data.length > 0) {
+      NSString *output =
+          [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      NSLog(@"%@ [waypipe stdout] %@", WAYPIPE_EMOJI, output);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if ([weakSelf.delegate
+                respondsToSelector:@selector(runnerDidReadData:)]) {
+          [weakSelf.delegate runnerDidReadData:data];
+        }
+      });
+    }
+  };
+
+  errorPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
+    NSData *data = [handle availableData];
+    if (data.length > 0) {
+      NSString *output =
+          [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      NSLog(@"%@ [waypipe stderr] %@", WAYPIPE_EMOJI, output);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if ([weakSelf.delegate
+                respondsToSelector:@selector(runnerDidReadData:)]) {
+          [weakSelf.delegate runnerDidReadData:data];
+        }
+      });
+    }
+  };
+
+  task.terminationHandler = ^(NSTask *terminatedTask) {
+    int exitCode = terminatedTask.terminationStatus;
+    NSLog(@"%@ [Runner macOS] Waypipe exited with code: %d", WAYPIPE_EMOJI,
+          exitCode);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if ([weakSelf.delegate
+              respondsToSelector:@selector(runnerDidFinishWithExitCode:)]) {
+        [weakSelf.delegate runnerDidFinishWithExitCode:exitCode];
+      }
+    });
+  };
+
+  NSError *error = nil;
+  [task launchAndReturnError:&error];
+
+  if (error) {
+    NSLog(@"%@ [Runner macOS] Failed to launch waypipe: %@", WAYPIPE_EMOJI,
+          error);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = @"Failed to Launch Waypipe";
+      alert.informativeText =
+          [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+      alert.alertStyle = NSAlertStyleCritical;
+      [alert addButtonWithTitle:@"OK"];
+      [alert runModal];
+    });
+    return;
+  }
+
+  self.currentPid = task.processIdentifier;
+  NSLog(@"%@ [Runner macOS] Waypipe launched with PID: %d", WAYPIPE_EMOJI,
+        self.currentPid);
+}
+
+- (NSArray<NSString *> *)buildWaypipeArgumentsForMacOS:
+    (WawonaPreferencesManager *)prefs {
+  NSMutableArray *args = [NSMutableArray array];
+
+  // Compression
+  if (prefs.waypipeCompress && prefs.waypipeCompress.length > 0 &&
+      ![prefs.waypipeCompress isEqualToString:@"none"]) {
+    NSString *compressValue = prefs.waypipeCompress;
+    if (prefs.waypipeCompressLevel && prefs.waypipeCompressLevel.length > 0) {
+      compressValue = [NSString
+          stringWithFormat:@"%@=%@", compressValue, prefs.waypipeCompressLevel];
+    }
+    [args addObject:@"--compress"];
+    [args addObject:compressValue];
+  }
+
+  // Socket path
+  NSString *runtimeDir = prefs.waylandSocketDir;
+  if (!runtimeDir || runtimeDir.length == 0) {
+    runtimeDir = [NSString stringWithFormat:@"/tmp/wawona-%d", getuid()];
+  }
+  NSString *display = prefs.waypipeDisplay;
+  if (!display || display.length == 0) {
+    display = @"wayland-0";
+  }
+  NSString *socketPath = [runtimeDir stringByAppendingPathComponent:display];
+  [args addObject:@"--socket"];
+  [args addObject:socketPath];
+
+  // Debug mode
+  if (prefs.waypipeDebug) {
+    [args addObject:@"--debug"];
+  }
+
+  // No GPU
+  if (prefs.waypipeNoGpu) {
+    [args addObject:@"--no-gpu"];
+  }
+
+  // One-shot
+  BOOL oneshotEnabled = prefs.waypipeOneshot;
+  if (oneshotEnabled) {
+    [args addObject:@"--oneshot"];
+  }
+
+  // Unlink socket
+  if (prefs.waypipeUnlinkSocket) {
+    [args addObject:@"--unlink-socket"];
+  }
+
+  // Threads
+  if (prefs.waypipeThreads && prefs.waypipeThreads.length > 0 &&
+      ![prefs.waypipeThreads isEqualToString:@"0"]) {
+    [args addObject:@"--threads"];
+    [args addObject:prefs.waypipeThreads];
+  }
+
+  // Title prefix
+  if (prefs.waypipeTitlePrefix && prefs.waypipeTitlePrefix.length > 0) {
+    [args addObject:@"--title-prefix"];
+    [args addObject:prefs.waypipeTitlePrefix];
+  }
+
+  // Video codec options
+  if (prefs.waypipeVideo && prefs.waypipeVideo.length > 0 &&
+      ![prefs.waypipeVideo isEqualToString:@"none"]) {
+    NSMutableArray *videoOptions = [NSMutableArray array];
+    [videoOptions addObject:prefs.waypipeVideo];
+
+    if (prefs.waypipeVideoEncoding && prefs.waypipeVideoEncoding.length > 0) {
+      [videoOptions addObject:prefs.waypipeVideoEncoding];
+    }
+    if (prefs.waypipeVideoDecoding && prefs.waypipeVideoDecoding.length > 0) {
+      [videoOptions addObject:prefs.waypipeVideoDecoding];
+    }
+    if (prefs.waypipeVideoBpf && prefs.waypipeVideoBpf.length > 0) {
+      [videoOptions
+          addObject:[NSString
+                        stringWithFormat:@"bpf=%@", prefs.waypipeVideoBpf]];
+    }
+
+    [args addObject:@"--video"];
+    [args addObject:[videoOptions componentsJoinedByString:@","]];
+  }
+
+  // SSH configuration
+  BOOL useSSHConfig = prefs.waypipeUseSSHConfig;
+  NSString *sshHost = useSSHConfig ? prefs.sshHost : prefs.waypipeSSHHost;
+  NSString *sshUser = useSSHConfig ? prefs.sshUser : prefs.waypipeSSHUser;
+  NSString *sshKeyPath =
+      useSSHConfig ? prefs.sshKeyPath : prefs.waypipeSSHKeyPath;
+  NSString *sshPassword =
+      useSSHConfig ? prefs.sshPassword : prefs.waypipeSSHPassword;
+
+  if (sshHost.length == 0) {
+    NSLog(@"%@ [Runner macOS] ERROR: No SSH host configured", WAYPIPE_EMOJI);
+    return @[];
+  }
+
+  // Add ssh subcommand
+  [args addObject:@"ssh"];
+
+  // SSH options for macOS
+  [args addObject:@"-o"];
+  [args addObject:@"StrictHostKeyChecking=no"];
+  [args addObject:@"-o"];
+  [args addObject:@"UserKnownHostsFile=/dev/null"];
+  [args addObject:@"-o"];
+  [args addObject:@"ConnectTimeout=10"];
+
+  // Auth method
+  if (sshKeyPath.length > 0) {
+    [args addObject:@"-i"];
+    [args addObject:sshKeyPath];
+    [args addObject:@"-o"];
+    [args addObject:@"PreferredAuthentications=publickey"];
+  } else if (sshPassword.length > 0) {
+    [args addObject:@"-o"];
+    [args addObject:@"PreferredAuthentications=password,keyboard-interactive"];
+    [args addObject:@"-o"];
+    [args addObject:@"PubkeyAuthentication=no"];
+  }
+
+  // SSH target
+  NSString *sshTarget = sshHost;
+  if (sshUser.length > 0) {
+    sshTarget = [NSString stringWithFormat:@"%@@%@", sshUser, sshHost];
+  }
+  [args addObject:sshTarget];
+
+  // Remote command
+  NSString *remoteCommand = [self effectiveRemoteCommand:prefs];
+  if (remoteCommand.length > 0) {
+    if (prefs.waypipeLoginShell) {
+      [args addObject:@"sh"];
+      [args addObject:@"-lc"];
+      [args addObject:remoteCommand];
+    } else {
+      [args addObject:remoteCommand];
+    }
+  } else {
+    NSLog(@"%@ [Runner macOS] ERROR: No remote command configured",
+          WAYPIPE_EMOJI);
+    return @[];
+  }
+
+  return args;
+}
+
+#if TARGET_OS_IPHONE
+- (void)launchWaypipeViaExtension:(WawonaPreferencesManager *)prefs {
+  NSString *waypipePath = [self findWaypipeBinary];
+  if (!waypipePath) {
+    NSLog(@"%@ [Runner] ERROR: Waypipe binary not found", WAYPIPE_EMOJI);
+    return;
+  }
+
+  NSArray *args = [self buildWaypipeArguments:prefs];
+
+  // Validate that SSH is configured (buildWaypipeArguments returns empty array
+  // if not)
+  if (args.count == 0) {
+    NSLog(@"%@ [Runner] ERROR: SSH not configured - waypipe requires SSH for "
+          @"remote execution",
+          WAYPIPE_EMOJI);
+    // Show error to user via delegate if available
+    if ([self.delegate respondsToSelector:@selector(runnerDidReadData:)]) {
+      NSString *errorMsg =
+          @"Waypipe requires SSH configuration.\n\nPlease configure SSH Host "
+          @"in Settings:\n- OpenSSH section (if 'Use SSH Config' is "
+          @"enabled)\n- Waypipe section (if 'Use SSH Config' is disabled)";
+      [self.delegate
+          runnerDidReadData:[errorMsg dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+    return;
+  }
+
+  NSLog(@"%@ [Runner] Built waypipe arguments: %lu args", WAYPIPE_EMOJI,
+        (unsigned long)args.count);
+  if (args.count > 0 && args.count <= 10) {
+    NSLog(@"%@ [Runner] Arguments: %@", WAYPIPE_EMOJI, args);
+  } else if (args.count > 10) {
+    NSLog(@"%@ [Runner] First 10 args: %@", WAYPIPE_EMOJI,
+          [args subarrayWithRange:NSMakeRange(0, 10)]);
+  }
+
+  // Validate waypipe command structure before launching
+  // waypipe must have 'ssh' as subcommand for remote execution
+  BOOL hasSSHSubcommand = NO;
+  BOOL hasPlaceholder = NO;
+  BOOL hasXwlsOneshotConflict = NO;
+
+  BOOL hasOneshot = NO;
+  BOOL hasXwls = NO;
+
+  for (NSString *arg in args) {
+    if ([arg isEqualToString:@"ssh"]) {
+      hasSSHSubcommand = YES;
+    }
+    if ([arg containsString:@"NOT_CONFIGURED"] ||
+        [arg containsString:@"NOT_SET"]) {
+      hasPlaceholder = YES;
+    }
+    if ([arg isEqualToString:@"--oneshot"]) {
+      hasOneshot = YES;
+    }
+    if ([arg isEqualToString:@"--xwls"]) {
+      hasXwls = YES;
+    }
+  }
+
+  // Check for --xwls and --oneshot conflict
+  if (hasXwls && hasOneshot) {
+    hasXwlsOneshotConflict = YES;
+  }
+
+  if (hasXwlsOneshotConflict) {
+    NSLog(@"%@ [Runner] ERROR: --xwls cannot be used with --oneshot",
+          WAYPIPE_EMOJI);
+    if ([self.delegate respondsToSelector:@selector(runnerDidReadData:)]) {
+      NSString *errorMsg = @"Waypipe Configuration Error:\n\n--xwls (XWayland) "
+                           @"cannot be used with --oneshot mode.\n\nPlease "
+                           @"disable one of these options in Settings.";
+      [self.delegate
+          runnerDidReadData:[errorMsg dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+    return;
+  }
+
+  if (!hasSSHSubcommand || hasPlaceholder) {
+    NSLog(@"%@ [Runner] ERROR: Invalid waypipe command - SSH not properly "
+          @"configured",
+          WAYPIPE_EMOJI);
+    if ([self.delegate respondsToSelector:@selector(runnerDidReadData:)]) {
+      NSString *errorMsg =
+          @"Waypipe requires SSH configuration.\n\nPlease configure SSH Host "
+          @"in Settings:\n- OpenSSH section (if 'Use SSH Config' is "
+          @"enabled)\n- Waypipe section (if 'Use SSH Config' is "
+          @"disabled)\n\nAlso ensure Remote Command is set.";
+      [self.delegate
+          runnerDidReadData:[errorMsg dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+    return;
+  }
+
+  // Skip kernel tests when launching waypipe normally (they interfere)
+  // Unset WAWONA_KERNEL_TEST to prevent tests from running, and set skip flag
+  unsetenv("WAWONA_KERNEL_TEST");
+  setenv("WAWONA_SKIP_KERNEL_TESTS", "1", 1);
+  setenv("WAWONA_USER_WAYPIPE_LAUNCH", "1",
+         1); // Flag to indicate user-initiated launch
+
+  NSMutableDictionary *env =
+      [[[NSProcessInfo processInfo] environment] mutableCopy]
+          ?: [NSMutableDictionary dictionary];
+
+  // Wayland environment
+  // Respect existing XDG_RUNTIME_DIR from main.m if preference is not set
+  // This ensures we match HIAHKernel's socket directory (patched for simulator)
+  NSString *runtimeDir = prefs.waylandSocketDir;
+  if (runtimeDir.length > 0) {
+    env[@"XDG_RUNTIME_DIR"] = runtimeDir;
+  } else if (env[@"XDG_RUNTIME_DIR"] == nil) {
+    env[@"XDG_RUNTIME_DIR"] = @"/tmp";
+  }
+
+  env[@"WAYLAND_DISPLAY"] = prefs.waypipeDisplay ?: @"wayland-0";
+
+  // Use SSH config if toggle is enabled
+  BOOL useSSHConfig = prefs.waypipeUseSSHConfig;
+  NSString *sshUser = useSSHConfig ? prefs.sshUser : prefs.waypipeSSHUser;
+  NSString *sshPassword =
+      useSSHConfig ? prefs.sshPassword : prefs.waypipeSSHPassword;
+
+  if (sshUser.length > 0) {
+    env[@"USER"] = sshUser;
+    env[@"LOGNAME"] = sshUser;
+  }
+
+  if (sshPassword.length > 0) {
+    env[@"WAWONA_SSH_PASSWORD"] = sshPassword;
+    // SSH_ASKPASS_PASSWORD is read by our patched OpenSSH readpassphrase on iOS
+    env[@"SSH_ASKPASS_PASSWORD"] = sshPassword;
+    // Also set SSHPASS for compatibility with sshpass tool
+    env[@"SSHPASS"] = sshPassword;
+  }
+
+// Use HIAHKernel to spawn process via extension (iOS only)
+  HIAHKernel *kernel = [HIAHKernel sharedKernel];
+  // CONFIGURE KERNEL IDENTIFIERS
+  kernel.appGroupIdentifier = @"group.com.aspauldingcode.Wawona";
+  kernel.extensionIdentifier = @"com.aspauldingcode.Wawona.HIAHProcessRunner";
+
+  // Forward output from kernel to our delegate (so it shows in the UI alert)
+  __weak typeof(self) weakSelf = self;
+  kernel.onOutput = ^(pid_t pid, NSString *output) {
+    __strong typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf && [strongSelf.delegate
+                          respondsToSelector:@selector(runnerDidReadData:)]) {
+      [strongSelf.delegate
+          runnerDidReadData:[output dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+  };
+
+  [kernel
+      spawnVirtualProcessWithPath:waypipePath
+                        arguments:args
+                      environment:env
+                       completion:^(pid_t pid, NSError *_Nullable error) {
+                         if (error) {
+                           NSLog(@"%@ [Runner] Kernel spawn failed: %@ %@",
+                                 WAYPIPE_EMOJI, error, WAYPIPE_EMOJI);
+                           dispatch_async(dispatch_get_main_queue(), ^{
+                             UIViewController *topController =
+                                 [UIApplication sharedApplication]
+                                     .windows.firstObject.rootViewController;
+                             while (topController.presentedViewController) {
+                               topController =
+                                   topController.presentedViewController;
+                             }
+
+                             UIAlertController *alert = [UIAlertController
+                                 alertControllerWithTitle:
+                                     @"Extension Launch Failed"
+                                                  message:
+                                                      error.localizedDescription
+                                           preferredStyle:
+                                               UIAlertControllerStyleAlert];
+                             [alert
+                                 addAction:
+                                     [UIAlertAction
+                                         actionWithTitle:@"Copy Error"
+                                                   style:
+                                                       UIAlertActionStyleDefault
+                                                 handler:^(
+                                                     UIAlertAction
+                                                         *_Nonnull action) {
+                                                   [UIPasteboard
+                                                       generalPasteboard]
+                                                       .string =
+                                                       error
+                                                           .localizedDescription;
+                                                 }]];
+                             [alert
+                                 addAction:
+                                     [UIAlertAction
+                                         actionWithTitle:@"OK"
+                                                   style:
+                                                       UIAlertActionStyleCancel
+                                                 handler:nil]];
+                             [topController presentViewController:alert
+                                                         animated:YES
+                                                       completion:nil];
+                           });
+} else {
+                            NSLog(@"%@ [Runner] Waypipe successfully "
+                                  @"spawned via Kernel (PID: %d) %@",
+                                  WAYPIPE_EMOJI, pid, WAYPIPE_EMOJI);
+                            self.currentPid = pid;
+                          }
+                        }];
+}
+
+- (void)terminateProcessWithID:(NSInteger)processID {
+  kill((pid_t)processID, SIGTERM);
+}
+#else
+// macOS: Minimal implementation for waypipe (not yet implemented)
+- (void)launchWaypipeViaExtension:(WawonaPreferencesManager *)prefs {
+  NSLog(@"%@ [Runner] Waypipe on macOS is not yet implemented", WAYPIPE_EMOJI);
+  if ([self.delegate respondsToSelector:@selector(runnerDidReadData:)]) {
+    NSString *errorMsg = @"Waypipe on macOS is not yet implemented.\n\nUse iOS for waypipe functionality.";
+    [self.delegate runnerDidReadData:[errorMsg dataUsingEncoding:NSUTF8StringEncoding]];
+  }
+}
+
+- (void)terminateProcessWithID:(NSInteger)processID {
+  kill((pid_t)processID, SIGTERM);
+}
+@end

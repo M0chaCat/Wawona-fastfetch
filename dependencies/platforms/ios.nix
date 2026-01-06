@@ -155,16 +155,7 @@ in
           buildModule
           ;
       }
-    else if name == "libssh2" then
-      (import ../deps/libssh2/ios.nix) {
-        inherit
-          lib
-          pkgs
-          buildPackages
-          common
-          buildModule
-          ;
-      }
+    # Note: libssh2 removed - using OpenSSH binary instead
     else if name == "mbedtls" then
       (import ../deps/mbedtls/ios.nix) {
         inherit

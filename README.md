@@ -56,23 +56,20 @@ export XCODE_APP=/Applications/Xcode-14.app
 nix build .#waypipe-ios
 ```
 
-### Contributing
+### Contributing & Supporting
 
-**I cannot build this alone.**
+Wawona is a massive undertaking to bring a native Wayland compositor to Apple platforms and Android, and **I cannot sustain this project alone**. Your support _whether through code, issues, ideas, or donations_ is essential to its progress and survival.
 
-Wawona is a massive undertaking, aiming to bring a native Wayland Compositor to Apple platforms and Android. Your code contributions are vital to the project's survival and progress.
+You can help by:
 
-Contributions are highly encouraged! Feel free to:
+- Opening issues for bugs or feature requests
+- Submitting pull requests for improvements
+- Sharing ideas and suggestions
+- Spreading the word to others
+- Supporting ongoing development through donations if you find Wawona useful or believe in its goals
 
-- Open issues for bugs or feature requests
-- Submit pull requests for improvements
-- Share your ideas and suggestions
+Thank you for being part of the journey!
 
-### Support the Project
-
-This project requires significant time, effort, and resources. **I cannot sustain this development alone.**
-
-If you find Wawona useful or believe in the goal of a cross-platform Wayland compositor, please consider supporting ongoing development through frequent donations. Your support directly enables me to continue working on this.
 
 **Donate here:**
 Ko‑fi: https://ko-fi.com/aspauldingcode

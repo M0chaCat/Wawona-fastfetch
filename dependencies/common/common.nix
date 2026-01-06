@@ -62,6 +62,29 @@
         else
           throw "GitLab source requires 'rev', 'tag', or 'branch'"
       )
+    else if source == "codeberg" then
+      (
+        if lib.hasAttr "tag" entry then
+          pkgs.fetchgit {
+            url = "https://codeberg.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/tags/${entry.tag}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "branch" entry then
+          pkgs.fetchgit {
+            url = "https://codeberg.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/heads/${entry.branch}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "rev" entry then
+          pkgs.fetchgit {
+            url = "https://codeberg.org/${entry.owner}/${entry.repo}.git";
+            rev = entry.rev;
+            sha256 = sha256;
+          }
+        else
+          throw "Codeberg source requires 'rev', 'tag', or 'branch'"
+      )
     else
       (
         if lib.hasAttr "tag" entry then

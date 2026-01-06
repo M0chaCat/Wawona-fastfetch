@@ -24,14 +24,6 @@ let
     tag = "v0.10.6";
     sha256 = "sha256-Tbd/yY90yb2+/ODYVL3SudHaJCGJKatZ9FuGM2uAX+8=";
   };
-  # Fetch ssh2 source to patch it
-  ssh2Source = pkgs.fetchFromGitHub {
-    owner = "alexcrichton";
-    repo = "ssh2-rs";
-    rev = "0.9.4";
-    fetchSubmodules = true;
-    sha256 = "sha256-1Bt0HyHKpQeI5GBvgl8KpKU2rNNuZPkiGM5dwxgPJN4=";
-  };
   src = fetchSource waypipeSource;
   # Vulkan driver for iOS: kosmickrisp
   kosmickrisp = buildModule.buildForIOS "kosmickrisp" { };
@@ -41,10 +33,8 @@ let
   lz4 = buildModule.buildForIOS "lz4" { };
   # FFmpeg for video encoding/decoding
   ffmpeg = buildModule.buildForIOS "ffmpeg" { };
-  # SSH support via libssh2
-  libssh2 = buildModule.buildForIOS "libssh2" { };
-  mbedtls = buildModule.buildForIOS "mbedtls" { };
-  zlib = buildModule.buildForIOS "zlib" { };
+  # Note: SSH support will be provided by OpenSSH dynamic library (.dylib)
+  # No libssh2 needed - waypipe will spawn ssh binary normally
   # Vulkan loader (required to load the ICD)
   vulkan-loader = pkgs.vulkan-loader;
 
@@ -57,7 +47,6 @@ let
         pkgs.runCommand "waypipe-src-with-bindgen-for-lock"
           {
             src = fetchSource waypipeSource;
-            ssh2Source = ssh2Source;
           }
           ''
             # Copy source
@@ -69,34 +58,6 @@ let
             fi
             chmod -R u+w $out
             cd $out
-            
-            # Copy and patch ssh2 source
-            cp -r $ssh2Source ssh2-patched
-            chmod -R u+w ssh2-patched
-            
-            # Patch ssh2 Cargo.toml to disable libssh2-sys default features (avoids openssl-sys)
-            if [ -f "ssh2-patched/Cargo.toml" ]; then
-              # Replace dependency line to disable default features
-              # We handle the specific format found: libssh2-sys = { path = "libssh2-sys", version = "0.3.0" }
-              sed -i 's/libssh2-sys = {.*}/libssh2-sys = { path = "libssh2-sys", version = "0.3.0", default-features = false }/' ssh2-patched/Cargo.toml
-            fi
-            
-            # Also patch the vendored libssh2-sys Cargo.toml to ensure openssl-sys is not enabled by default
-            if [ -d "ssh2-patched/libssh2-sys" ]; then
-               # Remove openssl-sys dependency
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i '/^openssl-sys/d' {} +
-               
-               # Remove openssl-sys from default features
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i 's/"openssl-sys"//g' {} +
-               
-               # Remove openssl-sys/vendored from features
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i 's/"openssl-sys\/vendored"//g' {} +
-               
-               # Patch lib.rs to remove openssl-sys crate usage if it exists
-                # This handles cases where extern crate openssl_sys is not properly guarded or feature disabling failed
-                find ssh2-patched/libssh2-sys -name lib.rs -exec sed -i 's/extern crate openssl_sys;/\/\/ extern crate openssl_sys;/g' {} +
-                find ssh2-patched/libssh2-sys -name lib.rs -exec sed -i 's/openssl_sys::init();/\/\/ openssl_sys::init();/g' {} +
-            fi
 
             # Add bindgen to wrap-ffmpeg/Cargo.toml if not present
             if [ -f "wrap-ffmpeg/Cargo.toml" ] && ! grep -q "bindgen" wrap-ffmpeg/Cargo.toml; then
@@ -124,28 +85,7 @@ let
               fi
             fi
             
-            # Add ssh2 dependency for iOS SSH support (before Cargo.lock generation)
-            # Enabled for iOS SSH support
-            if [ -f "Cargo.toml" ] && ! grep -q 'ssh2 =' Cargo.toml; then
-              # Add ssh2 to main [dependencies] section
-              # It will only be used on iOS targets due to #[cfg(target_os = "ios")]
-              if grep -q '^\[dependencies\]' Cargo.toml; then
-                sed -i '/^\[dependencies\]/a\
-        ssh2 = { version = "0.9", default-features = false }
-        ' Cargo.toml
-              else
-                echo "" >> Cargo.toml
-                echo "[dependencies]" >> Cargo.toml
-                echo 'ssh2 = { version = "0.9", default-features = false }' >> Cargo.toml
-              fi
-            fi
-
-            # Patch waypipe Cargo.toml to use local ssh2 via patch.crates-io
-            if ! grep -q "\[patch.crates-io\]" Cargo.toml; then
-              echo "" >> Cargo.toml
-              echo "[patch.crates-io]" >> Cargo.toml
-              echo 'ssh2 = { path = "./ssh2-patched" }' >> Cargo.toml
-            fi
+            # Note: No ssh2 dependency needed - waypipe will use OpenSSH binary
           '';
       # Create a derivation that generates Cargo.lock with bindgen included
       # This derivation has network access to run cargo update
@@ -248,61 +188,107 @@ myRustPlatform.buildRustPackage {
               fi
             fi
 
-            # Add ssh2 dependency for iOS SSH support
-            # Enabled for iOS SSH support
-            if [ -f "Cargo.toml" ] && ! grep -q 'ssh2 =' Cargo.toml; then
-              # Add ssh2 to main [dependencies] section
-              # It will only be used on iOS targets due to #[cfg(target_os = "ios")]
-              if grep -q '^\[dependencies\]' Cargo.toml; then
-                sed -i '/^\[dependencies\]/a\
-        ssh2 = { version = "0.9", default-features = false }
-        ' Cargo.toml
-              else
-                echo "" >> Cargo.toml
-                echo "[dependencies]" >> Cargo.toml
-                echo 'ssh2 = { version = "0.9", default-features = false }' >> Cargo.toml
-              fi
-            fi
+            # Note: No ssh2 dependency needed - waypipe will use OpenSSH binary
+            # Waypipe's built-in SSH mode will spawn ssh executable normally
 
-            # Patch ssh2 to avoid pulling in openssl-sys via libssh2-sys default features
-            # We use a local copy of ssh2 source
-            cp -r ${ssh2Source} ssh2-patched
-            chmod -R u+w ssh2-patched
-            
-            # Patch ssh2 Cargo.toml to disable libssh2-sys default features (avoids openssl-sys)
-            if [ -f "ssh2-patched/Cargo.toml" ]; then
-              # Replace dependency line to disable default features
-              # We handle the specific format found: libssh2-sys = { path = "libssh2-sys", version = "0.3.0" }
-              sed -i 's/libssh2-sys = {.*}/libssh2-sys = { path = "libssh2-sys", version = "0.3.0", default-features = false }/' ssh2-patched/Cargo.toml
-            fi
-            
-            # Also patch the vendored libssh2-sys Cargo.toml to ensure openssl-sys is not enabled by default
-            if [ -d "ssh2-patched/libssh2-sys" ]; then
-               # Remove openssl-sys dependency
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i '/^openssl-sys/d' {} +
-               
-               # Remove openssl-sys from default features
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i 's/"openssl-sys"//g' {} +
-               
-               # Remove openssl-sys/vendored from features
-               find ssh2-patched/libssh2-sys -name Cargo.toml -exec sed -i 's/"openssl-sys\/vendored"//g' {} +
-               
-               # Patch lib.rs to remove openssl-sys crate usage if it exists
-               # This handles cases where extern crate openssl_sys is not properly guarded or feature disabling failed
-               find ssh2-patched/libssh2-sys -name lib.rs -exec sed -i 's/extern crate openssl_sys;/\/\/ extern crate openssl_sys;/g' {} +
-               find ssh2-patched/libssh2-sys -name lib.rs -exec sed -i 's/openssl_sys::init();/\/\/ openssl_sys::init();/g' {} +
-            fi
-            
-            # Patch waypipe Cargo.toml to use local ssh2
-            if ! grep -q "\[patch.crates-io\]" Cargo.toml; then
-              echo "" >> Cargo.toml
-              echo "[patch.crates-io]" >> Cargo.toml
-              echo 'ssh2 = { path = "./ssh2-patched" }' >> Cargo.toml
+            # Add [lib] to Cargo.toml to allow building as dynamic library for iOS
+            if [ -f "Cargo.toml" ]; then
+              if ! grep -q "\[lib\]" Cargo.toml; then
+                echo -e "\n[lib]\nname = \"waypipe\"\npath = \"src/main.rs\"\ncrate-type = [\"cdylib\", \"rlib\"]" >> Cargo.toml
+              else
+                sed -i.bak '/\[lib\]/a\
+name = "waypipe"\npath = "src/main.rs"\ncrate-type = ["cdylib", "rlib"]
+' Cargo.toml
+              fi
             fi
 
             # Patch main.rs to use unlink instead of unlinkat on iOS to avoid EINVAL
             if [ -f "src/main.rs" ]; then
-              sed -i 's/unistd::unlinkat(&self.folder, file_name, unistd::UnlinkatFlags::NoRemoveDir)/{ let _ = file_name; unistd::unlink(\&self.full_path) }/' src/main.rs
+              sed -i.bak 's/unistd::unlinkat(&self.folder, file_name, unistd::UnlinkatFlags::NoRemoveDir)/{ let _ = file_name; unistd::unlink(\&self.full_path) }/' src/main.rs
+              sed -i.bak 's/nix::unistd::isatty(std::io::stderr()).unwrap()/nix::unistd::isatty(std::io::stderr()).unwrap_or(false)/g' src/main.rs
+              sed -i.bak 's/nix::unistd::isatty(std::io::stdout()).unwrap()/nix::unistd::isatty(std::io::stdout()).unwrap_or(false)/g' src/main.rs
+              sed -i.bak 's/nix::unistd::isatty(std::io::stdin()).unwrap()/nix::unistd::isatty(std::io::stdin()).unwrap_or(false)/g' src/main.rs
+              sed -i.bak 's/log::set_boxed_logger(Box::new(logger)).unwrap();/let _ = log::set_boxed_logger(Box::new(logger));/g' src/main.rs
+              sed -i.bak 's/log::set_boxed_logger(Box::new(logger)).unwrap()/let _ = log::set_boxed_logger(Box::new(logger));/g' src/main.rs
+              sed -i.bak 's/fcntl::OFlag::from_bits(flags).unwrap()/fcntl::OFlag::from_bits_truncate(flags)/g' src/main.rs
+              sed -i.bak 's/revents().unwrap()/revents().unwrap_or(PollFlags::empty())/g' src/main.rs
+            fi
+
+            # Export waypipe_main for dlopen support on iOS
+            if [ -f "src/main.rs" ]; then
+              # 1. Add a global variable to store custom arguments
+              # Insert it after the doc comments (around line 5)
+              sed -i.bak '5i\
+static mut GUEST_ARGS: Option<Vec<String>> = None;
+' src/main.rs
+              
+              # 2. Add waypipe_main wrapper that sets GUEST_ARGS
+              cat >> src/main.rs <<'EOF'
+
+#[no_mangle]
+pub extern "C" fn waypipe_main(argc: i32, argv: *const *const i8) -> i32 {
+    let args: Vec<String> = unsafe {
+        std::slice::from_raw_parts(argv, argc as usize)
+            .iter()
+            .map(|&p| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
+            .collect()
+    };
+    println!("[waypipe_main] Setting GUEST_ARGS with {} arguments", args.len());
+    unsafe {
+        GUEST_ARGS = Some(args);
+    }
+    // Now call the real main logic
+    // We need to rename main to waypipe_real_main first
+    match waypipe_real_main() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("[waypipe_main] Error: {}", e);
+            1
+        }
+    }
+}
+EOF
+              
+              # 3. Rename main to waypipe_real_main and use GUEST_ARGS
+              sed -i.bak 's/fn main()/fn waypipe_real_main()/' src/main.rs
+              
+              # 4. Add a standard main() for bin compatibility
+              cat >> src/main.rs <<'EOF'
+fn main() {
+    if let Err(e) = waypipe_real_main() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}
+EOF
+              
+              # 5. Replace ALL argument getting methods with a call to our custom helper
+              # This helper will return GUEST_ARGS if set, or std::env::args() otherwise
+              cat >> src/main.rs <<'EOF'
+fn get_waypipe_args() -> impl Iterator<Item = String> {
+    unsafe {
+        if let Some(ref args) = GUEST_ARGS {
+            println!("[get_waypipe_args] Returning {} guest arguments", args.len());
+            return args.clone().into_iter();
+        }
+    }
+    std::env::args().collect::<Vec<_>>().into_iter()
+}
+fn get_waypipe_args_os() -> impl Iterator<Item = std::ffi::OsString> {
+    unsafe {
+        if let Some(ref args) = GUEST_ARGS {
+            println!("[get_waypipe_args_os] Returning {} guest arguments", args.len());
+            return args.iter().map(|s| std::ffi::OsString::from(s)).collect::<Vec<_>>().into_iter();
+        }
+    }
+    std::env::args_os()
+}
+EOF
+              # Broad replacement for any variation of args() or args_os()
+              sed -i.bak 's/std::env::args()/get_waypipe_args()/g' src/main.rs
+              sed -i.bak 's/env::args()/get_waypipe_args()/g' src/main.rs
+              sed -i.bak 's/std::env::args_os()/get_waypipe_args_os()/g' src/main.rs
+              sed -i.bak 's/env::args_os()/get_waypipe_args_os()/g' src/main.rs
             fi
       '';
 
@@ -332,11 +318,8 @@ myRustPlatform.buildRustPackage {
     vulkan-headers # Vulkan headers for FFmpeg's Vulkan support
   ];
 
-  # Force libssh2-sys to use the system libssh2 (which uses mbedtls)
-  # instead of trying to build its own with OpenSSL
-  env = {
-    LIBSSH2_SYS_USE_PKG_CONFIG = "1";
-  };
+  # No SSH library dependencies - waypipe will use OpenSSH binary
+  env = { };
 
   buildInputs = [
     kosmickrisp # Vulkan driver for iOS
@@ -345,9 +328,8 @@ myRustPlatform.buildRustPackage {
     zstd # Compression library
     lz4 # Compression library
     ffmpeg # Video encoding/decoding
-    libssh2 # SSH support via libssh2
-    mbedtls # Crypto backend for libssh2
-    zlib # Zlib for libssh2
+    # Note: SSH support provided by OpenSSH dynamic library (.dylib)
+    # Waypipe will spawn ssh binary normally
   ];
 
   # Enable video feature for waypipe-rs
@@ -393,14 +375,14 @@ myRustPlatform.buildRustPackage {
         export RUSTC_LINKER="$CC"
 
         # Set up library search paths for Vulkan driver and loader
-        export LIBRARY_PATH="${kosmickrisp}/lib:${vulkan-loader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${ffmpeg}/lib:${libssh2}/lib:${mbedtls}/lib:$LIBRARY_PATH"
+        export LIBRARY_PATH="${kosmickrisp}/lib:${vulkan-loader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
         
         # Use Rust's built-in aarch64-apple-ios-sim target for iOS Simulator
         # This is the correct target for iOS Simulator on ARM64 (Apple Silicon Macs)
         export CARGO_BUILD_TARGET="aarch64-apple-ios-sim"
         
         # Configure Rust flags for iOS Simulator
-        export RUSTFLAGS="-A warnings -C linker=$CC -C link-arg=-isysroot -C link-arg=$IOS_SDK -C link-arg=-mios-simulator-version-min=15.0 -L native=${ffmpeg}/lib -L native=${vulkan-loader}/lib -L native=${libssh2}/lib -L native=${mbedtls}/lib $RUSTFLAGS"
+        export RUSTFLAGS="-A warnings -C linker=$CC -C link-arg=-isysroot -C link-arg=$IOS_SDK -C link-arg=-mios-simulator-version-min=15.0 -L native=${ffmpeg}/lib -L native=${vulkan-loader}/lib $RUSTFLAGS"
         
         # Configure C compiler for simulator target
         export CC_aarch64_apple_ios_sim="$CC"
@@ -408,17 +390,17 @@ myRustPlatform.buildRustPackage {
         export CFLAGS_aarch64_apple_ios_sim="-target arm64-apple-ios-simulator15.0 -isysroot $IOS_SDK -mios-simulator-version-min=15.0"
         export AR_aarch64_apple_ios_sim="ar"
         
-        # Set PKG_CONFIG_PATH for wayland, zstd, lz4, ffmpeg, and libssh2
-        export PKG_CONFIG_PATH="${libwayland}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:${libssh2}/lib/pkgconfig:${mbedtls}/lib/pkgconfig:${zlib}/lib/pkgconfig:$PKG_CONFIG_PATH"
+        # Set PKG_CONFIG_PATH for wayland, zstd, lz4, ffmpeg
+        export PKG_CONFIG_PATH="${libwayland}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
         export PKG_CONFIG_ALLOW_CROSS=1
         
-        # Set up include paths for bindgen (needed for wrap-zstd, wrap-lz4, wrap-ffmpeg, and libssh2)
+        # Set up include paths for bindgen (needed for wrap-zstd, wrap-lz4, wrap-ffmpeg)
         # Include Vulkan headers from vulkan-headers package for FFmpeg's Vulkan support
-        export C_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${libssh2}/include:${mbedtls}/include:${zlib}/include:${pkgs.vulkan-headers}/include:$C_INCLUDE_PATH"
-        export CPP_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${libssh2}/include:${mbedtls}/include:${zlib}/include:${pkgs.vulkan-headers}/include:$CPP_INCLUDE_PATH"
+        export C_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$C_INCLUDE_PATH"
+        export CPP_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$CPP_INCLUDE_PATH"
         
-        # Configure bindgen to find headers, including Vulkan and libssh2
-        export BINDGEN_EXTRA_CLANG_ARGS="-I${zstd}/include -I${lz4}/include -I${ffmpeg}/include -I${libssh2}/include -I${mbedtls}/include -I${zlib}/include -I${pkgs.vulkan-headers}/include -isysroot $IOS_SDK -mios-simulator-version-min=15.0 -target arm64-apple-ios-simulator15.0"
+        # Configure bindgen to find headers, including Vulkan
+        export BINDGEN_EXTRA_CLANG_ARGS="-I${zstd}/include -I${lz4}/include -I${ffmpeg}/include -I${pkgs.vulkan-headers}/include -isysroot $IOS_SDK -mios-simulator-version-min=15.0 -target arm64-apple-ios-simulator15.0"
         
         echo "Vulkan driver (kosmickrisp) library path: ${kosmickrisp}/lib"
         ls -la "${kosmickrisp}/lib/" || echo "Warning: kosmickrisp lib directory not found"
@@ -432,24 +414,11 @@ rustflags = [
   "-C", "link-arg=-isysroot",
   "-C", "link-arg=$IOS_SDK",
   "-C", "link-arg=-mios-simulator-version-min=15.0",
-  "-C", "link-arg=-L${libssh2}/lib",
-  "-C", "link-arg=-L${mbedtls}/lib",
-  "-C", "link-arg=-L${zlib}/lib",
-  "-C", "link-arg=-lssh2",
-  "-C", "link-arg=-lmbedtls",
-  "-C", "link-arg=-lmbedx509",
-  "-C", "link-arg=-lmbedcrypto",
-  "-C", "link-arg=-lz",
 ]
 
 [env]
 CC = "$CC"
 CXX = "$CXX"
-PKG_CONFIG_PATH = "${libssh2}/lib/pkgconfig:${mbedtls}/lib/pkgconfig:${zlib}/lib/pkgconfig:$PKG_CONFIG_PATH"
-LIBSSH2_LIB_DIR = "${libssh2}/lib"
-LIBSSH2_INCLUDE_DIR = "${libssh2}/include"
-MBEDTLS_LIB_DIR = "${mbedtls}/lib"
-MBEDTLS_INCLUDE_DIR = "${mbedtls}/include"
 CARGO_CONFIG
   '';
 
@@ -467,14 +436,74 @@ CARGO_CONFIG
         # Patch main.rs to use unlink instead of unlinkat on iOS
         if [ -f "src/main.rs" ]; then
           # Use block to handle unused variable file_name
-          sed -i 's/unistd::unlinkat(&self.folder, file_name, unistd::UnlinkatFlags::NoRemoveDir)/{ let _ = file_name; unistd::unlink(\\&self.full_path) }/' src/main.rs
+          sed -i.bak 's/unistd::unlinkat(&self.folder, file_name, unistd::UnlinkatFlags::NoRemoveDir)/{ let _ = file_name; unistd::unlink(\\&self.full_path) }/' src/main.rs
           
           # Remove iOS-specific socket flags that cause EINVAL on iOS
-          sed -i 's/socket::SockFlag::SOCK_NONBLOCK | socket::SockFlag::SOCK_CLOEXEC/socket::SockFlag::empty()/g' src/main.rs
-          sed -i 's/socket::SockFlag::SOCK_CLOEXEC | socket::SockFlag::SOCK_NONBLOCK/socket::SockFlag::empty()/g' src/main.rs
-          sed -i 's/socket::SockFlag::SOCK_NONBLOCK/socket::SockFlag::empty()/g' src/main.rs
-          sed -i 's/socket::SockFlag::SOCK_CLOEXEC/socket::SockFlag::empty()/g' src/main.rs
+          sed -i.bak 's/socket::SockFlag::SOCK_NONBLOCK | socket::SockFlag::SOCK_CLOEXEC/socket::SockFlag::empty()/g' src/main.rs
+          sed -i.bak 's/socket::SockFlag::SOCK_CLOEXEC | socket::SockFlag::SOCK_NONBLOCK/socket::SockFlag::empty()/g' src/main.rs
+          sed -i.bak 's/socket::SockFlag::SOCK_NONBLOCK/socket::SockFlag::empty()/g' src/main.rs
+          sed -i.bak 's/socket::SockFlag::SOCK_CLOEXEC/socket::SockFlag::empty()/g' src/main.rs
+          sed -i.bak 's/nix::unistd::isatty(std::io::stderr()).unwrap()/nix::unistd::isatty(std::io::stderr()).unwrap_or(false)/g' src/main.rs
+          sed -i.bak 's/nix::unistd::isatty(std::io::stdout()).unwrap()/nix::unistd::isatty(std::io::stdout()).unwrap_or(false)/g' src/main.rs
+          sed -i.bak 's/nix::unistd::isatty(std::io::stdin()).unwrap()/nix::unistd::isatty(std::io::stdin()).unwrap_or(false)/g' src/main.rs
+          sed -i.bak 's/log::set_boxed_logger(Box::new(logger)).unwrap();/let _ = log::set_boxed_logger(Box::new(logger));/g' src/main.rs
+          sed -i.bak 's/log::set_boxed_logger(Box::new(logger)).unwrap()/let _ = log::set_boxed_logger(Box::new(logger));/g' src/main.rs
+
+          python3 <<'PY'
+import pathlib
+import re
+
+p = pathlib.Path('src/main.rs')
+if p.exists():
+    s = p.read_text()
+    s = re.sub(
+        r'nix::unistd::isatty\(([^\n]*?)\)\.unwrap\(\)',
+        r'nix::unistd::isatty(\1).unwrap_or(false)',
+        s,
+    )
+    s = s.replace(
+        'log::set_boxed_logger(Box::new(logger)).unwrap();',
+        'let _ = log::set_boxed_logger(Box::new(logger));',
+    )
+    s = s.replace(
+        'log::set_boxed_logger(Box::new(logger)).unwrap()',
+        'let _ = log::set_boxed_logger(Box::new(logger));',
+    )
+    p.write_text(s)
+PY
         fi
+
+        # iOS doesn't support memfd seals (F_ADD_SEALS/F_GET_SEALS); ignore those failures
+        python3 <<'PY'
+import pathlib
+
+src_dir = pathlib.Path('src')
+if src_dir.exists():
+    for p in src_dir.rglob('*.rs'):
+        try:
+            s = p.read_text()
+        except Exception:
+            continue
+
+        changed = False
+        lines = s.splitlines(True)
+        for i, line in enumerate(lines):
+            if 'F_ADD_SEALS' in line:
+                new_line = line.replace('.unwrap();', '.ok();')
+                if new_line == line:
+                    new_line = line.replace('.unwrap()', '.unwrap_or(0)')
+                if new_line != line:
+                    lines[i] = new_line
+                    changed = True
+            elif 'F_GET_SEALS' in line:
+                new_line = line.replace('.unwrap()', '.unwrap_or(0)')
+                if new_line != line:
+                    lines[i] = new_line
+                    changed = True
+
+        if changed:
+            p.write_text("".join(lines))
+PY
 
         
         # Remove tests/proto.rs to avoid CARGO_BIN_EXE_test_proto error
@@ -500,10 +529,11 @@ CARGO_CONFIG
            # Construct the User struct manually. 
            # Note: We need to ensure we have access to PathBuf, which is usually in scope or std::path::PathBuf
            # We use \([^)]*\) to match any arguments inside the parentheses
-           sed -i 's/unistd::User::from_uid(\([^)]*\))/Ok(Some(unistd::User { name: "mobile".to_string(), passwd: "x".to_string(), uid: \1, gid: unistd::Gid::from_raw(20), gecos: "".to_string(), dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or("\/".to_string())), shell: std::path::PathBuf::from("\/bin\/sh") }))/' src/main.rs
+           sed -i.bak 's/unistd::User::from_uid(\([^)]*\))/Ok(Some(unistd::User { name: "mobile".to_string(), passwd: "x".to_string(), uid: unistd::Uid::current(), gid: unistd::Gid::current(), gecos: "".to_string(), dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or("\/".to_string())), shell: std::path::PathBuf::from("\/bin\/sh") }))/' src/main.rs
            
            # Also check for non-qualified User::from_uid
-           sed -i 's/User::from_uid(\([^)]*\))/Ok(Some(unistd::User { name: "mobile".to_string(), passwd: "x".to_string(), uid: \1, gid: unistd::Gid::from_raw(20), gecos: "".to_string(), dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or("\/".to_string())), shell: std::path::PathBuf::from("\/bin\/sh") }))/' src/main.rs
+           sed -i.bak 's/User::from_uid(\([^)]*\))/Ok(Some(unistd::User { name: "mobile".to_string(), passwd: "x".to_string(), uid: unistd::Uid::current(), gid: unistd::Gid::current(), gecos: "".to_string(), dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or("\/".to_string())), shell: std::path::PathBuf::from("\/bin\/sh") }))/' src/main.rs
+           sed -i.bak 's/nix::unistd::User::from_uid(\([^)]*\))/Ok(Some(unistd::User { name: "mobile".to_string(), passwd: "x".to_string(), uid: unistd::Uid::current(), gid: unistd::Gid::current(), gecos: "".to_string(), dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or("\/".to_string())), shell: std::path::PathBuf::from("\/bin\/sh") }))/' src/main.rs
            
            # Optional: fallback for 'users' crate if used instead of 'nix'
            # entries from 'users' crate usually return Option<User> directly (no Result)
@@ -511,6 +541,27 @@ CARGO_CONFIG
            if grep -q "users::get_user_by_uid" src/main.rs; then
               sed -i 's/users::get_user_by_uid(\([^)]*\))/Some(users::User::new(\1, "mobile", 0))/' src/main.rs || true
            fi
+        fi
+        
+        # Patch SSH spawning to handle iOS PATH correctly
+        # Ensure waypipe can find ssh binary even if PATH is not fully set
+        if [ -f "src/main.rs" ]; then
+          echo "Patching SSH spawn logic for iOS..."
+          # Look for Command::new("ssh") or similar patterns
+          # Add fallback paths for iOS app bundle
+          if grep -q 'Command::new("ssh")' src/main.rs; then
+            # This is a complex patch - we'll add a helper that checks multiple paths
+            # For now, we rely on PATH being set correctly by the Objective-C code
+            echo "SSH spawn found - relying on PATH environment variable"
+          fi
+        fi
+        
+        # Patch socket creation to use iOS-compatible paths
+        # iOS sandbox requires sockets in specific directories
+        if [ -f "src/main.rs" ]; then
+          echo "Ensuring socket paths are iOS-compatible..."
+          # XDG_RUNTIME_DIR should be set by the app, which it is
+          # No changes needed here as we're already using XDG_RUNTIME_DIR
         fi
 
         # Write Cargo.lock to source directory to match cargoLock.lockFile
@@ -1144,6 +1195,19 @@ pub fn eventfd_macos(initval: u32, _flags: i32) -> nix::Result<std::os::unix::io
     Ok(fd)
 }
 PLATFORM_EOF
+
+        if [ -f "src/mainloop.rs" ]; then
+          python3 <<'PYTHON_EOF'
+import pathlib
+
+p = pathlib.Path('src/mainloop.rs')
+s = p.read_text(errors='ignore')
+needle = 'let obfd = vulk.get_event_fd(first_pt).unwrap();'
+replacement = 'let obfd = vulk.get_event_fd(first_pt).ok().flatten();'
+if needle in s:
+    p.write_text(s.replace(needle, replacement))
+PYTHON_EOF
+        fi
         
         # Patch src/dmabuf.rs to use eventfd_macos and fix types
         if [ -f "src/dmabuf.rs" ]; then
@@ -1572,101 +1636,27 @@ PYTHON_EOF
           fi
         fi
         
-        # Patch waypipe to use libssh2 directly on iOS instead of spawning ssh binary
-        echo "=== Patching waypipe SSH transport for iOS ==="
-        
-        # Waypipe uses Command::new("ssh") or posix_spawn to spawn ssh binary
-        # On iOS, we need to use libssh2 (via ssh2-rs crate) directly instead
-        # Skip the patching for now - it requires complex Python code that Nix tries to parse
-        # TODO: Implement proper waypipe SSH patching using a pre-built patch file or different approach
-        echo "Note: Waypipe SSH patching skipped - requires libssh2 integration work"
-        echo "SSH spawning code will need to be patched manually or via a separate patch file"
-        
-        # Add libssh2 helper module for iOS
-        # NOTE: SSH patching is currently disabled, so this module is not needed yet
-        # When SSH patching is re-enabled, uncomment this and add ssh2 to Cargo.lock
-        # The iOS SSH module code has been removed to avoid compilation errors
-        # It will be re-added when SSH patching is implemented
-        
-        # Add the iOS module to main.rs or lib.rs
-        # NOTE: Commented out since SSH patching is disabled
-        # When SSH patching is re-enabled, uncomment this section
-        # for main_file in src/main.rs src/lib.rs; do
-        #   if [ -f "$main_file" ]; then
-        #     # Check if iOS module is already declared (check for both conditional and unconditional)
-        #     if ! grep -q "mod ios" "$main_file"; then
-        #       # Add iOS module declaration
-        #       if grep -q "^mod " "$main_file"; then
-        #         # Insert after last mod declaration (only once)
-        #         python3 - "$main_file" <<'PYTHON_EOF'
-        # import sys
-        # import re
-        # 
-        # file_path = sys.argv[1]
-        # with open(file_path, 'r') as f:
-        #     lines = f.readlines()
-        # 
-        # # Find the last mod declaration
-        # last_mod_idx = -1
-        # for i, line in enumerate(lines):
-        #     if re.match(r'^\s*mod\s+\w+', line):
-        #         last_mod_idx = i
-        # 
-        # if last_mod_idx >= 0:
-        #     # Insert after the last mod declaration
-        #     ios_mod = '    #[cfg(target_os = "ios")]\n    mod ios;\n'
-        #     lines.insert(last_mod_idx + 1, ios_mod)
-        #     with open(file_path, 'w') as f:
-        #         f.writelines(lines)
-        # PYTHON_EOF
-        #       else
-        #         # Add at top of file after use statements
-        #         python3 - "$main_file" <<'PYTHON_EOF'
-        # import sys
-        # import re
-        # 
-        # file_path = sys.argv[1]
-        # with open(file_path, 'r') as f:
-        #     lines = f.readlines()
-        # 
-        # # Find where to insert (after last use statement)
-        # insert_idx = -1
-        # for i, line in enumerate(lines):
-        #     if re.match(r'^\s*use\s+', line):
-        #         insert_idx = i
-        #     elif re.match(r'^\s*(pub\s+)?(mod|fn|struct|enum|impl)', line) and insert_idx >= 0:
-        #         break
-        # 
-        # if insert_idx >= 0:
-        #     ios_mod = '    #[cfg(target_os = "ios")]\n    mod ios;\n'
-        #     lines.insert(insert_idx + 1, ios_mod)
-        #     with open(file_path, 'w') as f:
-        #         f.writelines(lines)
-        # PYTHON_EOF
-        #       fi
-        #     fi
-        #   fi
-        # done
-        
-        echo "✓ Patched waypipe SSH transport for iOS (using libssh2)"
+        # Note: Waypipe will use OpenSSH binary normally on iOS
+        # No patching needed - waypipe's built-in SSH mode will spawn ssh executable
+        echo "✓ Waypipe configured to use OpenSSH binary (no libssh2 needed)"
   '';
 
   buildPhase = ''
-    # Ensure pkg-config can find libssh2
-    export PKG_CONFIG_PATH="${libssh2}/lib/pkgconfig:${mbedtls}/lib/pkgconfig:$PKG_CONFIG_PATH"
-    export PKG_CONFIG_ALLOW_CROSS=1
-    
-    # Set environment variables for ssh2-rs crate to find libssh2
-    export LIBSSH2_SYS_USE_PKG_CONFIG=1
-    export LIBSSH2_STATIC=1
-    
-    # Build waypipe with SSH support
+    # Build waypipe - it will use OpenSSH binary for SSH support
     cargo build --release --target aarch64-apple-ios-sim
   '';
 
   installPhase = ''
     mkdir -p $out/bin
     cp target/aarch64-apple-ios-sim/release/waypipe $out/bin/
+    
+    # Copy waypipe dylib if it was built
+    mkdir -p $out/lib
+    if [ -f target/aarch64-apple-ios-sim/release/libwaypipe.dylib ]; then
+      cp target/aarch64-apple-ios-sim/release/libwaypipe.dylib $out/lib/
+    elif [ -f target/aarch64-apple-ios-sim/release/waypipe.dylib ]; then
+      cp target/aarch64-apple-ios-sim/release/waypipe.dylib $out/lib/
+    fi
   '';
 
   doCheck = false;

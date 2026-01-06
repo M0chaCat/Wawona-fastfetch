@@ -1,9 +1,14 @@
-// iOS Launcher Client - Wayland client implementation
-// This file is isolated to avoid conflicts between wayland-client and wayland-server headers
-// It only includes wayland-client.h, not wayland-server headers
+// Wawona Launcher Client - Wayland client implementation
+// A GUI Launcher that scans for bundled Wayland applications
+// Displays app icons and labels, allows launching apps
+// Supports iOS, macOS, and Android
 
 #import <Foundation/Foundation.h>
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #import <UIKit/UIKit.h>
+#else
+#import <Cocoa/Cocoa.h>
+#endif
 #import <objc/runtime.h>
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
@@ -18,13 +23,288 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/select.h>
-#include <sys/mman.h> // For mmap
+#include <sys/mman.h>
+#include <dirent.h>
+#include <dlfcn.h>
 #import "WawonaLauncherClient.h"
 #include "xdg-shell-client-protocol.h"
 
+// ============================================================================
+// Application Discovery
+// ============================================================================
+
+@implementation WawonaLauncherApp
+@end
+
+// Blacklisted app IDs (launcher itself, etc.)
+static NSArray<NSString *> *blacklistedAppIds = nil;
+
+// Discovered applications
+static NSMutableArray<WawonaLauncherApp *> *discoveredApps = nil;
+
+// Initialize blacklist
+static void initBlacklist(void) {
+    if (!blacklistedAppIds) {
+        blacklistedAppIds = @[
+            @"com.aspauldingcode.Wawona.Launcher",
+            @"wawona-launcher",
+            @"launcher"
+        ];
+    }
+}
+
+// Check if an app is blacklisted
+static BOOL isAppBlacklisted(NSString *appId, NSString *executableName) {
+    initBlacklist();
+    for (NSString *blacklisted in blacklistedAppIds) {
+        if ([appId.lowercaseString containsString:blacklisted.lowercaseString] ||
+            [executableName.lowercaseString containsString:blacklisted.lowercaseString]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Parse app.json metadata file
+static WawonaLauncherApp *parseAppMetadata(NSString *metadataPath, NSString *basePath) {
+    NSData *data = [NSData dataWithContentsOfFile:metadataPath];
+    if (!data) return nil;
+    
+    NSError *error = nil;
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (error || !json) {
+        NSLog(@"⚠️ Launcher: Failed to parse app.json at %@: %@", metadataPath, error);
+        return nil;
+    }
+    
+    WawonaLauncherApp *app = [[WawonaLauncherApp alloc] init];
+    app.appId = json[@"id"] ?: @"unknown";
+    app.name = json[@"name"] ?: @"Unknown App";
+    app.description = json[@"description"] ?: @"";
+    app.categories = json[@"categories"] ?: @[];
+    
+    // Resolve executable path
+    NSString *executable = json[@"executable"] ?: @"";
+    if (executable.length > 0) {
+        if ([executable hasPrefix:@"/"]) {
+            app.executablePath = executable;
+        } else {
+            app.executablePath = [[basePath stringByAppendingPathComponent:@"bin"] 
+                                  stringByAppendingPathComponent:executable];
+        }
+    }
+    
+    // Resolve icon path
+    NSString *icon = json[@"icon"] ?: @"";
+    if (icon.length > 0) {
+        if ([icon hasPrefix:@"/"]) {
+            app.iconPath = icon;
+        } else {
+            app.iconPath = [[basePath stringByAppendingPathComponent:@"share/icons"] 
+                            stringByAppendingPathComponent:icon];
+        }
+    }
+    
+    // Check blacklist
+    NSString *execName = [app.executablePath lastPathComponent];
+    app.isBlacklisted = isAppBlacklisted(app.appId, execName);
+    
+    return app;
+}
+
+// Scan for bundled applications
+void refreshLauncherApplicationList(void) {
+    if (!discoveredApps) {
+        discoveredApps = [NSMutableArray array];
+    }
+    [discoveredApps removeAllObjects];
+    
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    
+    // Locations to scan for bundled apps
+    NSMutableArray<NSString *> *searchPaths = [NSMutableArray array];
+    
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Check inside app bundle
+    NSString *bundlePath = [mainBundle bundlePath];
+    [searchPaths addObject:[bundlePath stringByAppendingPathComponent:@"Applications"]];
+    [searchPaths addObject:[bundlePath stringByAppendingPathComponent:@"apps"]];
+    
+    // Also check Documents for side-loaded apps (jailbreak/TrollStore)
+    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (docsPath) {
+        [searchPaths addObject:[docsPath stringByAppendingPathComponent:@"Applications"]];
+    }
+#else
+    // macOS: Check inside app bundle and standard locations
+    NSString *resourcePath = [mainBundle resourcePath];
+    [searchPaths addObject:[resourcePath stringByAppendingPathComponent:@"Applications"]];
+    
+    NSString *execPath = [[mainBundle executablePath] stringByDeletingLastPathComponent];
+    [searchPaths addObject:[execPath stringByAppendingPathComponent:@"apps"]];
+    [searchPaths addObject:[execPath stringByAppendingPathComponent:@"Applications"]];
+    
+    // Also check ~/.local/share/wawona/applications
+    NSString *homeApps = [NSHomeDirectory() stringByAppendingPathComponent:@".local/share/wawona/applications"];
+    [searchPaths addObject:homeApps];
+#endif
+    
+    NSLog(@"🔍 Launcher: Scanning for applications in %lu locations", (unsigned long)searchPaths.count);
+    
+    for (NSString *searchPath in searchPaths) {
+        if (![fm fileExistsAtPath:searchPath]) {
+            continue;
+        }
+        
+        NSLog(@"🔍 Launcher: Scanning %@", searchPath);
+        
+        NSError *error = nil;
+        NSArray *contents = [fm contentsOfDirectoryAtPath:searchPath error:&error];
+        if (error) continue;
+        
+        for (NSString *item in contents) {
+            NSString *itemPath = [searchPath stringByAppendingPathComponent:item];
+            BOOL isDir = NO;
+            if (![fm fileExistsAtPath:itemPath isDirectory:&isDir] || !isDir) {
+                continue;
+            }
+            
+            // Look for app.json or wawona metadata
+            NSString *metadataPath = [itemPath stringByAppendingPathComponent:@"share/wawona/app.json"];
+            if (![fm fileExistsAtPath:metadataPath]) {
+                // Try alternate locations
+                metadataPath = [itemPath stringByAppendingPathComponent:@"app.json"];
+            }
+            if (![fm fileExistsAtPath:metadataPath]) {
+                metadataPath = [itemPath stringByAppendingPathComponent:@"metadata.json"];
+            }
+            
+            if ([fm fileExistsAtPath:metadataPath]) {
+                WawonaLauncherApp *app = parseAppMetadata(metadataPath, itemPath);
+                if (app && !app.isBlacklisted) {
+                    // Verify executable exists
+                    if (app.executablePath && [fm isExecutableFileAtPath:app.executablePath]) {
+                        [discoveredApps addObject:app];
+                        NSLog(@"✅ Launcher: Found app: %@ (%@)", app.name, app.appId);
+                    } else {
+                        NSLog(@"⚠️ Launcher: App %@ has no valid executable at %@", app.name, app.executablePath);
+                    }
+                }
+            } else {
+                // Try to auto-discover based on directory structure
+                NSString *binPath = [itemPath stringByAppendingPathComponent:@"bin"];
+                if ([fm fileExistsAtPath:binPath]) {
+                    NSArray *binContents = [fm contentsOfDirectoryAtPath:binPath error:nil];
+                    for (NSString *binItem in binContents) {
+                        NSString *execPath = [binPath stringByAppendingPathComponent:binItem];
+                        if ([fm isExecutableFileAtPath:execPath] && 
+                            !isAppBlacklisted(binItem, binItem)) {
+                            WawonaLauncherApp *app = [[WawonaLauncherApp alloc] init];
+                            app.appId = [NSString stringWithFormat:@"auto.%@", binItem];
+                            app.name = binItem;
+                            app.executablePath = execPath;
+                            app.isBlacklisted = NO;
+                            [discoveredApps addObject:app];
+                            NSLog(@"✅ Launcher: Auto-discovered app: %@", app.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    NSLog(@"🎯 Launcher: Found %lu applications", (unsigned long)discoveredApps.count);
+}
+
+NSArray<WawonaLauncherApp *> *getLauncherApplications(void) {
+    if (!discoveredApps) {
+        refreshLauncherApplicationList();
+    }
+    return [discoveredApps copy];
+}
+
+// ============================================================================
+// Application Launching
+// ============================================================================
+
+BOOL launchLauncherApplication(NSString *appId) {
+    NSArray *apps = getLauncherApplications();
+    for (WawonaLauncherApp *app in apps) {
+        if ([app.appId isEqualToString:appId]) {
+            NSLog(@"🚀 Launcher: Launching %@ (%@)", app.name, app.executablePath);
+            
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            // iOS: Use dlopen to load as dynamic library
+            void *handle = dlopen([app.executablePath UTF8String], RTLD_NOW | RTLD_LOCAL);
+            if (!handle) {
+                NSLog(@"❌ Launcher: Failed to load %@: %s", app.name, dlerror());
+                return NO;
+            }
+            
+            // Look for entry point (main or custom entry)
+            typedef int (*EntryFunc)(int, char**);
+            EntryFunc entry = (EntryFunc)dlsym(handle, "main");
+            if (!entry) {
+                entry = (EntryFunc)dlsym(handle, "app_entry");
+            }
+            if (!entry) {
+                NSLog(@"❌ Launcher: No entry point found for %@", app.name);
+                dlclose(handle);
+                return NO;
+            }
+            
+            // Launch in a new thread
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                char *argv[] = { (char*)[app.name UTF8String], NULL };
+                entry(1, argv);
+            });
+            
+            return YES;
+#else
+            // macOS/Android: Fork and exec
+            pid_t pid = fork();
+            if (pid == 0) {
+                // Child process
+                // Set up Wayland environment
+                const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+                const char *wayland_display = getenv("WAYLAND_DISPLAY");
+                
+                if (!runtime_dir) {
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "/tmp/wawona-%d", getuid());
+                    setenv("XDG_RUNTIME_DIR", buf, 1);
+                }
+                if (!wayland_display) {
+                    setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+                }
+                
+                execl([app.executablePath UTF8String], [app.name UTF8String], NULL);
+                _exit(1); // execl failed
+            } else if (pid > 0) {
+                NSLog(@"✅ Launcher: Spawned %@ with PID %d", app.name, pid);
+                return YES;
+            } else {
+                NSLog(@"❌ Launcher: Failed to fork for %@", app.name);
+                return NO;
+            }
+#endif
+        }
+    }
+    
+    NSLog(@"⚠️ Launcher: App not found: %@", appId);
+    return NO;
+}
+
+// ============================================================================
+// Wayland Client State
+// ============================================================================
+
 // Internal: Set client_display on delegate using runtime
 static void setClientDisplay(WawonaAppDelegate *delegate, struct wl_display *display) {
-    objc_setAssociatedObject(delegate, @selector(client_display), [NSValue valueWithPointer:display], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(delegate, @selector(client_display), 
+                            [NSValue valueWithPointer:display], 
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // Internal: Get client_display from delegate using runtime
@@ -40,6 +320,7 @@ struct launcher_client_state {
     struct xdg_wm_base *xdg_wm_base;
     struct wl_seat *seat;
     struct wl_touch *touch;
+    struct wl_pointer *pointer;
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
@@ -48,53 +329,224 @@ struct launcher_client_state {
     int ready;
     int configured;
     bool needs_redraw;
+    
+    // App grid state
+    int selected_app;
+    int scroll_offset;
+    int icon_size;
+    int grid_cols;
+    int grid_padding;
 };
 
-// Registry listener callbacks for launcher client
-static void launcher_registry_handle_global(void *data, struct wl_registry *registry,
-                                           uint32_t name, const char *interface, uint32_t version) {
-    struct launcher_client_state *state = (struct launcher_client_state *)data;
-    (void)state;
-    
-    NSLog(@"🎯 Launcher: Found global interface: %s (version %u, name %u)", interface, version, name);
-    
-    if (strcmp(interface, "wl_compositor") == 0) {
-        // Bind to compositor interface (minimum version 4)
-        uint32_t bind_version = version < 4 ? version : 4;
-        state->compositor = (struct wl_compositor *)wl_registry_bind(registry, name, &wl_compositor_interface, bind_version);
-        if (state->compositor) {
-            NSLog(@"✅ Launcher: Bound to wl_compositor (version %u)", bind_version);
+// ============================================================================
+// UI Constants and Drawing
+// ============================================================================
+
+#define LAUNCHER_BG_COLOR    0xFF1E1E2E  // Dark background (Catppuccin Mocha)
+#define LAUNCHER_ACCENT      0xFF89B4FA  // Accent color (Blue)
+#define LAUNCHER_TEXT        0xFFCDD6F4  // Text color (Light)
+#define LAUNCHER_SECONDARY   0xFF6C7086  // Secondary text
+#define LAUNCHER_SELECTED    0xFF45475A  // Selected item background
+#define LAUNCHER_ICON_BG     0xFF313244  // Icon background
+
+// App icon drawing (placeholder - replace with actual icon loading)
+static void draw_app_icon(uint32_t *pixels, int buf_width, int x, int y, int size, 
+                          uint32_t color, const char *initial) {
+    // Draw rounded rectangle background
+    int radius = size / 8;
+    for (int py = 0; py < size; py++) {
+        for (int px = 0; px < size; px++) {
+            int ix = x + px;
+            int iy = y + py;
+            if (ix < 0 || ix >= buf_width || iy < 0) continue;
             
-            // Create a surface for the launcher
-            if (!state->surface) {
-                state->surface = wl_compositor_create_surface(state->compositor);
-                if (state->surface) {
-                    NSLog(@"✅ Launcher: Created Wayland surface");
-                    state->ready = 1;
-                } else {
-                    NSLog(@"❌ Launcher: Failed to create surface");
+            // Simple rounded corner check
+            bool in_corner = false;
+            if (px < radius && py < radius) {
+                int dx = radius - px, dy = radius - py;
+                in_corner = (dx*dx + dy*dy) > radius*radius;
+            } else if (px >= size - radius && py < radius) {
+                int dx = px - (size - radius - 1), dy = radius - py;
+                in_corner = (dx*dx + dy*dy) > radius*radius;
+            } else if (px < radius && py >= size - radius) {
+                int dx = radius - px, dy = py - (size - radius - 1);
+                in_corner = (dx*dx + dy*dy) > radius*radius;
+            } else if (px >= size - radius && py >= size - radius) {
+                int dx = px - (size - radius - 1), dy = py - (size - radius - 1);
+                in_corner = (dx*dx + dy*dy) > radius*radius;
+            }
+            
+            if (!in_corner) {
+                pixels[iy * buf_width + ix] = color;
+            }
+        }
+    }
+    
+    // Draw initial letter in center (simplified - no real font rendering)
+    if (initial && initial[0]) {
+        int cx = x + size / 2;
+        int cy = y + size / 2;
+        int letter_size = size / 3;
+        
+        // Simple block letter (placeholder)
+        for (int py = cy - letter_size/2; py < cy + letter_size/2; py++) {
+            for (int px = cx - letter_size/4; px < cx + letter_size/4; px++) {
+                if (px >= 0 && px < buf_width && py >= 0) {
+                    pixels[py * buf_width + px] = LAUNCHER_TEXT;
                 }
             }
-        } else {
-            NSLog(@"❌ Launcher: Failed to bind to wl_compositor");
         }
-    } else if (strcmp(interface, "wl_shm") == 0) {
-        state->shm = (struct wl_shm *)wl_registry_bind(registry, name, &wl_shm_interface, 1);
-        NSLog(@"✅ Launcher: Bound to wl_shm");
-    } else if (strcmp(interface, "xdg_wm_base") == 0) {
-        state->xdg_wm_base = (struct xdg_wm_base *)wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
-        NSLog(@"✅ Launcher: Bound to xdg_wm_base");
-    } else if (strcmp(interface, "wl_seat") == 0) {
-        state->seat = (struct wl_seat *)wl_registry_bind(registry, name, &wl_seat_interface, 7);
-        NSLog(@"✅ Launcher: Bound to wl_seat");
     }
 }
 
-static void launcher_registry_handle_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
-    (void)data;
-    (void)registry;
-    (void)name;
-    NSLog(@"⚠️ Launcher: Global interface removed: %u", name);
+// Draw text label (simplified - placeholder for real text rendering)
+static void draw_label(uint32_t *pixels, int buf_width, int buf_height,
+                       int x, int y, int max_width, const char *text, uint32_t color) {
+    // Placeholder: draw a simple underline to indicate text position
+    int text_len = text ? (int)strlen(text) : 0;
+    int line_width = text_len * 6; // Approximate
+    if (line_width > max_width) line_width = max_width;
+    
+    int start_x = x + (max_width - line_width) / 2;
+    for (int px = start_x; px < start_x + line_width && px < buf_width; px++) {
+        if (y >= 0 && y < buf_height) {
+            // Draw a thin line to represent text
+            pixels[y * buf_width + px] = color;
+            if (y + 1 < buf_height) {
+                pixels[(y + 1) * buf_width + px] = color;
+            }
+        }
+    }
+}
+
+// Main UI drawing function
+static void draw_launcher_ui(void *data, int width, int height, int stride,
+                             struct launcher_client_state *state) {
+    uint32_t *pixels = (uint32_t *)data;
+    
+    // Clear background
+    for (int i = 0; i < width * height; ++i) {
+        pixels[i] = LAUNCHER_BG_COLOR;
+    }
+    
+    // Get applications
+    NSArray<WawonaLauncherApp *> *apps = getLauncherApplications();
+    
+    if (apps.count == 0) {
+        // Draw "No Apps" message
+        int msg_y = height / 2;
+        int msg_x = width / 2 - 50;
+        for (int y = msg_y; y < msg_y + 20 && y < height; y++) {
+            for (int x = msg_x; x < msg_x + 100 && x < width; x++) {
+                pixels[y * width + x] = LAUNCHER_SECONDARY;
+            }
+        }
+        return;
+    }
+    
+    // Calculate grid layout
+    int icon_size = state->icon_size > 0 ? state->icon_size : 64;
+    int padding = state->grid_padding > 0 ? state->grid_padding : 20;
+    int label_height = 24;
+    int cell_width = icon_size + padding;
+    int cell_height = icon_size + label_height + padding;
+    
+    int cols = (width - padding) / cell_width;
+    if (cols < 1) cols = 1;
+    state->grid_cols = cols;
+    
+    // Draw app grid
+    for (NSUInteger i = 0; i < apps.count; i++) {
+        WawonaLauncherApp *app = apps[i];
+        
+        int col = (int)(i % cols);
+        int row = (int)(i / cols);
+        
+        int cell_x = padding + col * cell_width;
+        int cell_y = padding + row * cell_height - state->scroll_offset;
+        
+        // Skip if off-screen
+        if (cell_y + cell_height < 0 || cell_y > height) continue;
+        
+        // Draw selection highlight
+        if ((int)i == state->selected_app) {
+            for (int y = cell_y; y < cell_y + cell_height && y < height; y++) {
+                if (y < 0) continue;
+                for (int x = cell_x; x < cell_x + cell_width && x < width; x++) {
+                    pixels[y * width + x] = LAUNCHER_SELECTED;
+                }
+            }
+        }
+        
+        // Generate icon color from app name (simple hash)
+        uint32_t icon_color = LAUNCHER_ICON_BG;
+        if (app.name) {
+            unsigned hash = 0;
+            for (const char *c = [app.name UTF8String]; *c; c++) {
+                hash = hash * 31 + *c;
+            }
+            // Generate a pleasant color
+            uint8_t hue = hash % 360;
+            uint8_t r = 128 + (hash % 64);
+            uint8_t g = 128 + ((hash >> 8) % 64);
+            uint8_t b = 128 + ((hash >> 16) % 64);
+            icon_color = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+        
+        // Draw icon
+        int icon_x = cell_x + (cell_width - icon_size) / 2;
+        int icon_y = cell_y + padding / 2;
+        char initial[2] = { app.name ? [app.name UTF8String][0] : '?', 0 };
+        draw_app_icon(pixels, width, icon_x, icon_y, icon_size, icon_color, initial);
+        
+        // Draw label
+        int label_y = icon_y + icon_size + 4;
+        draw_label(pixels, width, height, cell_x, label_y, cell_width, 
+                   [app.name UTF8String], LAUNCHER_TEXT);
+    }
+    
+    // Draw header bar
+    for (int y = 0; y < 40 && y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            pixels[y * width + x] = LAUNCHER_SELECTED;
+        }
+    }
+}
+
+// ============================================================================
+// Wayland Protocol Handlers
+// ============================================================================
+
+// Registry listener callbacks
+static void launcher_registry_handle_global(void *data, struct wl_registry *registry,
+                                           uint32_t name, const char *interface, uint32_t version) {
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    
+    NSLog(@"🎯 Launcher: Found global: %s v%u", interface, version);
+    
+    if (strcmp(interface, "wl_compositor") == 0) {
+        uint32_t bind_version = version < 4 ? version : 4;
+        state->compositor = (struct wl_compositor *)wl_registry_bind(registry, name, 
+                                                                     &wl_compositor_interface, bind_version);
+        if (state->compositor) {
+            NSLog(@"✅ Launcher: Bound wl_compositor v%u", bind_version);
+        }
+    } else if (strcmp(interface, "wl_shm") == 0) {
+        state->shm = (struct wl_shm *)wl_registry_bind(registry, name, &wl_shm_interface, 1);
+        NSLog(@"✅ Launcher: Bound wl_shm");
+    } else if (strcmp(interface, "xdg_wm_base") == 0) {
+        state->xdg_wm_base = (struct xdg_wm_base *)wl_registry_bind(registry, name, 
+                                                                    &xdg_wm_base_interface, 1);
+        NSLog(@"✅ Launcher: Bound xdg_wm_base");
+    } else if (strcmp(interface, "wl_seat") == 0) {
+        state->seat = (struct wl_seat *)wl_registry_bind(registry, name, &wl_seat_interface, 7);
+        NSLog(@"✅ Launcher: Bound wl_seat");
+    }
+}
+
+static void launcher_registry_handle_global_remove(void *data, struct wl_registry *registry, 
+                                                   uint32_t name) {
+    (void)data; (void)registry; (void)name;
 }
 
 static const struct wl_registry_listener launcher_registry_listener = {
@@ -102,13 +554,7 @@ static const struct wl_registry_listener launcher_registry_listener = {
     launcher_registry_handle_global_remove
 };
 
-// Arguments for the launcher thread
-typedef struct {
-    __unsafe_unretained WawonaAppDelegate *delegate;
-    int client_fd;
-} LauncherThreadArgs;
-
-// XDG Shell Listeners
+// XDG Shell listeners
 static void xdg_wm_base_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial) {
     xdg_wm_base_pong(xdg_wm_base, serial);
 }
@@ -118,8 +564,10 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 };
 
 static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface, uint32_t serial) {
-    (void)data;
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
     xdg_surface_ack_configure(xdg_surface, serial);
+    state->configured = 1;
+    state->needs_redraw = true;
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -130,22 +578,18 @@ static void xdg_toplevel_configure(void *data, struct xdg_toplevel *xdg_toplevel
                                   int32_t width, int32_t height, struct wl_array *states) {
     struct launcher_client_state *state = (struct launcher_client_state *)data;
     
-    NSLog(@"ℹ️ Launcher: xdg_toplevel_configure received (w=%d, h=%d)", width, height);
-    
     if (width > 0 && height > 0) {
         if (state->width != width || state->height != height) {
             state->width = width;
             state->height = height;
-            NSLog(@"📏 Launcher: Resizing to %dx%d", width, height);
+            NSLog(@"📏 Launcher: Resize to %dx%d", width, height);
             state->needs_redraw = true;
         }
     }
-    state->configured = 1;
 }
 
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel) {
-    NSLog(@"🛑 Launcher: Window closed by compositor");
-    // Exit loop logic here
+    NSLog(@"🛑 Launcher: Close requested");
 }
 
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
@@ -153,76 +597,81 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
     .close = xdg_toplevel_close,
 };
 
-// UI State
-typedef struct {
-    int x, y, w, h;
-    uint32_t color;
-    uint32_t pressed_color;
-    bool pressed;
-    const char *label;
-} Button;
+// ============================================================================
+// Input Handling
+// ============================================================================
 
-#define BUTTON_COUNT 2
-static Button buttons[BUTTON_COUNT] = {
-    {50, 50, 200, 80, 0xFF00FF00, 0xFF00AA00, false, "Green"},
-    {300, 50, 200, 80, 0xFF0000FF, 0xFF0000AA, false, "Blue"}
-};
+static int get_app_at_position(struct launcher_client_state *state, int x, int y) {
+    NSArray<WawonaLauncherApp *> *apps = getLauncherApplications();
+    if (apps.count == 0) return -1;
+    
+    int icon_size = state->icon_size > 0 ? state->icon_size : 64;
+    int padding = state->grid_padding > 0 ? state->grid_padding : 20;
+    int label_height = 24;
+    int cell_width = icon_size + padding;
+    int cell_height = icon_size + label_height + padding;
+    int cols = state->grid_cols > 0 ? state->grid_cols : 1;
+    
+    // Adjust for scroll
+    y += state->scroll_offset;
+    
+    // Skip header
+    if (y < 40) return -1;
+    
+    int col = (x - padding) / cell_width;
+    int row = (y - padding) / cell_height;
+    
+    if (col < 0 || col >= cols) return -1;
+    if (row < 0) return -1;
+    
+    int index = row * cols + col;
+    if (index < 0 || index >= (int)apps.count) return -1;
+    
+    return index;
+}
 
-// Input Listeners
 static void touch_down(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time,
                       struct wl_surface *surface, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
     struct launcher_client_state *state = (struct launcher_client_state *)data;
-    double x = wl_fixed_to_double(x_w);
-    double y = wl_fixed_to_double(y_w);
-    NSLog(@"👇 Launcher: Touch down at (%.1f, %.1f)", x, y);
+    int x = wl_fixed_to_int(x_w);
+    int y = wl_fixed_to_int(y_w);
     
-    bool changed = false;
-    for (int b = 0; b < BUTTON_COUNT; b++) {
-        Button *btn = &buttons[b];
-        if (x >= btn->x && x < btn->x + btn->w && y >= btn->y && y < btn->y + btn->h) {
-            if (!btn->pressed) {
-                btn->pressed = true;
-                NSLog(@"👇 Button %d pressed!", b);
-                changed = true;
-            }
-        }
-    }
-    
-    if (changed) {
+    int app_idx = get_app_at_position(state, x, y);
+    if (app_idx >= 0) {
+        state->selected_app = app_idx;
         state->needs_redraw = true;
+        NSLog(@"👇 Launcher: Selected app %d", app_idx);
     }
 }
 
-static void touch_up(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, int32_t id) {
+static void touch_up(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, 
+                    int32_t id) {
     struct launcher_client_state *state = (struct launcher_client_state *)data;
-    NSLog(@"👆 Launcher: Touch up");
     
-    bool changed = false;
-    for (int b = 0; b < BUTTON_COUNT; b++) {
-        if (buttons[b].pressed) {
-            buttons[b].pressed = false;
-            NSLog(@"👆 Button %d released!", b);
-            changed = true;
-            
-            // Action logic could go here
-            if (b == 0) NSLog(@"🟢 Green Action!");
-            if (b == 1) NSLog(@"🔵 Blue Action!");
+    if (state->selected_app >= 0) {
+        NSArray<WawonaLauncherApp *> *apps = getLauncherApplications();
+        if (state->selected_app < (int)apps.count) {
+            WawonaLauncherApp *app = apps[state->selected_app];
+            NSLog(@"🚀 Launcher: Launching %@", app.name);
+            launchLauncherApplication(app.appId);
         }
-    }
-    
-    if (changed) {
+        state->selected_app = -1;
         state->needs_redraw = true;
     }
 }
 
-static void touch_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
-    // Motion
-}
-
+static void touch_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, 
+                        wl_fixed_t x_w, wl_fixed_t y_w) {}
 static void touch_frame(void *data, struct wl_touch *wl_touch) {}
-static void touch_cancel(void *data, struct wl_touch *wl_touch) {}
-static void touch_shape(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t major, wl_fixed_t minor) {}
-static void touch_orientation(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t orientation) {}
+static void touch_cancel(void *data, struct wl_touch *wl_touch) {
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    state->selected_app = -1;
+    state->needs_redraw = true;
+}
+static void touch_shape(void *data, struct wl_touch *wl_touch, int32_t id, 
+                       wl_fixed_t major, wl_fixed_t minor) {}
+static void touch_orientation(void *data, struct wl_touch *wl_touch, int32_t id, 
+                             wl_fixed_t orientation) {}
 
 static const struct wl_touch_listener touch_listener = {
     .down = touch_down,
@@ -234,15 +683,67 @@ static const struct wl_touch_listener touch_listener = {
     .orientation = touch_orientation,
 };
 
-static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+// Pointer (mouse) handlers for macOS
+static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+                         struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {}
+static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+                         struct wl_surface *surface) {}
+static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+                          wl_fixed_t x, wl_fixed_t y) {
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    int ix = wl_fixed_to_int(x);
+    int iy = wl_fixed_to_int(y);
+    
+    int app_idx = get_app_at_position(state, ix, iy);
+    if (app_idx != state->selected_app) {
+        state->selected_app = app_idx;
+        state->needs_redraw = true;
+    }
+}
+static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+                          uint32_t time, uint32_t button, uint32_t state_val) {
     struct launcher_client_state *state = (struct launcher_client_state *)data;
     
-    if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
-        if (!state->touch) {
-            state->touch = wl_seat_get_touch(wl_seat);
-            wl_touch_add_listener(state->touch, &touch_listener, state);
-            NSLog(@"✅ Launcher: Got touch device");
+    if (state_val == WL_POINTER_BUTTON_STATE_RELEASED && state->selected_app >= 0) {
+        NSArray<WawonaLauncherApp *> *apps = getLauncherApplications();
+        if (state->selected_app < (int)apps.count) {
+            WawonaLauncherApp *app = apps[state->selected_app];
+            NSLog(@"🚀 Launcher: Launching %@", app.name);
+            launchLauncherApplication(app.appId);
         }
+    }
+}
+static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+                        uint32_t axis, wl_fixed_t value) {
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        state->scroll_offset += wl_fixed_to_int(value);
+        if (state->scroll_offset < 0) state->scroll_offset = 0;
+        state->needs_redraw = true;
+    }
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+    .enter = pointer_enter,
+    .leave = pointer_leave,
+    .motion = pointer_motion,
+    .button = pointer_button,
+    .axis = pointer_axis,
+};
+
+static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t caps) {
+    struct launcher_client_state *state = (struct launcher_client_state *)data;
+    
+    if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !state->touch) {
+        state->touch = wl_seat_get_touch(wl_seat);
+        wl_touch_add_listener(state->touch, &touch_listener, state);
+        NSLog(@"✅ Launcher: Got touch device");
+    }
+    
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !state->pointer) {
+        state->pointer = wl_seat_get_pointer(wl_seat);
+        wl_pointer_add_listener(state->pointer, &pointer_listener, state);
+        NSLog(@"✅ Launcher: Got pointer device");
     }
 }
 
@@ -253,55 +754,21 @@ static const struct wl_seat_listener seat_listener = {
     .name = seat_name,
 };
 
-// Output listener to get screen size
-static void output_geometry(void *data, struct wl_output *wl_output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, const char *make, const char *model, int32_t transform) {
-    // Ignored
-}
+// ============================================================================
+// SHM Buffer Creation
+// ============================================================================
 
-static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
-    struct launcher_client_state *state = (struct launcher_client_state *)data;
-    if (flags & WL_OUTPUT_MODE_CURRENT) {
-        NSLog(@"🖥️ Launcher: Output mode: %dx%d", width, height);
-        // Use this as default size if not explicitly configured by window manager
-        if (!state->configured) {
-            state->width = width;
-            state->height = height;
-            state->needs_redraw = true;
-        }
-    }
-}
-
-static void output_done(void *data, struct wl_output *wl_output) {}
-static void output_scale(void *data, struct wl_output *wl_output, int32_t factor) {
-    NSLog(@"🖥️ Launcher: Output scale: %d", factor);
-}
-static void output_name(void *data, struct wl_output *wl_output, const char *name) {}
-static void output_description(void *data, struct wl_output *wl_output, const char *description) {}
-
-static const struct wl_output_listener output_listener = {
-    .geometry = output_geometry,
-    .mode = output_mode,
-    .done = output_done,
-    .scale = output_scale,
-    .name = output_name,
-    .description = output_description,
-};
-
-// Helper to create a file descriptor for shared memory
 static int create_shm_file(off_t size) {
     char template[1024];
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
     if (runtime_dir) {
-        snprintf(template, sizeof(template), "%s/wayland-shm-XXXXXX", runtime_dir);
+        snprintf(template, sizeof(template), "%s/wawona-shm-XXXXXX", runtime_dir);
     } else {
-        // Fallback to tmp
-        snprintf(template, sizeof(template), "/tmp/wayland-shm-XXXXXX");
+        snprintf(template, sizeof(template), "/tmp/wawona-shm-XXXXXX");
     }
     
     int fd = mkstemp(template);
     if (fd < 0) return -1;
-    
-    // Unlink immediately so it's removed when closed
     unlink(template);
     
     if (ftruncate(fd, size) < 0) {
@@ -312,32 +779,8 @@ static int create_shm_file(off_t size) {
     return fd;
 }
 
-// Helper to draw UI into buffer
-static void draw_ui(void *data, int width, int height, int stride) {
-    uint32_t *pixels = data;
-    
-    // Clear background (Dark Gray)
-    for (int i = 0; i < width * height; ++i) {
-        pixels[i] = 0xFF333333; 
-    }
-    
-    // Draw buttons
-    for (int b = 0; b < BUTTON_COUNT; b++) {
-        Button *btn = &buttons[b];
-        uint32_t color = btn->pressed ? btn->pressed_color : btn->color;
-        
-        for (int y = btn->y; y < btn->y + btn->h; y++) {
-            for (int x = btn->x; x < btn->x + btn->w; x++) {
-                if (x >= 0 && x < width && y >= 0 && y < height) {
-                    pixels[y * width + x] = color;
-                }
-            }
-        }
-    }
-}
-
-// Helper to create an SHM buffer
-static struct wl_buffer *create_shm_buffer(struct launcher_client_state *state, int width, int height, uint32_t format) {
+static struct wl_buffer *create_shm_buffer(struct launcher_client_state *state, 
+                                           int width, int height) {
     if (!state->shm) return NULL;
 
     int stride = width * 4;
@@ -351,277 +794,158 @@ static struct wl_buffer *create_shm_buffer(struct launcher_client_state *state, 
     
     void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (data == MAP_FAILED) {
-        NSLog(@"❌ Launcher: Failed to mmap SHM file");
+        NSLog(@"❌ Launcher: Failed to mmap SHM");
         close(fd);
         return NULL;
     }
     
     struct wl_shm_pool *pool = wl_shm_create_pool(state->shm, fd, size);
-    struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, format);
-    
+    struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, 
+                                                          stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
     close(fd);
     
     // Draw UI
-    draw_ui(data, width, height, stride);
+    draw_launcher_ui(data, width, height, stride, state);
     
     munmap(data, size);
     return buffer;
 }
 
-// Launcher client thread function - runs as in-process Wayland client (App Store compliant)
+// ============================================================================
+// Thread Arguments
+// ============================================================================
+
+typedef struct {
+    __unsafe_unretained WawonaAppDelegate *delegate;
+    int client_fd;
+} LauncherThreadArgs;
+
+// ============================================================================
+// Main Launcher Thread
+// ============================================================================
+
 static void *launcherClientThread(void *arg) {
     LauncherThreadArgs *args = (LauncherThreadArgs *)arg;
     WawonaAppDelegate *delegate = args->delegate;
     int client_fd = args->client_fd;
-    free(args); // Free arguments
+    free(args);
     
-    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
-    const char *wayland_display = getenv("WAYLAND_DISPLAY");
-    const char *tcp_port_str = getenv("WAYLAND_TCP_PORT");
+    // Initialize application list
+    refreshLauncherApplicationList();
     
-    // Initialize launcher client state
+    // Initialize state
     struct launcher_client_state state = {0};
     state.width = 800;
     state.height = 600;
-    state.ready = 0;
+    state.icon_size = 64;
+    state.grid_padding = 20;
+    state.selected_app = -1;
     
     struct wl_display *client_display = NULL;
     
+    // Connect to compositor
     if (client_fd >= 0) {
-        // Use the provided socket (e.g. from socketpair)
-        NSLog(@"🔌 Launcher: Connecting using provided socket fd %d...", client_fd);
+        NSLog(@"🔌 Launcher: Connecting via fd %d", client_fd);
         client_display = wl_display_connect_to_fd(client_fd);
-        if (!client_display) {
-            NSLog(@"⚠️ Launcher: Failed to create Wayland display from provided FD");
-            close(client_fd);
-            return NULL;
-        }
-        NSLog(@"✅ Launcher: Connected via provided socket");
-    } else if (tcp_port_str && tcp_port_str[0] != '\0') {
-        // Connect via TCP socket (fallback)
-        int port = atoi(tcp_port_str);
-        if (port <= 0 || port > 65535) {
-            NSLog(@"⚠️ Invalid TCP port: %s", tcp_port_str);
-            return NULL;
-        }
-        
-        // Create TCP socket
-        int tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (tcp_fd < 0) {
-            NSLog(@"⚠️ Failed to create TCP socket: %s", strerror(errno));
-            return NULL;
-        }
-        
-        // Set socket options
-        int reuse = 1;
-        setsockopt(tcp_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        
-        // Connect to localhost (blocking)
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-        addr.sin_port = htons(port);
-        
-        NSLog(@"🔌 Launcher: Connecting to TCP socket on port %d...", port);
-        if (connect(tcp_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            NSLog(@"⚠️ Failed to connect to Wayland TCP socket on port %d: %s", port, strerror(errno));
-            close(tcp_fd);
-            return NULL;
-        }
-        
-        NSLog(@"✅ Launcher: TCP socket connected");
-        
-        // Connect Wayland display to TCP socket FD
-        // wl_display_connect_to_fd takes ownership of the FD
-        client_display = wl_display_connect_to_fd(tcp_fd);
-        if (!client_display) {
-            NSLog(@"⚠️ Failed to create Wayland display from TCP socket FD");
-            close(tcp_fd);
-            return NULL;
-        }
-        
-        NSLog(@"✅ Launcher client connected via TCP (port %d)", port);
     } else {
-        // Connect via Unix socket (standard Wayland)
-        if (!runtime_dir || !wayland_display) {
-            NSLog(@"⚠️ Wayland environment not set up for launcher client");
-            return NULL;
+        const char *tcp_port_str = getenv("WAYLAND_TCP_PORT");
+        if (tcp_port_str && tcp_port_str[0]) {
+            int port = atoi(tcp_port_str);
+            int tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
+            if (tcp_fd >= 0) {
+                struct sockaddr_in addr = {0};
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                addr.sin_port = htons(port);
+                
+                if (connect(tcp_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                    client_display = wl_display_connect_to_fd(tcp_fd);
+                } else {
+                    close(tcp_fd);
+                }
+            }
+        } else {
+            client_display = wl_display_connect(NULL);
         }
-        
-        // Connect to Wayland display as a client (in-process, App Store compliant)
-        // wl_display_connect uses WAYLAND_DISPLAY env var or connects to default
-        client_display = wl_display_connect(NULL);
-        if (!client_display) {
-            NSLog(@"⚠️ Failed to connect launcher client to Wayland display");
-            NSLog(@"   XDG_RUNTIME_DIR=%s, WAYLAND_DISPLAY=%s", runtime_dir, wayland_display);
-            return NULL;
-        }
-        
-        NSLog(@"✅ Launcher client connected via Unix socket");
     }
     
-    setClientDisplay(delegate, client_display);
-    NSLog(@"✅ Launcher client connected to Wayland display");
-    
-    // Get registry FIRST - this triggers the initial protocol handshake
-    struct wl_registry *registry = wl_display_get_registry(client_display);
-    if (!registry) {
-        NSLog(@"⚠️ Failed to get Wayland registry for launcher client");
-        wl_display_disconnect(client_display);
-        setClientDisplay(delegate, NULL);
+    if (!client_display) {
+        NSLog(@"❌ Launcher: Failed to connect to compositor");
         return NULL;
     }
     
+    setClientDisplay(delegate, client_display);
+    NSLog(@"✅ Launcher: Connected to compositor");
+    
+    // Get registry
+    struct wl_registry *registry = wl_display_get_registry(client_display);
     wl_registry_add_listener(registry, &launcher_registry_listener, &state);
+    wl_display_roundtrip(client_display);
     
-    // Flush to send registry request
-    wl_display_flush(client_display);
-    
-    // Small delay to ensure server processes the request
-    struct timespec ts = {0, 100000000}; // 100ms
-    nanosleep(&ts, NULL);
-    
-    // Roundtrip to receive registry events and bind to interfaces
-    // wl_display_roundtrip waits for server response
-    NSLog(@"🔄 Launcher: Starting registry roundtrip...");
-    int roundtrip_result = wl_display_roundtrip(client_display);
-    if (roundtrip_result == -1) {
-        NSLog(@"⚠️ Launcher: Initial roundtrip failed, trying dispatch...");
-        // Try dispatch as fallback
-        int dispatch_result = wl_display_dispatch(client_display);
-        if (dispatch_result == -1) {
-            NSLog(@"❌ Launcher: Both roundtrip and dispatch failed");
-        }
-    }
-    
-    // Check if we got compositor
-    if (!state.compositor) {
-        NSLog(@"⚠️ Launcher: Compositor not found after initial handshake, retrying...");
-        // Try a few more times with delays
-        for (int i = 0; i < 5 && !state.compositor; i++) {
-            struct timespec delay = {0, 100000000}; // 100ms
-            nanosleep(&delay, NULL);
-            int dispatch_result = wl_display_dispatch(client_display);
-            if (dispatch_result == -1 && i == 0) {
-                NSLog(@"⚠️ Launcher: Dispatch failed on retry %d", i + 1);
-            }
-            if (state.compositor) {
-                NSLog(@"✅ Launcher: Found wl_compositor on retry %d", i + 1);
-                break;
-            }
-        }
-    }
-    
-    if (!state.compositor) {
-        NSLog(@"❌ Launcher: Failed to bind to wl_compositor after multiple attempts");
+    if (!state.compositor || !state.shm) {
+        NSLog(@"❌ Launcher: Missing required globals");
         wl_registry_destroy(registry);
         wl_display_disconnect(client_display);
         setClientDisplay(delegate, NULL);
         return NULL;
     }
     
-    // Create surface now that we have compositor
-    if (!state.surface) {
-        state.surface = wl_compositor_create_surface(state.compositor);
-        if (state.surface) {
-            if (state.xdg_wm_base) {
-                state.xdg_surface = xdg_wm_base_get_xdg_surface(state.xdg_wm_base, state.surface);
-                xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
-                
-                state.xdg_toplevel = xdg_surface_get_toplevel(state.xdg_surface);
-                xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, &state);
-                
-                // Set title and app ID
-                xdg_toplevel_set_title(state.xdg_toplevel, "Wawona Launcher");
-                xdg_toplevel_set_app_id(state.xdg_toplevel, "com.aspauldingcode.Wawona.Launcher");
-                
-                // Commit to trigger initial configure
-                wl_surface_commit(state.surface);
-                NSLog(@"✅ Launcher: Created XDG surface");
-            } else {
-                NSLog(@"✅ Launcher: Created Wayland surface (no XDG shell)");
-            }
-            state.ready = 1;
-        } else {
-            NSLog(@"❌ Launcher: Failed to create surface");
-            wl_compositor_destroy(state.compositor);
-            wl_registry_destroy(registry);
-            wl_display_disconnect(client_display);
-            setClientDisplay(delegate, NULL);
-            return NULL;
-        }
-    }
+    // Create surface
+    state.surface = wl_compositor_create_surface(state.compositor);
     
-    NSLog(@"🚀 Launcher client running with surface (in-process, App Store compliant)");
-    
-    // Don't block waiting for configure event - just draw immediately
-    // This ensures we see something even if xdg_shell handshake fails or is delayed
-    /*
     if (state.xdg_wm_base) {
-        while (!state.configured) {
-            if (wl_display_dispatch(client_display) == -1) break;
-        }
-    }
-    */
-    
-    // Set default size if not configured
-    if (state.width == 0) state.width = 800;
-    if (state.height == 0) state.height = 600;
-    
-    // Create and attach a buffer to make the surface visible
-    if (state.shm) {
-        struct wl_buffer *buffer = create_shm_buffer(&state, state.width, state.height, WL_SHM_FORMAT_ARGB8888);
-        if (buffer) {
-            wl_surface_attach(state.surface, buffer, 0, 0);
-            wl_surface_damage(state.surface, 0, 0, state.width, state.height);
-            wl_surface_commit(state.surface);
-            // Don't destroy buffer immediately, we might need it for redraws or keep it alive
-            // For SHM, we can destroy the wl_buffer handle if we don't need to reference it, 
-            // but server needs it until release.
-            // wl_buffer_destroy(buffer); 
-            NSLog(@"✅ Launcher: Attached SHM buffer (%dx%d)", state.width, state.height);
-        } else {
-            NSLog(@"❌ Launcher: Failed to create SHM buffer");
-        }
-    } else {
-        NSLog(@"⚠️ Launcher: No wl_shm global found, cannot create buffer");
+        xdg_wm_base_add_listener(state.xdg_wm_base, &xdg_wm_base_listener, &state);
+        
+        state.xdg_surface = xdg_wm_base_get_xdg_surface(state.xdg_wm_base, state.surface);
+        xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
+        
+        state.xdg_toplevel = xdg_surface_get_toplevel(state.xdg_surface);
+        xdg_toplevel_add_listener(state.xdg_toplevel, &xdg_toplevel_listener, &state);
+        xdg_toplevel_set_title(state.xdg_toplevel, "Wawona Launcher");
+        xdg_toplevel_set_app_id(state.xdg_toplevel, "com.aspauldingcode.Wawona.Launcher");
+        
+        wl_surface_commit(state.surface);
+        wl_display_roundtrip(client_display);
     }
     
-    // Flush to ensure server sees it
-    wl_display_flush(client_display);
+    // Set up input
+    if (state.seat) {
+        wl_seat_add_listener(state.seat, &seat_listener, &state);
+        wl_display_roundtrip(client_display);
+    }
     
-    // Keep the connection alive and process events
-    int dispatch_result;
-    while ((dispatch_result = wl_display_dispatch(client_display)) != -1) {
-        // Check if redraw needed
+    // Initial render
+    struct wl_buffer *buffer = create_shm_buffer(&state, state.width, state.height);
+    if (buffer) {
+        wl_surface_attach(state.surface, buffer, 0, 0);
+        wl_surface_damage(state.surface, 0, 0, state.width, state.height);
+        wl_surface_commit(state.surface);
+    }
+    
+    NSLog(@"🚀 Launcher: Running with %lu apps", (unsigned long)getLauncherApplications().count);
+    
+    // Event loop
+    while (wl_display_dispatch(client_display) != -1) {
         if (state.needs_redraw) {
             state.needs_redraw = false;
-            // ... redraw logic ...
-            struct wl_buffer *buffer = create_shm_buffer(&state, state.width, state.height, WL_SHM_FORMAT_ARGB8888);
+            buffer = create_shm_buffer(&state, state.width, state.height);
             if (buffer) {
                 wl_surface_attach(state.surface, buffer, 0, 0);
                 wl_surface_damage(state.surface, 0, 0, state.width, state.height);
                 wl_surface_commit(state.surface);
-                NSLog(@"✅ Launcher: Redrawn buffer (%dx%d)", state.width, state.height);
             }
             wl_display_flush(client_display);
         }
     }
     
-    // If we get here, dispatch returned -1 (error)
-    NSLog(@"⚠️ Launcher: wl_display_dispatch returned error, disconnecting");
-    
-    NSLog(@"🛑 Launcher client disconnected");
-    
     // Cleanup
-    if (state.surface) {
-        wl_surface_destroy(state.surface);
-    }
-    if (state.compositor) {
-        wl_compositor_destroy(state.compositor);
-    }
+    NSLog(@"🛑 Launcher: Shutting down");
+    if (state.xdg_toplevel) xdg_toplevel_destroy(state.xdg_toplevel);
+    if (state.xdg_surface) xdg_surface_destroy(state.xdg_surface);
+    if (state.surface) wl_surface_destroy(state.surface);
+    if (state.touch) wl_touch_destroy(state.touch);
+    if (state.pointer) wl_pointer_destroy(state.pointer);
     wl_registry_destroy(registry);
     wl_display_disconnect(client_display);
     setClientDisplay(delegate, NULL);
@@ -629,23 +953,13 @@ static void *launcherClientThread(void *arg) {
     return NULL;
 }
 
-// Public function to start the launcher client thread
+// ============================================================================
+// Public API
+// ============================================================================
+
 pthread_t startLauncherClientThread(WawonaAppDelegate *delegate, int client_fd) {
-    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
-    const char *wayland_display = getenv("WAYLAND_DISPLAY");
-    const char *tcp_port = getenv("WAYLAND_TCP_PORT");
-    
-    // Check if Wayland environment is set up (either Unix socket or TCP or we have an FD)
-    if (client_fd < 0 && !tcp_port && (!runtime_dir || !wayland_display)) {
-        NSLog(@"⚠️ Wayland environment not set up - skipping launcher client");
-        NSLog(@"   (Need either client_fd, WAYLAND_TCP_PORT or XDG_RUNTIME_DIR+WAYLAND_DISPLAY)");
-        return NULL;
-    }
-    
-    // Allocate arguments structure
     LauncherThreadArgs *args = malloc(sizeof(LauncherThreadArgs));
     if (!args) {
-        NSLog(@"❌ Failed to allocate memory for launcher thread args");
         if (client_fd >= 0) close(client_fd);
         return NULL;
     }
@@ -654,31 +968,25 @@ pthread_t startLauncherClientThread(WawonaAppDelegate *delegate, int client_fd) 
     args->client_fd = client_fd;
     
     pthread_t thread;
-    int ret = pthread_create(&thread, NULL, launcherClientThread, args);
-    if (ret != 0) {
-        NSLog(@"❌ Failed to create launcher client thread: %s", strerror(ret));
+    if (pthread_create(&thread, NULL, launcherClientThread, args) != 0) {
         free(args);
         if (client_fd >= 0) close(client_fd);
         return NULL;
     }
     
-    // Detach thread so it cleans up automatically
     pthread_detach(thread);
-    
-    NSLog(@"✅ Launcher client thread started (in-process, App Store compliant)");
+    NSLog(@"✅ Launcher: Thread started");
     return thread;
 }
 
-// Public function to get the client display from delegate
 struct wl_display *getLauncherClientDisplay(WawonaAppDelegate *delegate) {
     return getClientDisplay(delegate);
 }
 
-// Public function to disconnect and cleanup the launcher client
 void disconnectLauncherClient(WawonaAppDelegate *delegate) {
-    struct wl_display *client_display = getClientDisplay(delegate);
-    if (client_display) {
-        wl_display_disconnect(client_display);
+    struct wl_display *display = getClientDisplay(delegate);
+    if (display) {
+        wl_display_disconnect(display);
         setClientDisplay(delegate, NULL);
     }
 }

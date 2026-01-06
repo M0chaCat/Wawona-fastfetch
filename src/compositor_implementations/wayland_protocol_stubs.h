@@ -1,9 +1,8 @@
 #pragma once
 #include <wayland-server.h>
+#include "wayland_decoration.h"
 
-struct wl_decoration_manager_impl {
-    struct wl_global *global;
-};
+// NOTE: wl_decoration_manager_impl is defined in wayland_decoration.h
 
 struct wl_toplevel_icon_manager_impl {
     struct wl_global *global;
@@ -44,7 +43,7 @@ struct qt_windowmanager_impl { struct wl_global *global; };
 
 void register_protocol_stubs(struct wl_display *display);
 
-struct wl_decoration_manager_impl *wl_decoration_create(struct wl_display *display);
+// wl_decoration_create is defined in wayland_decoration.h (included at top)
 struct wl_toplevel_icon_manager_impl *wl_toplevel_icon_create(struct wl_display *display);
 struct wl_activation_manager_impl *wl_activation_create(struct wl_display *display);
 struct wl_fractional_scale_manager_impl *wl_fractional_scale_create(struct wl_display *display);

@@ -9,7 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 @interface WawonaPreferences : UITableViewController
 #else
+@class WawonaPreferencesSection;
+
 @interface WawonaPreferences : NSWindowController
+@property(nonatomic, strong, readonly) NSArray<WawonaPreferencesSection *> *sections;
 #endif
 
 + (instancetype)sharedPreferences;

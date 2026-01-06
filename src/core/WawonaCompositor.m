@@ -74,7 +74,7 @@ static int tcp_accept_timer_handler(void *data) {
     // Select error
     static int logged_select_error = 0;
     if (!logged_select_error) {
-      log_printf("[COMPOSITOR] ", "⚠️ TCP select() failed: %s\n",
+      log_printf("COMPOSITOR", "⚠️ TCP select() failed: %s\n",
                  strerror(errno));
       logged_select_error = 1;
     }
@@ -119,7 +119,7 @@ static int tcp_accept_timer_handler(void *data) {
       if (!allowMultiple && g_compositor_instance &&
           g_compositor_instance->connectedClientCount > 0) {
 #endif
-        log_printf("[COMPOSITOR] ",
+        log_printf("COMPOSITOR",
                    "🚫 TCP client rejected: multiple clients disabled\n");
         close(client_fd);
         continue;
@@ -132,14 +132,14 @@ static int tcp_accept_timer_handler(void *data) {
           wl_client_create(compositor->display, client_fd);
 #endif
       if (!client) {
-        log_printf("[COMPOSITOR] ",
+        log_printf("COMPOSITOR",
                    "⚠️ Failed to create Wayland client for TCP connection "
                    "(fd=%d): %s\n",
                    client_fd, strerror(errno));
         close(client_fd);
       } else {
         accepted_count++;
-        log_printf("[COMPOSITOR] ",
+        log_printf("COMPOSITOR",
                    "✅ Accepted TCP connection (fd=%d from %s:%d), created "
                    "Wayland client %p\n",
                    client_fd, inet_ntoa(client_addr.sin_addr),
@@ -155,7 +155,7 @@ static int tcp_accept_timer_handler(void *data) {
         // Real error
         static int logged_accept_error = 0;
         if (!logged_accept_error || err != EINVAL) {
-          log_printf("[COMPOSITOR] ", "⚠️ TCP accept() failed: %s (errno=%d)\n",
+          log_printf("COMPOSITOR", "⚠️ TCP accept() failed: %s (errno=%d)\n",
                      strerror(err), err);
           if (err == EINVAL) {
             logged_accept_error = 1;
@@ -167,7 +167,7 @@ static int tcp_accept_timer_handler(void *data) {
   }
 
   if (accepted_count > 0) {
-    log_printf("[COMPOSITOR] ", "✅ Accepted %d TCP connection(s) this tick\n",
+    log_printf("COMPOSITOR", "✅ Accepted %d TCP connection(s) this tick\n",
                accepted_count);
   }
 
@@ -220,6 +220,10 @@ static void region_destroy_resource(struct wl_resource *resource) {
 }
 
 static void compositor_destroy_bound_resource(struct wl_resource *resource) {
+  // NOTE: We don't clear frame callbacks here because:
+  // 1. Frame callbacks are cleared in surface_destroy_resource when surfaces are destroyed
+  // 2. Clearing callbacks here can cause issues if called at the wrong time (e.g., during connection)
+  // 3. The validation in wl_send_frame_callbacks will skip invalid callbacks safely
   (void)resource;
   macos_compositor_handle_client_disconnect();
 }
@@ -295,6 +299,14 @@ static void surface_frame(struct wl_client *client,
     wl_resource_destroy(surface->frame_callback);
   }
   surface->frame_callback = callback_resource;
+  
+  // Log frame callback requests for debugging
+  static int frame_request_count = 0;
+  frame_request_count++;
+  if (frame_request_count <= 20 || frame_request_count % 100 == 0) {
+    log_printf("SURFACE", "Frame callback requested (surface=%p, callback=%p, request #%d)\n",
+               (void*)surface, (void*)callback_resource, frame_request_count);
+  }
 
   // Notify compositor to ensure frame callback timer is running
   if (g_compositor && g_compositor->frame_callback_requested) {
@@ -417,12 +429,39 @@ static const struct wl_surface_interface surface_interface = {
 
 static void surface_destroy_resource(struct wl_resource *resource) {
   struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
+  
+  // Log surface destruction for debugging
+  log_printf("COMPOSITOR", "⚠️ Destroying surface %p (resource=%p, g_surface_list=%p)\n",
+             (void*)surface, (void*)resource, (void*)g_surface_list);
 
-  // CRITICAL: Notify renderer to remove this surface before we free it
-  // This prevents Use-After-Free crashes in the renderer loop
-  remove_surface_from_renderer(surface);
+  // CRITICAL: Clear frame callback pointer FIRST before any other cleanup
+  // This prevents the frame callback timer from trying to send to a destroyed resource
+  // The callback resource is owned by the same client and will be destroyed automatically
+  if (surface->frame_callback) {
+    surface->frame_callback = NULL;
+  }
+  
+  // CRITICAL: Clear focused_surface from seat if it points to this surface
+  // This prevents windowDidResignKey from crashing when trying to access freed memory
+#ifdef __APPLE__
+  if (g_compositor_instance && g_compositor_instance.seat) {
+    if (g_compositor_instance.seat->focused_surface == surface) {
+      log_printf("COMPOSITOR", "   Clearing focused_surface (was %p)\n", (void*)surface);
+      g_compositor_instance.seat->focused_surface = NULL;
+    }
+  }
+#endif
 
-  // Remove from global list
+  // CRITICAL: Acquire lock and remove from global list atomically
+  // This prevents renderFrame from iterating over this surface while we're destroying it.
+  // Must hold lock while modifying the list to prevent race conditions.
+  wl_compositor_lock_surfaces();
+  
+  // Clear the resource pointer FIRST while holding the lock
+  // This signals to any iterators that the surface is being destroyed
+  surface->resource = NULL;
+  
+  // Now remove from list
   if (g_surface_list == surface) {
     g_surface_list = surface->next;
   } else {
@@ -434,6 +473,17 @@ static void surface_destroy_resource(struct wl_resource *resource) {
       prev->next = surface->next;
     }
   }
+  surface->next = NULL;
+  
+  wl_compositor_unlock_surfaces();
+  
+  log_printf("COMPOSITOR", "   Surface removed from list, g_surface_list=%p\n", (void*)g_surface_list);
+
+  // CRITICAL: Notify renderer to remove this surface
+  // Now safe to call because surface is no longer in g_surface_list
+  remove_surface_from_renderer(surface);
+  
+  log_printf("COMPOSITOR", "   Surface destroyed\n");
 
   free(surface);
 }
@@ -467,6 +517,10 @@ static void compositor_create_surface(struct wl_client *client,
   // Add to global list
   surface->next = g_surface_list;
   g_surface_list = surface;
+  
+  // Log surface creation for debugging
+  log_printf("COMPOSITOR", "✓ Created surface %p (resource id=%u, g_surface_list=%p)\n", 
+             (void*)surface, id, (void*)g_surface_list);
 }
 
 static void compositor_create_region(struct wl_client *client,
@@ -582,21 +636,43 @@ void wl_compositor_set_frame_callback_requested(
 
 void wl_compositor_set_seat(struct wl_seat_impl *seat) { (void)seat; }
 
+// Simple spinlock for protecting surface list during iteration
+// This prevents race conditions between main thread (renderFrame) and
+// event thread (surface_destroy_resource)
+static volatile int g_surface_list_lock = 0;
+static inline void acquire_surface_lock(void) {
+    while (__atomic_test_and_set(&g_surface_list_lock, __ATOMIC_ACQUIRE)) {
+        // Spin wait - very brief for quick operations
+    }
+}
+static inline void release_surface_lock(void) {
+    __atomic_clear(&g_surface_list_lock, __ATOMIC_RELEASE);
+}
+
 void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator,
                                     void *data) {
+  acquire_surface_lock();
   struct wl_surface_impl *s = g_surface_list;
   while (s) {
-    iterator(s, data);
-    s = s->next;
+    // SAFETY: Take a copy of next before calling iterator, in case
+    // the iterator somehow modifies the list (it shouldn't, but be safe)
+    struct wl_surface_impl *next = s->next;
+    // Additional safety: only call iterator if surface appears valid
+    // (resource being NULL means surface is being destroyed)
+    if (s->resource) {
+      iterator(s, data);
+    }
+    s = next;
   }
+  release_surface_lock();
 }
 
 void wl_compositor_lock_surfaces(void) {
-  // TODO: Mutex
+  acquire_surface_lock();
 }
 
 void wl_compositor_unlock_surfaces(void) {
-  // TODO: Mutex
+  release_surface_lock();
 }
 
 struct wl_surface_impl *wl_surface_from_resource(struct wl_resource *resource) {
@@ -658,17 +734,17 @@ struct wl_surface_impl *wl_get_all_surfaces(void) { return g_surface_list; }
 // linking (Code above was simplified)
 #include "metal_waypipe.h"
 #include "wayland_drm.h"
-#include "wayland_gtk_shell.h"
+// Removed: wayland_gtk_shell.h (dead code - stubs in protocol_stubs.c)
 #include "wayland_idle_inhibit.h"
 #include "wayland_idle_manager.h"
 #include "wayland_keyboard_shortcuts.h"
 #include "wayland_linux_dmabuf.h"
-#include "wayland_plasma_shell.h"
+// Removed: wayland_plasma_shell.h (dead code - stubs in protocol_stubs.c)
 #include "wayland_pointer_constraints.h"
 #include "wayland_pointer_gestures.h"
 #include "wayland_primary_selection.h"
 #include "wayland_protocol_stubs.h"
-#include "wayland_qt_extensions.h"
+// Removed: wayland_qt_extensions.h (dead code - stubs in protocol_stubs.c)
 #include "wayland_relative_pointer.h"
 #include "wayland_screencopy.h"
 #include "wayland_shell.h"
@@ -1008,15 +1084,15 @@ static void wawona_compositor_frame_callback_requested(void) {
     // (let it fire at its scheduled time) This prevents infinite loops where
     // sending callbacks triggers immediate requests
     if (timer_was_missing) {
-      log_printf("[COMPOSITOR] ", "wawona_compositor_frame_callback_requested: "
+      log_printf("COMPOSITOR", "wawona_compositor_frame_callback_requested: "
                                   "Creating timer (first frame request)\n");
       // Create timer with 16ms delay for continuous operation
       if (!ensure_frame_callback_timer_on_event_thread(
               g_compositor_instance, 16, "first frame request")) {
-        log_printf("[COMPOSITOR] ", "wawona_compositor_frame_callback_"
+        log_printf("COMPOSITOR", "wawona_compositor_frame_callback_"
                                     "requested: Failed to create timer\n");
       } else {
-        log_printf("[COMPOSITOR] ",
+        log_printf("COMPOSITOR",
                    "wawona_compositor_frame_callback_requested: Timer created "
                    "successfully. Scheduling immediate fire via idle.\n");
         // Use idle callback to trigger first frame callback immediately
@@ -1255,16 +1331,28 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
   }
 }
 
-// C wrapper function to remove surface (for cleanup)
+// C wrapper function to remove surface from renderer's internal tracking
+// NOTE: The surface must already be removed from g_surface_list before calling this!
+// This is ONLY called from the main thread to avoid deadlocks and use-after-free issues.
 void remove_surface_from_renderer(struct wl_surface_impl *surface) {
   if (!g_compositor_instance) {
     return;
   }
 
-  // CRITICAL: Use dispatch_sync to ensure surface is removed from renderer
-  // BEFORE the surface struct is freed by the caller (surface_destroy).
-  // Using dispatch_async causes a race condition where the block runs after
-  // the surface is freed, leading to Use-After-Free crashes.
+  // CRITICAL: Only remove from renderer if we're on the main thread.
+  // If called from the event thread (surface_destroy_resource), we skip this.
+  // 
+  // Why this is safe:
+  // 1. The surface has already been removed from g_surface_list
+  // 2. The renderer iterates g_surface_list in drawSurfacesInRect/renderFrame
+  // 3. Since the surface is no longer in g_surface_list, it won't be rendered
+  // 4. The renderer's surfaceImages/surfaceTextures dictionary may have a stale
+  //    entry, but it won't be accessed because the surface isn't in g_surface_list
+  // 5. The stale entry will be cleaned up when renderSurface detects surface->resource is NULL
+  // 
+  // Why we can't use dispatch_sync: causes deadlock when main thread is in renderFrame
+  // Why we can't use dispatch_async: surface is freed before block runs = use-after-free
+  
   if ([NSThread isMainThread]) {
     // Remove from renderer if active
     if (g_compositor_instance.renderingBackend &&
@@ -1272,16 +1360,8 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
             respondsToSelector:@selector(removeSurface:)]) {
       [g_compositor_instance.renderingBackend removeSurface:surface];
     }
-  } else {
-    dispatch_sync(dispatch_get_main_queue(), ^{
-      // Remove from renderer if active
-      if (g_compositor_instance.renderingBackend &&
-          [g_compositor_instance.renderingBackend
-              respondsToSelector:@selector(removeSurface:)]) {
-        [g_compositor_instance.renderingBackend removeSurface:surface];
-      }
-    });
   }
+  // If not on main thread, skip - the renderer will clean up stale entries naturally
 }
 
 // C function to check if window should be hidden after client disconnects
@@ -1453,7 +1533,59 @@ int wl_send_frame_callbacks(void) {
   int count = 0;
   struct wl_surface_impl *surface = g_surface_list;
   while (surface) {
+    // Store next pointer before any operations that might modify the list
+    struct wl_surface_impl *next_surface = surface->next;
+    
     if (surface->frame_callback) {
+      // SAFETY: Multiple validation checks to prevent crashes when client disconnects
+      // This is critical because client disconnection can happen asynchronously
+      // and leave dangling pointers in our data structures
+      
+      // CRITICAL: First check if frame_callback pointer itself is valid
+      // If it's a very small number or invalid pointer, it's likely freed memory
+      uintptr_t callback_addr = (uintptr_t)surface->frame_callback;
+      if (callback_addr < 0x1000 || callback_addr > 0x7FFFFFFFFFFFF000) {
+        // Invalid pointer - likely freed memory, clear it
+        surface->frame_callback = NULL;
+        surface = next_surface;
+        continue;
+      }
+      
+      // First, verify the surface resource itself is still valid
+      if (!surface->resource) {
+        // Surface resource is NULL - surface was destroyed, clear callback
+        surface->frame_callback = NULL;
+        surface = next_surface;
+        continue;
+      }
+      
+      // Check surface's user_data is still pointing to this surface
+      // (if user_data is NULL or different, the resource was invalidated)
+      void *surface_user_data = wl_resource_get_user_data(surface->resource);
+      if (surface_user_data != surface) {
+        // Surface resource was invalidated - clear callback
+        surface->frame_callback = NULL;
+        surface = next_surface;
+        continue;
+      }
+      
+      // Validate the surface's client is still connected
+      struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+      if (!surface_client) {
+        // Surface's client disconnected - clear callback and skip
+        surface->frame_callback = NULL;
+        surface = next_surface;
+        continue;
+      }
+      
+      // CRITICAL: We avoid calling wl_resource_get_client on the frame_callback resource
+      // because it can crash if the resource is invalid. Instead, we rely on the fact that
+      // frame callbacks are always created by the same client as the surface, so if the
+      // surface's client is valid, we can assume the callback is valid too.
+      // The frame callback will be cleared in surface_destroy_resource when the surface
+      // is destroyed, so we don't need to validate it separately here.
+      // We already validated the callback_addr pointer at the beginning of this block.
+
       // Get current time in milliseconds (wayland time is in milliseconds since
       // epoch)
       struct timespec ts;
@@ -1461,12 +1593,14 @@ int wl_send_frame_callbacks(void) {
       uint32_t time = (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 
       // Send frame callback done event
+      // This is the dangerous call - if resource is invalid, this will crash
+      // But we've done our best to validate it above
       wl_callback_send_done(surface->frame_callback, time);
       wl_resource_destroy(surface->frame_callback);
       surface->frame_callback = NULL;
       count++;
     }
-    surface = surface->next;
+    surface = next_surface;
   }
   return count;
 }
@@ -1479,7 +1613,30 @@ bool wl_has_pending_frame_callbacks(void) {
   struct wl_surface_impl *surface = g_surface_list;
   while (surface) {
     if (surface->frame_callback) {
-      return true;
+      // CRITICAL: We avoid calling wl_resource_get_client on the frame_callback resource
+      // because it can crash if the resource is invalid. Instead, we check if the
+      // surface resource is valid - if it is, we assume the frame callback is valid too
+      // (since they're created by the same client).
+      if (surface->resource) {
+        void *surface_user_data = wl_resource_get_user_data(surface->resource);
+        if (surface_user_data == surface) {
+          // Surface is valid - check if its client is still connected
+          struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+          if (surface_client) {
+            // Surface's client is valid - assume frame callback is valid too
+            return true;
+          } else {
+            // Surface's client disconnected - clear the callback
+            surface->frame_callback = NULL;
+          }
+        } else {
+          // Surface resource was invalidated - clear the callback
+          surface->frame_callback = NULL;
+        }
+      } else {
+        // Surface resource is NULL - clear the callback
+        surface->frame_callback = NULL;
+      }
     }
     surface = surface->next;
   }
@@ -1523,7 +1680,7 @@ bool wl_has_pending_frame_callbacks(void) {
 - (BOOL)start {
   init_compositor_logging();
   NSLog(@"✅ Starting compositor backend...");
-  log_printf("[COMPOSITOR] ", "Starting compositor backend...\n");
+  log_printf("COMPOSITOR", "Starting compositor backend...\n");
 
   // Create Wayland protocol implementations
   // These globals are advertised to clients and enable EGL platform extension
@@ -1713,10 +1870,8 @@ bool wl_has_pending_frame_callbacks(void) {
       wl_text_input_create(_display);
   if (text_input && text_input->global) {
     self.text_input_manager = text_input; // Store to keep it alive
-    NSLog(@"   ✓ Text input protocol v3 created (global=%p)",
-          (void *)text_input->global);
+    NSLog(@"   ✓ Text input protocol v3 created");
   } else {
-    NSLog(@"   ❌ Failed to create text input protocol v3");
     self.text_input_manager = NULL;
   }
 
@@ -1724,15 +1879,12 @@ bool wl_has_pending_frame_callbacks(void) {
   struct wl_text_input_manager_v1_impl *text_input_v1 =
       wl_text_input_v1_create(_display);
   if (text_input_v1 && text_input_v1->global) {
-    NSLog(@"   ✓ Text input protocol v1 created (global=%p)",
-          (void *)text_input_v1->global);
-  } else {
-    NSLog(@"   ❌ Failed to create text input protocol v1");
+    NSLog(@"   ✓ Text input protocol v1 created");
   }
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
   // EGL buffer handler (for rendering EGL/OpenGL ES buffers using
-  // KosmicKrisp+Zink)
+  // KosmicKrisp+Zink) - optional, falls back gracefully
   struct egl_buffer_handler *egl_handler =
       calloc(1, sizeof(struct egl_buffer_handler));
   if (egl_handler) {
@@ -1740,13 +1892,11 @@ bool wl_has_pending_frame_callbacks(void) {
       self.egl_buffer_handler = egl_handler;
       NSLog(@"   ✓ EGL buffer handler initialized (KosmicKrisp+Zink)");
     } else {
-      NSLog(@"   ⚠️ EGL buffer handler initialization failed (EGL may not be "
-            @"available)");
+      // EGL is optional - clients can use SHM or dmabuf instead
       free(egl_handler);
       self.egl_buffer_handler = NULL;
     }
   } else {
-    NSLog(@"   ❌ Failed to allocate EGL buffer handler");
     self.egl_buffer_handler = NULL;
   }
 #endif
@@ -1845,13 +1995,13 @@ bool wl_has_pending_frame_callbacks(void) {
   NSLog(@"   ✓ Fullscreen shell protocol created (for arbitrary resolution "
         @"support)");
 
-  // GTK Shell protocol (for GTK applications)
+  // GTK Shell protocol (for GTK applications) - optional
   struct gtk_shell1_impl *gtk_shell = gtk_shell1_create(_display);
   if (gtk_shell) {
     NSLog(@"   ✓ GTK Shell protocol created");
   }
 
-  // Plasma Shell protocol (for KDE applications)
+  // Plasma Shell protocol (for KDE applications) - optional
   struct org_kde_plasma_shell_impl *plasma_shell =
       org_kde_plasma_shell_create(_display);
   (void)plasma_shell; // Suppress unused variable warning
@@ -1870,11 +2020,9 @@ bool wl_has_pending_frame_callbacks(void) {
   if (_color_manager) {
     NSLog(@"   ✓ Color management protocol created (HDR: %s)",
           _color_manager->hdr_supported ? "yes" : "no");
-  } else {
-    NSLog(@"   ✗ Color management protocol creation failed");
   }
 
-  // Qt Wayland Extensions (for QtWayland applications)
+  // Qt Wayland Extensions (for QtWayland applications) - optional
   struct qt_surface_extension_impl *qt_surface =
       qt_surface_extension_create(_display);
   if (qt_surface) {
@@ -1883,8 +2031,6 @@ bool wl_has_pending_frame_callbacks(void) {
   struct qt_windowmanager_impl *qt_wm = qt_windowmanager_create(_display);
   if (qt_wm) {
     NSLog(@"   ✓ Qt Window Manager protocol created");
-  } else {
-    NSLog(@"   ✗ Qt Window Manager protocol creation failed");
   }
 
   // Start dedicated Wayland event processing thread
@@ -1896,7 +2042,7 @@ bool wl_has_pending_frame_callbacks(void) {
     if (!compositor)
       return;
 
-    log_printf("[COMPOSITOR] ", "🚀 Wayland event thread started\n");
+    log_printf("COMPOSITOR", "🚀 Wayland event thread started\n");
 
     // Set up proper error handling for client connections
     // wl_display_run() handles client connections internally
@@ -1913,7 +2059,7 @@ bool wl_has_pending_frame_callbacks(void) {
     // - The actual connection will succeed on retry
     // This error is printed by libwayland-server to stderr and cannot be
     // suppressed from our code.
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "ℹ️  Note: Transient 'failed to read client connection' errors "
                "during client setup are normal and harmless\n");
 
@@ -1937,19 +2083,19 @@ bool wl_has_pending_frame_callbacks(void) {
           // return value
           int ret = wl_event_source_timer_update(tcp_accept_timer, 0);
           if (ret < 0) {
-            log_printf("[COMPOSITOR] ",
+            log_printf("COMPOSITOR",
                        "⚠️ Failed to start TCP accept() timer: %s\n",
                        strerror(errno));
             wl_event_source_remove(tcp_accept_timer);
             tcp_accept_timer = NULL;
           } else {
-            log_printf("[COMPOSITOR] ",
+            log_printf("COMPOSITOR",
                        "✅ TCP accept() timer registered and started "
                        "(listen_fd=%d, ret=%d)\n",
                        compositor.tcp_listen_fd, ret);
           }
         } else {
-          log_printf("[COMPOSITOR] ",
+          log_printf("COMPOSITOR",
                      "⚠️ Failed to register TCP accept() timer\n");
         }
       }
@@ -1974,7 +2120,7 @@ bool wl_has_pending_frame_callbacks(void) {
         // Use 16ms timeout (matches frame callback timer interval)
         int ret = wl_event_loop_dispatch(eventLoop, 16);
         if (ret < 0) {
-          log_printf("[COMPOSITOR] ", "⚠️ Event loop dispatch failed: %d\n",
+          log_printf("COMPOSITOR", "⚠️ Event loop dispatch failed: %d\n",
                      ret);
           break;
         }
@@ -1987,11 +2133,11 @@ bool wl_has_pending_frame_callbacks(void) {
         wl_event_source_remove(tcp_accept_timer);
       }
     } @catch (NSException *exception) {
-      log_printf("[COMPOSITOR] ", "⚠️ Exception in Wayland event thread: %s\n",
+      log_printf("COMPOSITOR", "⚠️ Exception in Wayland event thread: %s\n",
                  [exception.reason UTF8String]);
     }
 
-    log_printf("[COMPOSITOR] ", "🛑 Wayland event thread stopped\n");
+    log_printf("COMPOSITOR", "🛑 Wayland event thread stopped\n");
   }];
   _eventThread.name = @"WaylandEventThread";
   [_eventThread start];
@@ -2063,7 +2209,7 @@ bool wl_has_pending_frame_callbacks(void) {
                                  // reduce log spam
                                  if (heartbeat_count >= 12) {
                                    [timer invalidate];
-                                   log_printf("[COMPOSITOR] ",
+                                   log_printf("COMPOSITOR",
                                               "💓 Heartbeat logging stopped "
                                               "(compositor still running)\n");
                                  }
@@ -2429,13 +2575,124 @@ displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeStamp *inNow,
 - (void)windowDidBecomeKey:(NSNotification *)notification {
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
   (void)notification;
-  NSLog(@"[WINDOW] Window became key - accepting keyboard input");
+  log_printf("WINDOW", "Window became key - accepting keyboard input\n");
 
   // Ensure compositor view is first responder when window becomes key
   NSView *contentView = _window.contentView;
   if ([contentView isKindOfClass:[CompositorView class]] &&
       _window.firstResponder != contentView) {
     [_window makeFirstResponder:contentView];
+  }
+  
+  // CRITICAL: Send keyboard focus to Wayland client when window becomes key
+  // Find the focused surface (the one the pointer is over)
+  if (_seat && _seat->keyboard_resource) {
+    // First validate the keyboard resource is still valid
+    struct wl_client *keyboard_client = wl_resource_get_client(_seat->keyboard_resource);
+    if (!keyboard_client) {
+      log_printf("WINDOW", "⚠️ Keyboard resource invalid - skipping keyboard enter\n");
+      return;
+    }
+    
+    struct wl_surface_impl *focused_surface = NULL;
+    if (_seat->focused_surface) {
+      focused_surface = (struct wl_surface_impl *)_seat->focused_surface;
+    } else {
+      // If no focused surface, find the largest surface (main application window)
+      focused_surface = wl_get_all_surfaces();
+      struct wl_surface_impl *best = NULL;
+      int best_area = 0;
+      while (focused_surface) {
+        if (focused_surface->resource && focused_surface->width > 0 && focused_surface->height > 0) {
+          int area = focused_surface->width * focused_surface->height;
+          // Skip cursor surfaces
+          if (focused_surface->width > 64 || focused_surface->height > 64) {
+            if (area > best_area) {
+              best = focused_surface;
+              best_area = area;
+            }
+          }
+        }
+        focused_surface = focused_surface->next;
+      }
+      focused_surface = best;
+    }
+    
+    if (focused_surface && focused_surface->resource) {
+      // Validate the surface resource is still valid
+      void *surface_user_data = wl_resource_get_user_data(focused_surface->resource);
+      if (surface_user_data != focused_surface) {
+        log_printf("WINDOW", "⚠️ Surface was invalidated - skipping keyboard enter\n");
+        return;
+      }
+      
+      // Validate the surface's client matches the keyboard client
+      struct wl_client *surface_client = wl_resource_get_client(focused_surface->resource);
+      if (!surface_client || surface_client != keyboard_client) {
+        log_printf("WINDOW", "⚠️ Surface client mismatch - skipping keyboard enter\n");
+        return;
+      }
+      
+      uint32_t serial = wl_seat_get_serial(_seat);
+      wl_seat_send_keyboard_enter(_seat, focused_surface->resource, serial, NULL);
+      log_printf("WINDOW", "✓ Sent keyboard enter to surface %p (window became key)\n", (void *)focused_surface);
+      _seat->focused_surface = focused_surface;
+    } else {
+      log_printf("WINDOW", "⚠️ No surface found to send keyboard focus\n");
+    }
+  } else {
+    log_printf("WINDOW", "⚠️ No keyboard resource available (client hasn't requested keyboard yet)\n");
+  }
+#else
+  (void)notification;
+#endif
+}
+
+// NSWindowDelegate method - called when window resigns key (loses focus)
+- (void)windowDidResignKey:(NSNotification *)notification {
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+  (void)notification;
+  log_printf("WINDOW", "Window resigned key - losing keyboard focus\n");
+  
+  // Send keyboard leave to Wayland client when window loses focus
+  // CRITICAL: Validate all resources before attempting to send events
+  if (_seat && _seat->keyboard_resource && _seat->focused_surface) {
+    struct wl_surface_impl *focused_surface = (struct wl_surface_impl *)_seat->focused_surface;
+    
+    // Clear focused_surface FIRST to prevent re-entry issues
+    _seat->focused_surface = NULL;
+    
+    // Validate the focused surface and its resource
+    if (focused_surface && focused_surface->resource) {
+      // Validate the surface resource is still valid by checking user_data
+      void *surface_user_data = wl_resource_get_user_data(focused_surface->resource);
+      if (surface_user_data != focused_surface) {
+        // Surface was invalidated - don't send events
+        log_printf("WINDOW", "⚠️ Surface was invalidated - skipping keyboard leave\n");
+        return;
+      }
+      
+      // Validate the surface's client is still connected
+      struct wl_client *surface_client = wl_resource_get_client(focused_surface->resource);
+      if (!surface_client) {
+        // Client disconnected - don't send events
+        log_printf("WINDOW", "⚠️ Surface client disconnected - skipping keyboard leave\n");
+        return;
+      }
+      
+      // Validate the keyboard resource client matches the surface client
+      struct wl_client *keyboard_client = wl_resource_get_client(_seat->keyboard_resource);
+      if (!keyboard_client || keyboard_client != surface_client) {
+        // Keyboard resource is invalid or belongs to different client
+        log_printf("WINDOW", "⚠️ Keyboard resource invalid - skipping keyboard leave\n");
+        return;
+      }
+      
+      // All validation passed - safe to send keyboard leave
+      uint32_t serial = wl_seat_get_serial(_seat);
+      wl_seat_send_keyboard_leave(_seat, focused_surface->resource, serial);
+      log_printf("WINDOW", "✓ Sent keyboard leave to surface %p (window resigned key)\n", (void *)focused_surface);
+    }
   }
 #else
   (void)notification;
@@ -2557,7 +2814,7 @@ static void send_frame_callbacks_timer_idle(void *data) {
   // Do nothing - this function should never be called
   // If it is called, it means there's a bug somewhere adding idle callbacks
   (void)data;
-  log_printf("[COMPOSITOR] ", "ERROR: send_frame_callbacks_timer_idle called - "
+  log_printf("COMPOSITOR", "ERROR: send_frame_callbacks_timer_idle called - "
                               "this should not happen!\n");
 }
 
@@ -2572,7 +2829,7 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
   struct wl_event_loop *eventLoop =
       wl_display_get_event_loop(compositor.display);
   if (!eventLoop) {
-    log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: "
+    log_printf("COMPOSITOR", "ensure_frame_callback_timer_on_event_thread: "
                                 "event loop unavailable\n");
     return NO;
   }
@@ -2581,13 +2838,13 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
     compositor.frame_callback_source = wl_event_loop_add_timer(
         eventLoop, send_frame_callbacks_timer, (__bridge void *)compositor);
     if (!compositor.frame_callback_source) {
-      log_printf("[COMPOSITOR] ",
+      log_printf("COMPOSITOR",
                  "ensure_frame_callback_timer_on_event_thread: Failed to "
                  "create timer (%s)\n",
                  reason ? reason : "no reason");
       return NO;
     }
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "ensure_frame_callback_timer_on_event_thread: Created timer "
                "(%s, delay=%ums)\n",
                reason ? reason : "no reason", delay_ms);
@@ -2602,7 +2859,7 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
                                          actual_delay);
   if (ret < 0) {
     int err = errno;
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "ensure_frame_callback_timer_on_event_thread: timer update "
                "failed (%s, delay=%ums) - recreating\n",
                strerror(err), delay_ms);
@@ -2612,7 +2869,7 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
     compositor.frame_callback_source = wl_event_loop_add_timer(
         eventLoop, send_frame_callbacks_timer, (__bridge void *)compositor);
     if (!compositor.frame_callback_source) {
-      log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread:"
+      log_printf("COMPOSITOR", "ensure_frame_callback_timer_on_event_thread:"
                                   " Failed to recreate timer after error\n");
       return NO;
     }
@@ -2621,7 +2878,7 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
                                        delay_ms);
     if (ret < 0) {
       err = errno;
-      log_printf("[COMPOSITOR] ",
+      log_printf("COMPOSITOR",
                  "ensure_frame_callback_timer_on_event_thread: Second timer "
                  "update failed (%s)\n",
                  strerror(err));
@@ -2630,12 +2887,12 @@ static BOOL ensure_frame_callback_timer_on_event_thread(
       return NO;
     }
 
-    log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: "
+    log_printf("COMPOSITOR", "ensure_frame_callback_timer_on_event_thread: "
                                 "Timer recreated successfully\n");
   } else {
     // Timer update succeeded - verify timer is actually scheduled
     // Log for verification - this confirms the timer should fire
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "ensure_frame_callback_timer_on_event_thread: Timer updated "
                "successfully (delay=%ums, will fire in %ums, timer=%p)\n",
                delay_ms, actual_delay,
@@ -2658,11 +2915,11 @@ static void flush_input_and_send_frame_callbacks_idle(void *data) {
     // Send frame callbacks immediately if any are pending
     // This allows clients to render immediately after processing input
     if (wl_has_pending_frame_callbacks()) {
-      log_printf("[COMPOSITOR] ", "flush_input_and_send_frame_callbacks_idle: "
+      log_printf("COMPOSITOR", "flush_input_and_send_frame_callbacks_idle: "
                                   "Flushing input and sending frame callbacks immediately\n");
       send_frame_callbacks_timer(data);
     } else {
-      log_printf("[COMPOSITOR] ", "flush_input_and_send_frame_callbacks_idle: "
+      log_printf("COMPOSITOR", "flush_input_and_send_frame_callbacks_idle: "
                                   "Flushed input events (no pending frame callbacks)\n");
     }
   }
@@ -2673,7 +2930,7 @@ static void flush_input_and_send_frame_callbacks_idle(void *data) {
 static void trigger_first_frame_callback_idle(void *data) {
   WawonaCompositor *compositor = (__bridge WawonaCompositor *)data;
   if (compositor) {
-    log_printf("[COMPOSITOR] ", "trigger_first_frame_callback_idle: Manually "
+    log_printf("COMPOSITOR", "trigger_first_frame_callback_idle: Manually "
                                 "triggering first frame callback via idle\n");
     // Manually call the timer function
     // This will send callbacks and re-arm the timer for the next frame (16ms
@@ -2710,7 +2967,7 @@ static int send_frame_callbacks_timer(void *data) {
 
   // Always log first call to verify timer fired
   if (timer_call_count == 1) {
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "✅ send_frame_callbacks_timer() FIRED! (call #%d) - Timer is "
                "working!\n",
                timer_call_count);
@@ -2719,7 +2976,7 @@ static int send_frame_callbacks_timer(void *data) {
 
   // Log every 60 calls (approx every 1 second) to keep liveliness check
   if (timer_call_count <= 30 || timer_call_count % 60 == 0) {
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "send_frame_callbacks_timer() called (call #%d)\n",
                timer_call_count);
     fflush(stdout); // Force flush to ensure log is visible
@@ -2748,7 +3005,7 @@ static int send_frame_callbacks_timer(void *data) {
   // Send frame callbacks
   int sent_count = wl_send_frame_callbacks();
   if (sent_count > 0) {
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "send_frame_callbacks_timer: Sent %d frame callback(s)\n",
                sent_count);
     fflush(stdout);
@@ -2765,7 +3022,7 @@ static int send_frame_callbacks_timer(void *data) {
         wl_event_source_timer_update(compositor.frame_callback_source, 16);
     if (ret < 0) {
       int err = errno;
-      log_printf("[COMPOSITOR] ",
+      log_printf("COMPOSITOR",
                  "send_frame_callbacks_timer: Failed to re-arm timer: %s\n",
                  strerror(err));
       // Timer update failed - recreate it
@@ -2778,7 +3035,7 @@ static int send_frame_callbacks_timer(void *data) {
       static int rearm_count = 0;
       rearm_count++;
       if (rearm_count <= 10) {
-        log_printf("[COMPOSITOR] ",
+        log_printf("COMPOSITOR",
                    "send_frame_callbacks_timer: Re-armed timer successfully "
                    "(rearm #%d, next fire in 16ms)\n",
                    rearm_count);
@@ -2786,7 +3043,7 @@ static int send_frame_callbacks_timer(void *data) {
     }
   } else {
     // Timer was removed - recreate it immediately
-    log_printf("[COMPOSITOR] ",
+    log_printf("COMPOSITOR",
                "send_frame_callbacks_timer: Timer was removed, recreating\n");
     ensure_frame_callback_timer_on_event_thread(compositor, 16,
                                                 "recreate after removal");
@@ -2923,7 +3180,7 @@ static void disconnect_all_clients(struct wl_display *display) {
   if (!display)
     return;
 
-  log_printf("[COMPOSITOR] ", "🔌 Disconnecting all clients...\n");
+  log_printf("COMPOSITOR", "🔌 Disconnecting all clients...\n");
 
   // Terminate display to stop accepting new connections first
   wl_display_terminate(display);
@@ -2972,7 +3229,7 @@ static void disconnect_all_clients(struct wl_display *display) {
   // Final flush to ensure all messages are sent
   wl_display_flush_clients(display);
 
-  log_printf("[COMPOSITOR] ", "✅ Client disconnection complete\n");
+  log_printf("COMPOSITOR", "✅ Client disconnection complete\n");
 }
 
 - (void)stop {
@@ -3055,7 +3312,7 @@ static void disconnect_all_clients(struct wl_display *display) {
   if (_tcp_listen_fd >= 0) {
     close(_tcp_listen_fd);
     _tcp_listen_fd = -1;
-    log_printf("[COMPOSITOR] ", "🔌 Closed TCP listening socket\n");
+    log_printf("COMPOSITOR", "🔌 Closed TCP listening socket\n");
   }
 
   // CRITICAL: Destroy the display to properly close sockets and clean up resources
@@ -3076,10 +3333,10 @@ static void disconnect_all_clients(struct wl_display *display) {
     char socket_path[512];
     snprintf(socket_path, sizeof(socket_path), "%s/%s", runtime_dir, socket_name);
     if (unlink(socket_path) == 0) {
-      log_printf("[COMPOSITOR] ", "🗑️ Removed socket file: %s\n", socket_path);
+      log_printf("COMPOSITOR", "🗑️ Removed socket file: %s\n", socket_path);
     } else if (errno != ENOENT) {
       // ENOENT means file doesn't exist, which is fine (might have been cleaned up already)
-      log_printf("[COMPOSITOR] ", "⚠️ Failed to remove socket file %s: %s\n", 
+      log_printf("COMPOSITOR", "⚠️ Failed to remove socket file %s: %s\n", 
                  socket_path, strerror(errno));
     }
   }
@@ -3526,7 +3783,7 @@ void macos_compositor_handle_client_disconnect(void) {
   if (g_compositor_instance->connectedClientCount > 0) {
     g_compositor_instance->connectedClientCount--;
   }
-  log_printf("[FULLSCREEN] Client disconnected. Connected clients: %d\n",
+  log_printf("FULLSCREEN", "Client disconnected. Connected clients: %d\n",
              g_compositor_instance->connectedClientCount);
 #endif
 }
@@ -3556,7 +3813,7 @@ void macos_compositor_handle_client_connect(void) {
   });
 #else
   g_compositor_instance->connectedClientCount++;
-  log_printf("[FULLSCREEN] Client connected. Connected clients: %d\n",
+  log_printf("FULLSCREEN", "Client connected. Connected clients: %d\n",
              g_compositor_instance->connectedClientCount);
 #endif
 }
@@ -3582,7 +3839,7 @@ void macos_compositor_update_title_no_clients(void) {
     }
   });
 #else
-  log_printf("[WINDOW] Updated titlebar title to: Wawona (no clients connected)\n");
+  log_printf("WINDOW", "Updated titlebar title to: Wawona (no clients connected)\n");
 #endif
 }
 

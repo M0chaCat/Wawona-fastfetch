@@ -46,17 +46,7 @@
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
-		<!-- Respect Safe Area -->
-		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
-			<key>Title</key>
-			<string>Respect Safe Area</string>
-			<key>Key</key>
-			<string>RespectSafeArea</string>
-			<key>DefaultValue</key>
-			<false/>
-		</dict>
+		<!-- Note: Respect Safe Area removed for macOS - only relevant for iOS -->
 		
 		<!-- Input Section -->
 		<dict>
@@ -104,7 +94,7 @@
 			<key>Title</key>
 			<string>Universal Clipboard</string>
 			<key>Key</key>
-			<string>UniversalClipboardEnabled</string>
+			<string>UniversalClipboard</string>
 			<key>DefaultValue</key>
 			<true/>
 		</dict>
@@ -170,7 +160,7 @@
 			<key>KeyboardType</key>
 			<string>NumberPad</string>
 		</dict>
-		<!-- Socket Directory (read-only info) -->
+		<!-- Socket Directory (editable on macOS) -->
 		<dict>
 			<key>Type</key>
 			<string>PSTextFieldSpecifier</string>
@@ -179,7 +169,7 @@
 			<key>Key</key>
 			<string>WaylandSocketDir</string>
 			<key>DefaultValue</key>
-			<string>/tmp</string>
+			<string>/tmp/wawona-501</string>
 			<key>KeyboardType</key>
 			<string>Alphabet</string>
 		</dict>
@@ -209,7 +199,7 @@
 			<key>Title</key>
 			<string>Nested Compositors</string>
 			<key>Key</key>
-			<string>NestedCompositorsSupportEnabled</string>
+			<string>NestedCompositorsSupport</string>
 			<key>DefaultValue</key>
 			<true/>
 		</dict>
@@ -220,7 +210,7 @@
 			<key>Title</key>
 			<string>Multiple Clients</string>
 			<key>Key</key>
-			<string>MultipleClientsEnabled</string>
+			<string>MultipleClients</string>
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
@@ -234,6 +224,72 @@
 			<string>EnableLauncher</string>
 			<key>DefaultValue</key>
 			<false/>
+		</dict>
+		
+		<!-- OpenSSH Section -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>OpenSSH</string>
+		</dict>
+		<!-- SSH Host -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>SSH Host</string>
+			<key>Key</key>
+			<string>SSHHost</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>URL</string>
+			<key>Placeholder</key>
+			<string>Remote host address</string>
+		</dict>
+		<!-- SSH User -->
+		<dict>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+			<key>Title</key>
+			<string>SSH User</string>
+			<key>Key</key>
+			<string>SSHUser</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>KeyboardType</key>
+			<string>Alphabet</string>
+			<key>Placeholder</key>
+			<string>SSH username</string>
+		</dict>
+		<!-- Auth Method -->
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Title</key>
+			<string>Auth Method</string>
+			<key>Key</key>
+			<string>SSHAuthMethod</string>
+			<key>DefaultValue</key>
+			<integer>0</integer>
+			<key>Titles</key>
+			<array>
+				<string>Password</string>
+				<string>Public Key</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+			</array>
+		</dict>
+		<!-- Note: Auth-specific options shown in-app -->
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>FooterText</key>
+			<string>Password or SSH Key Path options are shown in the Wawona app based on your Auth Method selection. Passwords and passphrases are stored securely in Keychain.</string>
 		</dict>
 		
 		<!-- Waypipe Section -->
@@ -393,76 +449,16 @@
 			<key>KeyboardType</key>
 			<string>NumberPad</string>
 		</dict>
-		<!-- Enable SSH -->
+		<!-- Use SSH Config -->
 		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
 			<key>Title</key>
-			<string>Enable SSH</string>
+			<string>Use SSH Config</string>
 			<key>Key</key>
-			<string>WaypipeSSHEnabled</string>
+			<string>WaypipeUseSSHConfig</string>
 			<key>DefaultValue</key>
-			<false/>
-		</dict>
-		<!-- SSH Host -->
-		<dict>
-			<key>Type</key>
-			<string>PSTextFieldSpecifier</string>
-			<key>Title</key>
-			<string>SSH Host</string>
-			<key>Key</key>
-			<string>WaypipeSSHHost</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>KeyboardType</key>
-			<string>URL</string>
-		</dict>
-		<!-- SSH User -->
-		<dict>
-			<key>Type</key>
-			<string>PSTextFieldSpecifier</string>
-			<key>Title</key>
-			<string>SSH User</string>
-			<key>Key</key>
-			<string>WaypipeSSHUser</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>KeyboardType</key>
-			<string>Alphabet</string>
-		</dict>
-		<!-- Auth Method -->
-		<dict>
-			<key>Type</key>
-			<string>PSMultiValueSpecifier</string>
-			<key>Title</key>
-			<string>Auth Method</string>
-			<key>Key</key>
-			<string>WaypipeSSHAuthMethod</string>
-			<key>DefaultValue</key>
-			<integer>0</integer>
-			<key>Titles</key>
-			<array>
-				<string>Password</string>
-				<string>Public Key</string>
-			</array>
-			<key>Values</key>
-			<array>
-				<integer>0</integer>
-				<integer>1</integer>
-			</array>
-		</dict>
-		<!-- SSH Key Path -->
-		<dict>
-			<key>Type</key>
-			<string>PSTextFieldSpecifier</string>
-			<key>Title</key>
-			<string>SSH Key Path</string>
-			<key>Key</key>
-			<string>WaypipeSSHKeyPath</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>KeyboardType</key>
-			<string>Alphabet</string>
+			<true/>
 		</dict>
 		<!-- Remote Command -->
 		<dict>

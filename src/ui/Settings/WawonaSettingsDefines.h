@@ -7,5 +7,7 @@ typedef NS_ENUM(NSInteger, WawonaSettingType) {
   WSettingPopup,
   WSettingButton,
   WSettingInfo,
-  WSettingPassword
+  WSettingPassword,
+  WSettingLink,       // Clickable URL link
+  WSettingHeader      // Header with image (for About section)
 };

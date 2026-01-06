@@ -63,7 +63,7 @@ xdg_toplevel_set_max_size(struct wl_client *client, struct wl_resource *resource
     // Accept any max size (including 0x0 which means no restriction)
     // This signals arbitrary resolution support - clients can create surfaces of any size
     // Log for debugging
-    log_printf("[XDG-SHELL] ", "set_max_size: %dx%d (0x0 means no restriction)\n", width, height);
+    log_printf("XDG", "set_max_size: %dx%d (0x0 means no restriction)\n", width, height);
 }
 
 static void
@@ -72,7 +72,7 @@ xdg_toplevel_set_min_size(struct wl_client *client, struct wl_resource *resource
     // Accept any min size (including 0x0 which means no restriction)
     // This signals arbitrary resolution support - clients can create surfaces of any size
     // Log for debugging
-    log_printf("[XDG-SHELL] ", "set_min_size: %dx%d (0x0 means no restriction)\n", width, height);
+    log_printf("XDG", "set_min_size: %dx%d (0x0 means no restriction)\n", width, height);
 }
 
 static void
@@ -145,7 +145,7 @@ xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource,
     int32_t cfg_width = 1024;
     int32_t cfg_height = 768;
 
-    log_printf("[XDG-SHELL] ", "xdg_surface_get_toplevel called for resource %p\n", resource);
+    log_printf("XDG", "xdg_surface_get_toplevel called for resource %p\n", resource);
     xdg_surface = wl_resource_get_user_data(resource);
     // Use the same version as the xdg_surface (which matches wm_base version)
     // We can't use a higher version for child resources - Wayland protocol requires version <= parent
@@ -165,11 +165,11 @@ xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource,
     // Only send if client bound with version 4 or higher
     toplevel_version = wl_resource_get_version(toplevel_resource);
     if (toplevel_version >= XDG_TOPLEVEL_CONFIGURE_BOUNDS_SINCE_VERSION) {
-        log_printf("[XDG-SHELL] ", "Sending configure_bounds 0x0 to toplevel %p (version %u, arbitrary resolution)\n", 
+        log_printf("XDG", "Sending configure_bounds 0x0 to toplevel %p (version %u, arbitrary resolution)\n", 
                    toplevel_resource, toplevel_version);
         xdg_toplevel_send_configure_bounds(toplevel_resource, 0, 0);
     } else {
-        log_printf("[XDG-SHELL] ", "⚠️ Cannot send configure_bounds: toplevel_version=%u (need >=4, client bound with version %u)\n",
+        log_printf("XDG", "⚠️ Cannot send configure_bounds: toplevel_version=%u (need >=4, client bound with version %u)\n",
                    toplevel_version, requested_version);
     }
     
@@ -191,7 +191,7 @@ xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource,
         if (xdg_surface->wm_base->output_width > 0) cfg_width = xdg_surface->wm_base->output_width;
         if (xdg_surface->wm_base->output_height > 0) cfg_height = xdg_surface->wm_base->output_height;
     }
-    log_printf("[XDG-SHELL] ", "Sending initial configure to toplevel %p (size: %dx%d)\n", toplevel_resource, cfg_width, cfg_height);
+    log_printf("XDG", "Sending initial configure to toplevel %p (size: %dx%d)\n", toplevel_resource, cfg_width, cfg_height);
     xdg_toplevel_send_configure(toplevel_resource, cfg_width, cfg_height, &states);
     wl_array_release(&states);
     
@@ -247,7 +247,7 @@ wm_base_get_xdg_surface(struct wl_client *client, struct wl_resource *resource, 
     struct wl_resource *xdg_resource;
     struct xdg_surface_impl *xdg_surface;
 
-    log_printf("[XDG-SHELL] ", "wm_base_get_xdg_surface called\n");
+    log_printf("XDG", "wm_base_get_xdg_surface called\n");
     wm_base = wl_resource_get_user_data(resource);
     xdg_resource = wl_resource_create(client, &xdg_surface_interface, wl_resource_get_version(resource), id);
     if (!xdg_resource) {
@@ -336,6 +336,9 @@ xdg_wm_base_send_configure_to_all_toplevels(struct xdg_wm_base_impl *wm_base, in
     // Iterate all surfaces
     surface = xdg_surfaces;
     while (surface) {
+        // Store next pointer before any operations that might modify the list
+        struct xdg_surface_impl *next_surface = surface->next;
+        
         if (surface->wm_base == wm_base && surface->role) { // Check it has a role (toplevel)
             struct wl_resource *toplevel_resource = surface->role;
             uint32_t toplevel_version;
@@ -344,6 +347,27 @@ xdg_wm_base_send_configure_to_all_toplevels(struct xdg_wm_base_impl *wm_base, in
             uint32_t *activated;
             int32_t cfg_w;
             int32_t cfg_h;
+            struct wl_client *client;
+            
+            // SAFETY: Validate the surface resource is still valid before sending
+            if (!surface->resource) {
+                surface = next_surface;
+                continue;
+            }
+            
+            // Check if the client is still connected
+            client = wl_resource_get_client(surface->resource);
+            if (!client) {
+                surface = next_surface;
+                continue;
+            }
+            
+            // Validate the toplevel resource has a valid client
+            struct wl_client *toplevel_client = wl_resource_get_client(toplevel_resource);
+            if (!toplevel_client) {
+                surface = next_surface;
+                continue;
+            }
             
             // Only send if it's a toplevel (check interface or implementation)
             // For simplicity, assume role is toplevel if set (we only support toplevel now)
@@ -353,11 +377,11 @@ xdg_wm_base_send_configure_to_all_toplevels(struct xdg_wm_base_impl *wm_base, in
             wm_base_version = wl_resource_get_version(surface->resource); // xdg_surface version = wm_base version
             if (toplevel_version >= XDG_TOPLEVEL_CONFIGURE_BOUNDS_SINCE_VERSION && 
                 wm_base_version >= XDG_TOPLEVEL_CONFIGURE_BOUNDS_SINCE_VERSION) {
-                log_printf("[XDG-SHELL] ", "Sending configure_bounds 0x0 to toplevel %p (version %u, arbitrary resolution)\n", 
+                log_printf("XDG", "Sending configure_bounds 0x0 to toplevel %p (version %u, arbitrary resolution)\n", 
                            toplevel_resource, toplevel_version);
                 xdg_toplevel_send_configure_bounds(toplevel_resource, 0, 0);
             } else {
-                log_printf("[XDG-SHELL] ", "⚠️ Cannot send configure_bounds: toplevel_version=%u, wm_base_version=%u (need >=4)\n",
+                log_printf("XDG", "⚠️ Cannot send configure_bounds: toplevel_version=%u, wm_base_version=%u (need >=4)\n",
                            toplevel_version, wm_base_version);
             }
             
@@ -369,13 +393,13 @@ xdg_wm_base_send_configure_to_all_toplevels(struct xdg_wm_base_impl *wm_base, in
             
             cfg_w = width > 0 ? width : (wm_base->output_width > 0 ? wm_base->output_width : 1024);
             cfg_h = height > 0 ? height : (wm_base->output_height > 0 ? wm_base->output_height : 768);
-            log_printf("[XDG-SHELL] ", "Sending configure %dx%d to toplevel %p\n", cfg_w, cfg_h, toplevel_resource);
+            log_printf("XDG", "Sending configure %dx%d to toplevel %p\n", cfg_w, cfg_h, toplevel_resource);
             xdg_toplevel_send_configure(toplevel_resource, cfg_w, cfg_h, &states);
             wl_array_release(&states);
             
             xdg_surface_send_configure(surface->resource, ++surface->configure_serial);
         }
-        surface = surface->next;
+        surface = next_surface;
     }
 }
 

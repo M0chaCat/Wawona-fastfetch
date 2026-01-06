@@ -4,11 +4,18 @@
   buildModule,
   wawonaSrc,
   androidSDK ? null,
+  hiahkernel,
 }:
 
 let
   xcodeUtils = import ./utils/xcode-wrapper.nix { inherit lib pkgs; };
+  # Define patched HIAHKernel package
+  hiahkernelPackage = hiahkernel.packages.${pkgs.system}.hiah-kernel.overrideAttrs (old: {
+    patches = (old.patches or []) ++ [ ../scripts/patches/hiahkernel-socket-path.patch ];
+  });
+
   androidToolchain = import ./common/android-toolchain.nix { inherit lib pkgs; };
+  
   gradleDeps = pkgs.callPackage ./gradle-deps.nix {
     inherit wawonaSrc androidSDK;
     inherit (pkgs) gradle jdk17;
@@ -131,6 +138,7 @@ let
     "kosmickrisp"
     "epoll-shim"
     "xkbcommon"
+    "sshpass"
   ];
   # For iOS Simulator, use macOS waypipe since simulator runs on macOS
   # Rust's aarch64-apple-ios target compiles for device, not simulator, so use macOS waypipe
@@ -139,12 +147,13 @@ let
     "epoll-shim"
     "libclc"
     "spirv-llvm-translator"
+    "openssh"
     "spirv-tools"
     "zlib"
     "pixman"
     "xkbcommon"
-    "libssh2"
-    "mbedtls"
+    "hiahkernel"
+    # Note: libssh2 and mbedtls removed - using OpenSSH binary instead
   ];
   androidDeps = commonDeps ++ [
     "swiftshader"
@@ -175,6 +184,8 @@ let
           buildModule.buildForIOS "xkbcommon" { }
         else
           pkgs.libxkbcommon
+      else if name == "hiahkernel" then
+        hiahkernelPackage
       else
         buildModule.${platform}.${name}
     ) depNames;
@@ -185,13 +196,16 @@ let
     "src/core/main.m"
     "src/core/WawonaCompositor.m"
     "src/core/WawonaCompositor.h"
-    "src/core/WawonaSettings.c"
     "src/core/WawonaSettings.h"
     "src/core/WawonaSettings.m"
+    # "src/core/WawonaKernel.h" - Removed (using HIAHKernel library)
+    # "src/core/WawonaKernel.m" - Removed (using HIAHKernel library)
 
     # Logging
     "src/logging/logging.c"
     "src/logging/logging.h"
+    "src/logging/WawonaLog.h"
+    "src/logging/WawonaLog.m"
 
     # Wayland protocol implementations
     "src/compositor_implementations/wayland_output.c"
@@ -212,12 +226,8 @@ let
     "src/compositor_implementations/wayland_fullscreen_shell.h"
     "src/compositor_implementations/wayland_shell.c"
     "src/compositor_implementations/wayland_shell.h"
-    "src/compositor_implementations/wayland_gtk_shell.c"
-    "src/compositor_implementations/wayland_gtk_shell.h"
-    "src/compositor_implementations/wayland_plasma_shell.c"
-    "src/compositor_implementations/wayland_plasma_shell.h"
-    "src/compositor_implementations/wayland_qt_extensions.c"
-    "src/compositor_implementations/wayland_qt_extensions.h"
+    # Removed dead code: wayland_gtk_shell, wayland_plasma_shell, wayland_qt_extensions
+    # (stubs for these protocols are in wayland_protocol_stubs.c)
     "src/compositor_implementations/wayland_screencopy.c"
     "src/compositor_implementations/wayland_screencopy.h"
     "src/compositor_implementations/wayland_presentation.c"
@@ -242,6 +252,8 @@ let
     "src/compositor_implementations/wayland_idle_manager.h"
     "src/compositor_implementations/wayland_keyboard_shortcuts.c"
     "src/compositor_implementations/wayland_keyboard_shortcuts.h"
+    "src/compositor_implementations/wayland_decoration.c"
+    "src/compositor_implementations/wayland_decoration.h"
     "src/compositor_implementations/xdg_shell.c"
     "src/compositor_implementations/xdg_shell.h"
 
@@ -271,6 +283,7 @@ let
     "src/protocols/viewporter-protocol.c"
     "src/protocols/viewporter-protocol.h"
     "src/protocols/presentation-time-protocol.h"
+    "src/protocols/color-management-v1-protocol.c"
     "src/protocols/color-management-v1-protocol.h"
     "src/protocols/tablet-stub.c"
 
@@ -319,9 +332,18 @@ let
   ];
 
   iosSources = (lib.filter (f: f != "src/core/WawonaSettings.c") commonSources) ++ [
+    # "src/core/WawonaKernelTests.m"
+    # "src/core/WawonaKernelTests.h"
     "src/launcher/WawonaLauncherClient.m"
     "src/launcher/WawonaLauncherClient.h"
-    "src/protocols/color-management-v1-protocol.c"
+  ];
+
+  # App extension sources (WawonaSSHRunner.appex)
+  extensionSources = [
+    "src/extensions/WawonaSSHRunner/WawonaSSHRunner.m"
+    "src/extensions/WawonaSSHRunner/litehook/litehook.c"
+    "src/extensions/WawonaSSHRunner/litehook/litehook.h"
+    "src/extensions/WawonaSSHRunner/HIAHProcessRunner.m"  # Patched copy from postPatch
   ];
 
   # macOS sources - exclude Vulkan renderer for now (Metal is primary, Vulkan linking issues)
@@ -353,12 +375,17 @@ let
       "src/rendering/android_dmabuf.c" # Android implementation of dmabuf stubs
     ];
 
-  # Helper to filter source files that exist (evaluated at Nix time)
-  filterSources = sources: lib.filter (f: lib.pathExists (wawonaSrc + "/" + f)) sources;
+  # Helper to filter source files that exist
+  # Should handle both relative paths (in wawonaSrc) and absolute store paths
+  filterSources = sources: lib.filter (f: 
+    if lib.hasPrefix "/" f then lib.pathExists f
+    else lib.pathExists (wawonaSrc + "/" + f)
+  ) sources;
 
   # Filtered source lists (evaluated at Nix time)
   macosSourcesFiltered = filterSources macosSources;
   iosSourcesFiltered = filterSources iosSources;
+  extensionSourcesFiltered = filterSources (lib.filter (f: lib.hasSuffix ".m" f) extensionSources);
   androidSourcesFiltered = filterSources androidSources;
 
   # Compiler flags from CMakeLists.txt
@@ -863,7 +890,7 @@ in
                -fobjc-arc -fPIC \
                ${lib.concatStringsSep " " commonObjCFlags} \
                ${lib.concatStringsSep " " releaseObjCFlags} \
-               -DHAVE_VULKAN=0 \
+               -DHAVE_VULKAN=1 \
                -o "$obj_file"
           else
             $CC -c "$src_file" \
@@ -874,7 +901,7 @@ in
                -fPIC \
                ${lib.concatStringsSep " " commonCFlags} \
                ${lib.concatStringsSep " " releaseCFlags} \
-               -DHAVE_VULKAN=0 \
+               -DHAVE_VULKAN=1 \
                -o "$obj_file"
           fi
           OBJ_FILES="$OBJ_FILES $obj_file"
@@ -904,7 +931,7 @@ in
            -framework Cocoa -framework QuartzCore -framework CoreVideo \
            -framework CoreMedia -framework CoreGraphics -framework ColorSync \
            -framework Metal -framework MetalKit -framework IOSurface \
-           -framework VideoToolbox -framework AVFoundation -framework Network \
+           -framework VideoToolbox -framework AVFoundation -framework Network -framework Security \
            $(pkg-config --libs wayland-server wayland-client pixman-1) \
            $XKBCOMMON_LIBS \
            $VULKAN_LIB \
@@ -923,7 +950,7 @@ in
              -framework Cocoa -framework QuartzCore -framework CoreVideo \
              -framework CoreMedia -framework CoreGraphics -framework ColorSync \
              -framework Metal -framework MetalKit -framework IOSurface \
-             -framework VideoToolbox -framework AVFoundation -framework Network \
+             -framework VideoToolbox -framework AVFoundation -framework Network -framework Security \
              $(pkg-config --libs wayland-server wayland-client pixman-1) \
              $XKBCOMMON_LIBS \
              -fobjc-arc -flto -O3 \
@@ -939,7 +966,7 @@ in
            -framework Cocoa -framework QuartzCore -framework CoreVideo \
            -framework CoreMedia -framework CoreGraphics -framework ColorSync \
            -framework Metal -framework MetalKit -framework IOSurface \
-           -framework VideoToolbox -framework AVFoundation -framework Network \
+           -framework VideoToolbox -framework AVFoundation -framework Network -framework Security \
            $(pkg-config --libs wayland-server wayland-client pixman-1) \
            $XKBCOMMON_LIBS \
            -fobjc-arc -flto -O3 \
@@ -964,6 +991,70 @@ in
             # Copy Metal shader library
             if [ -f metal_shaders.metallib ]; then
               cp metal_shaders.metallib $out/Applications/Wawona.app/Contents/MacOS/
+            fi
+            
+            # Copy sshpass binary for non-interactive SSH password auth (rebuild marker 1)
+            echo "DEBUG: Looking for sshpass binary in buildInputs..."
+            echo "DEBUG: buildInputs = $buildInputs"
+            SSHPASS_BIN=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/bin/sshpass" ]; then
+                SSHPASS_BIN="$dep/bin/sshpass"
+                echo "Found sshpass binary at: $SSHPASS_BIN"
+                break
+              fi
+            done
+            
+            if [ -n "$SSHPASS_BIN" ] && [ -f "$SSHPASS_BIN" ]; then
+              echo "DEBUG: Copying sshpass to app bundle"
+              # Copy to Contents/MacOS (next to main executable)
+              install -m 755 "$SSHPASS_BIN" $out/Applications/Wawona.app/Contents/MacOS/sshpass
+              echo "Copied sshpass to Contents/MacOS/"
+              
+              # Also copy to Contents/Resources/bin for alternate lookup
+              mkdir -p $out/Applications/Wawona.app/Contents/Resources/bin
+              install -m 755 "$SSHPASS_BIN" $out/Applications/Wawona.app/Contents/Resources/bin/sshpass
+              echo "Copied sshpass to Contents/Resources/bin/"
+              
+              # Code sign sshpass
+              if command -v codesign >/dev/null 2>&1; then
+                codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/MacOS/sshpass" 2>/dev/null || echo "Warning: Failed to code sign sshpass"
+                codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/Resources/bin/sshpass" 2>/dev/null || true
+                echo "sshpass binary code signed"
+              fi
+            else
+              echo "Warning: sshpass binary not found in buildInputs"
+            fi
+            
+            # Copy waypipe binary for remote Wayland display (rebuild marker 2)
+            echo "DEBUG: Looking for waypipe binary in buildInputs..."
+            WAYPIPE_BIN=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/bin/waypipe" ]; then
+                WAYPIPE_BIN="$dep/bin/waypipe"
+                echo "Found waypipe binary at: $WAYPIPE_BIN"
+                break
+              fi
+            done
+            
+            if [ -n "$WAYPIPE_BIN" ] && [ -f "$WAYPIPE_BIN" ]; then
+              echo "DEBUG: Copying waypipe to app bundle"
+              # Copy to Contents/MacOS (next to main executable)
+              install -m 755 "$WAYPIPE_BIN" $out/Applications/Wawona.app/Contents/MacOS/waypipe
+              echo "Copied waypipe to Contents/MacOS/"
+              
+              # Also copy to Contents/Resources/bin for alternate lookup
+              install -m 755 "$WAYPIPE_BIN" $out/Applications/Wawona.app/Contents/Resources/bin/waypipe
+              echo "Copied waypipe to Contents/Resources/bin/"
+              
+              # Code sign waypipe
+              if command -v codesign >/dev/null 2>&1; then
+                codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/MacOS/waypipe" 2>/dev/null || echo "Warning: Failed to code sign waypipe"
+                codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/Resources/bin/waypipe" 2>/dev/null || true
+                echo "waypipe binary code signed"
+              fi
+            else
+              echo "Warning: waypipe binary not found in buildInputs"
             fi
             
             # Generate Info.plist
@@ -1036,6 +1127,10 @@ in
     version = projectVersion;
     src = wawonaSrc;
 
+    # Extract specific dependencies for use in installPhase
+    openssh = buildModule.ios.openssh;
+    waypipe = buildModule.ios.waypipe;
+
     nativeBuildInputs = with pkgs; [
       clang
       pkg-config
@@ -1044,6 +1139,7 @@ in
 
     buildInputs = (getDeps "ios" iosDeps) ++ [
       pkgs.vulkan-headers
+      hiahkernelPackage
     ];
 
     # Fix gbm-wrapper.c include path and egl_buffer_handler.h for iOS
@@ -1114,18 +1210,90 @@ in
           return -1;
       }
 
-      static inline EGLImageKHR egl_buffer_handler_create_image(struct egl_buffer_handler *handler,
-                                                                struct wl_resource *buffer_resource) {
-          (void)handler; (void)buffer_resource;
-          return EGL_NO_IMAGE_KHR;
-      }
-
       static inline bool egl_buffer_handler_is_egl_buffer(struct egl_buffer_handler *handler,
                                                            struct wl_resource *buffer_resource) {
           (void)handler; (void)buffer_resource;
           return false;
       }
       EOF
+      
+      # Copy HIAHProcessRunner.m from source to build directory
+      # We use the source from HIAHKernel input directly
+      if [ -f "${hiahkernel}/src/extension/HIAHProcessRunner.m" ]; then
+        echo "Found HIAHProcessRunner.m, copying..."
+        mkdir -p src/extensions/WawonaSSHRunner
+        cp ${hiahkernel}/src/extension/HIAHProcessRunner.m src/extensions/WawonaSSHRunner/HIAHProcessRunner.m
+        
+        # In HIAH_LIBRARY_MODE, we don't need to patch imports as the source handles it
+        # But we DO need to make sure headers are found (via -I flags or framework includes)
+        
+        # Ensure directory exists and is writable
+        mkdir -p src/extensions/WawonaSSHRunner
+        chmod -R u+w src/extensions/WawonaSSHRunner 2>/dev/null || true
+        
+        cp -f ${hiahkernel}/src/extension/HIAHProcessRunner.m src/extensions/WawonaSSHRunner/HIAHProcessRunner.m
+        echo "Copied HIAHProcessRunner.m (will be compiled with -DHIAH_LIBRARY_MODE)"
+        
+        # Manually copy headers that might be missing from the framework include path
+        # to ensure <HIAHKernel/...> imports work during manual compilation
+        mkdir -p src/extensions/WawonaSSHRunner/headers/HIAHKernel
+        chmod -R u+w src/extensions/WawonaSSHRunner/headers 2>/dev/null || true
+        
+        # HIAHBypassStatus.h is now in Core/Hooks
+        if [ -f "${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHBypassStatus.h" ]; then
+          cp -f ${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHBypassStatus.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+          echo "Manually copied HIAHBypassStatus.h"
+        else
+          # Fallback trying old location just in case
+          if [ -f "${hiahkernel}/src/extension/HIAHBypassStatus.h" ]; then
+             cp ${hiahkernel}/src/extension/HIAHBypassStatus.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+             echo "Manually copied HIAHBypassStatus.h (from extension dir)"
+          fi
+        fi
+        
+        # HIAHDyldBypass.h
+        if [ -f "${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHDyldBypass.h" ]; then
+          cp -f ${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHDyldBypass.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+          echo "Manually copied HIAHDyldBypass.h"
+        else
+          # Check Public or root
+          find ${hiahkernel} -name "HIAHDyldBypass.h" -exec cp -f {} src/extensions/WawonaSSHRunner/headers/HIAHKernel/ \;
+        fi
+        
+        # HIAHHook.h
+        if [ -f "${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHHook.h" ]; then
+          cp -f ${hiahkernel}/src/HIAHKernel/Core/Hooks/HIAHHook.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+          echo "Manually copied HIAHHook.h"
+        else
+          find ${hiahkernel} -name "HIAHHook.h" -exec cp -f {} src/extensions/WawonaSSHRunner/headers/HIAHKernel/ \;
+        fi
+        
+        # HIAHLogging.h (Check Core/Logging or Public)
+        if [ -f "${hiahkernel}/src/HIAHKernel/Core/Logging/HIAHLogging.h" ]; then
+          cp -f ${hiahkernel}/src/HIAHKernel/Core/Logging/HIAHLogging.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+          echo "Manually copied HIAHLogging.h"
+        else
+          find ${hiahkernel} -name "HIAHLogging.h" -exec cp -f {} src/extensions/WawonaSSHRunner/headers/HIAHKernel/ \;
+        fi
+        
+        # HIAHKernel.h (Main header)
+        find ${hiahkernel} -name "HIAHKernel.h" -exec cp -f {} src/extensions/WawonaSSHRunner/headers/HIAHKernel/ \;
+
+        # HIAHMachOUtils.h is now in Core/Utils
+        if [ -f "${hiahkernel}/src/HIAHKernel/Core/Utils/HIAHMachOUtils.h" ]; then
+          cp ${hiahkernel}/src/HIAHKernel/Core/Utils/HIAHMachOUtils.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+          echo "Manually copied HIAHMachOUtils.h"
+        else
+           # Fallback
+           if [ -f "${hiahkernel}/src/HIAHDesktop/HIAHMachOUtils.h" ]; then
+             cp ${hiahkernel}/src/HIAHDesktop/HIAHMachOUtils.h src/extensions/WawonaSSHRunner/headers/HIAHKernel/
+             echo "Manually copied HIAHMachOUtils.h (from HIAHDesktop dir)"
+           fi
+        fi
+      else
+        echo "ERROR: HIAHProcessRunner.m not found at ${hiahkernel}/src/extension/HIAHProcessRunner.m"
+        exit 1
+      fi
     '';
 
     # Metal shader compilation
@@ -1141,6 +1309,8 @@ in
           export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
         fi
       fi
+
+      # Extension headers are now minimal - no need to copy separate headers
 
       # Compile Metal shaders
       if command -v metal >/dev/null 2>&1; then
@@ -1251,27 +1421,20 @@ in
           obj_file="''${obj_file//src_/}"
           
           if [[ "$src_file" == *.m ]]; then
-            # Find libssh2 include path
-            LIBSSH2_INC=""
-            for dep in $buildInputs; do
-              if [ -d "$dep/include" ] && [ -f "$dep/include/libssh2.h" ]; then
-                LIBSSH2_INC="-I$dep/include"
-                break
-              fi
-            done
-            
+            # Note: libssh2 removed - using OpenSSH binary instead
             $CC -c "$src_file" \
                -Isrc -Isrc/core -Isrc/compositor_implementations \
                -Isrc/rendering -Isrc/input -Isrc/ui \
                -Isrc/logging -Isrc/stubs -Isrc/protocols \
+               -Isrc/extensions \
                -Iios-dependencies/include \
-               $LIBSSH2_INC \
+               -I${hiahkernel}/src \
                -fobjc-arc -fPIC \
                ${lib.concatStringsSep " " commonObjCFlags} \
                ${lib.concatStringsSep " " releaseObjCFlags} \
                -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
                -DTARGET_OS_IPHONE=1 \
-               -DHAVE_VULKAN=0 \
+               -DHAVE_VULKAN=1 \
                -o "$obj_file"
           else
             $CC -c "$src_file" \
@@ -1283,7 +1446,7 @@ in
                ${lib.concatStringsSep " " commonCFlags} \
                ${lib.concatStringsSep " " releaseObjCFlags} \
                -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
-               -DHAVE_VULKAN=0 \
+               -DHAVE_VULKAN=1 \
                -o "$obj_file"
           fi
           OBJ_FILES="$OBJ_FILES $obj_file"
@@ -1313,49 +1476,9 @@ in
       
       echo "Linking with xkbcommon: $XKBCOMMON_LIBS"
       
-      # Find libssh2 library
-      LIBSSH2_LIBS=""
-      for dep in $buildInputs; do
-        if [ -f "$dep/lib/libssh2.a" ]; then
-          LIBSSH2_LIBS="-L$dep/lib -lssh2"
-          echo "Found libssh2 static library: $dep/lib/libssh2.a"
-          break
-        elif [ -f "$dep/lib/libssh2.dylib" ]; then
-          LIBSSH2_LIBS="-L$dep/lib -lssh2"
-          echo "Found libssh2 dynamic library: $dep/lib/libssh2.dylib"
-          break
-        fi
-      done
+      # Note: libssh2 and mbedtls removed - using OpenSSH binary instead
       
-      # Fallback to pkg-config or ios-dependencies
-      if [ -z "$LIBSSH2_LIBS" ]; then
-        LIBSSH2_LIBS=$(pkg-config --libs libssh2 2>/dev/null || echo "-Lios-dependencies/lib -lssh2")
-      fi
-      
-      echo "Linking with libssh2: $LIBSSH2_LIBS"
-      
-      # Find mbedtls library (required by libssh2)
-      MBEDTLS_LIBS=""
-      for dep in $buildInputs; do
-        if [ -f "$dep/lib/libmbedtls.a" ]; then
-          MBEDTLS_LIBS="-L$dep/lib -lmbedtls -lmbedx509 -lmbedcrypto"
-          echo "Found mbedtls static library: $dep/lib/libmbedtls.a"
-          break
-        elif [ -f "$dep/lib/libmbedtls.dylib" ]; then
-          MBEDTLS_LIBS="-L$dep/lib -lmbedtls -lmbedx509 -lmbedcrypto"
-          echo "Found mbedtls dynamic library: $dep/lib/libmbedtls.dylib"
-          break
-        fi
-      done
-      
-      # Fallback to pkg-config or ios-dependencies
-      if [ -z "$MBEDTLS_LIBS" ]; then
-        MBEDTLS_LIBS=$(pkg-config --libs mbedtls 2>/dev/null || echo "-Lios-dependencies/lib -lmbedtls -lmbedx509 -lmbedcrypto")
-      fi
-      
-      echo "Linking with mbedtls: $MBEDTLS_LIBS"
-      
-      # Find zlib library (required by libssh2 for compression)
+      # Find zlib library
       ZLIB_LIBS=""
       for dep in $buildInputs; do
         if [ -f "$dep/lib/libz.a" ]; then
@@ -1379,6 +1502,7 @@ in
       # Link executable
       $CC $OBJ_FILES libgbm.a \
          -Lios-dependencies/lib \
+         -lHIAHKernel \
          -framework Foundation -framework UIKit -framework QuartzCore \
          -framework CoreVideo -framework CoreMedia -framework CoreGraphics \
          -framework Metal -framework MetalKit -framework IOSurface \
@@ -1386,19 +1510,318 @@ in
          -framework Security -framework Network \
          $(pkg-config --libs wayland-server wayland-client pixman-1) \
          $XKBCOMMON_LIBS \
-         $LIBSSH2_LIBS \
-         $MBEDTLS_LIBS \
          $ZLIB_LIBS \
          -fobjc-arc -flto -O3 -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
          -Wl,-rpath,@executable_path/Frameworks \
          -o Wawona
 
+      # Build WawonaSSHRunner app extension
+      echo "Building WawonaSSHRunner.appex..."
+      
+      # Compile extension sources
+      EXTENSION_OBJ_FILES=""
+      # Compile .m files
+      BUILD_ROOT=$(pwd)
+      for src_file in ${lib.concatStringsSep " " extensionSourcesFiltered}; do
+          src_base=$(basename $src_file .m)
+          obj_file="ext_$src_base.o"
+          echo "Compiling $src_file -> $obj_file..."
+          src_dir=$(dirname $src_file)
+          src_name=$(basename $src_file)
+          abs_obj_file=$(pwd)/$obj_file
+          (cd $src_dir && \
+           $CC -c $src_name \
+             -I. -I./litehook -I$BUILD_ROOT/src/extensions/WawonaSSHRunner/litehook \
+             -I$BUILD_ROOT/src -I$BUILD_ROOT/src/core -I$BUILD_ROOT/src/extensions \
+             -I$BUILD_ROOT/ios-dependencies/include -I$BUILD_ROOT/ios-dependencies/include/WawonaSSHRunner \
+             -I${hiahkernel}/src \
+             -I${hiahkernel}/src/HIAHKernel \
+             -I${hiahkernel}/src/HIAHDesktop \
+             -fobjc-arc -fPIC \
+             ${lib.concatStringsSep " " commonObjCFlags} \
+             ${lib.concatStringsSep " " releaseObjCFlags} \
+             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+             -DTARGET_OS_IPHONE=1 \
+             -o $abs_obj_file)
+          if [ ! -f $obj_file ]; then
+            echo "Error: Object file $obj_file was not created at $abs_obj_file!"
+            exit 1
+          fi
+          EXTENSION_OBJ_FILES="$EXTENSION_OBJ_FILES $obj_file"
+      done
+      
+      # Explicitly compile HIAHProcessRunner.m (created in postPatch)
+      if [ -f "src/extensions/WawonaSSHRunner/HIAHProcessRunner.m" ]; then
+          echo "Compiling HIAHProcessRunner.m -> ext_HIAHProcessRunner.o..."
+          obj_file="ext_HIAHProcessRunner.o"
+          abs_obj_file=$(pwd)/$obj_file
+          (cd src/extensions/WawonaSSHRunner && \
+           $CC -c HIAHProcessRunner.m \
+             -I. -I./headers -I./litehook -I$BUILD_ROOT/src/extensions/WawonaSSHRunner/litehook \
+             -I$BUILD_ROOT/src -I$BUILD_ROOT/src/core -I$BUILD_ROOT/src/extensions \
+             -I$BUILD_ROOT/ios-dependencies/include -I$BUILD_ROOT/ios-dependencies/include/WawonaSSHRunner \
+             -fobjc-arc -fPIC \
+             ${lib.concatStringsSep " " commonObjCFlags} \
+             ${lib.concatStringsSep " " releaseObjCFlags} \
+             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+             -DTARGET_OS_IPHONE=1 \
+             -DHIAH_LIBRARY_MODE=1 \
+             "-DHIAH_APP_GROUP=@\"group.com.aspauldingcode.Wawona\"" \
+             -Fios-dependencies/lib \
+             -o $abs_obj_file)
+          if [ ! -f $obj_file ]; then
+            echo "Error: ext_HIAHProcessRunner.o was not created!"
+            exit 1
+          fi
+          EXTENSION_OBJ_FILES="$EXTENSION_OBJ_FILES $obj_file"
+          echo "Added HIAHProcessRunner object file: $obj_file"
+      else
+          echo "WARNING: HIAHProcessRunner.m not found, skipping"
+      fi
+      
+      # Compile additional HIAHKernel extension source files (patched copies from postPatch)
+      # Extra sources loop removed - they are now linked via HIAHKernel library
+      
+      # Compile ZSigner.mm if present
+      if [ -f "src/extensions/WawonaSSHRunner/ZSigner.mm" ]; then
+          echo "Compiling ZSigner.mm -> ext_ZSigner.o..."
+          obj_file="ext_ZSigner.o"
+          abs_obj_file=$(pwd)/$obj_file
+          
+          (cd src/extensions/WawonaSSHRunner && \
+           $CC -c ZSigner.mm \
+            -I. -I./headers \
+            -I$BUILD_ROOT/ios-dependencies/include \
+            -fobjc-arc -fPIC \
+            ${lib.concatStringsSep " " commonObjCFlags} \
+            ${lib.concatStringsSep " " releaseObjCFlags} \
+            -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+            -DTARGET_OS_IPHONE=1 \
+            -o $abs_obj_file)
+            
+          if [ ! -f $obj_file ]; then
+            echo "Error: ext_ZSigner.o was not created!"
+            exit 1
+          fi
+          
+          EXTENSION_OBJ_FILES="$EXTENSION_OBJ_FILES $obj_file"
+          echo "Added ext_ZSigner.o"
+      fi
+      
+      # Compile .c files (like litehook.c)
+      litehook_src="src/extensions/WawonaSSHRunner/litehook/litehook.c"
+      if [ -f "$litehook_src" ]; then
+          echo "Compiling $litehook_src -> ext_litehook.o..."
+          src_dir=$(dirname $litehook_src)
+          src_name=$(basename $litehook_src)
+          obj_file="ext_litehook.o"
+          abs_obj_file=$(pwd)/$obj_file
+          (cd $src_dir && \
+           $CC -c $src_name \
+             -I. -I../../src -I../../src/core -I../../src/extensions \
+             -I../../../ios-dependencies/include \
+             -Wno-error -Wno-gnu-statement-expression-from-macro-expansion -Wno-sign-compare -Wno-gnu-statement-expression \
+             $(echo "${lib.concatStringsSep " " commonCFlags}" | sed 's/-Werror//g') \
+             ${lib.concatStringsSep " " releaseCFlags} \
+             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+             -DTARGET_OS_IPHONE=1 \
+             -o $abs_obj_file)
+          if [ ! -f $obj_file ]; then
+            echo "Error: Object file $obj_file was not created at $abs_obj_file!"
+            exit 1
+          fi
+          echo "Added litehook object file: $obj_file"
+          EXTENSION_OBJ_FILES="$EXTENSION_OBJ_FILES $obj_file"
+      else
+          echo "Warning: $litehook_src not found, skipping litehook compilation"
+      fi
+      echo "Extension object files: $EXTENSION_OBJ_FILES"
+      
+      # Link extension binary
+      echo "Linking extension with object files: $EXTENSION_OBJ_FILES"
+      echo "Checking object files exist:"
+      for obj in $EXTENSION_OBJ_FILES; do
+        if [ -f "$obj" ]; then
+          echo "  ✓ $obj exists"
+        else
+          echo "  ✗ $obj MISSING!"
+        fi
+      done
+      $CC $EXTENSION_OBJ_FILES \
+         -Lios-dependencies/lib \
+         -lHIAHKernel \
+         -framework Foundation -framework UIKit \
+         -fobjc-arc -flto -O3 -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -Wl,-export_dynamic -e _NSExtensionMain \
+         -o WawonaSSHRunner || {
+        echo "Linking failed. Object files:"
+        ls -la ext_*.o 2>&1 || true
+        exit 1
+      }
+      
+      # Build WawonaHooks dylib
+      echo "Building WawonaHooks.dylib..."
+      # Compile litehook.c for the dylib
+      litehook_dylib_obj="litehook_dylib.o"
+      abs_litehook_dylib_obj=$(pwd)/$litehook_dylib_obj
+      (cd src/extensions/WawonaSSHRunner/litehook && \
+       $CC -c litehook.c \
+         -I. -I../../src -I../../src/core -I../../src/extensions \
+         -I${hiahkernel}/src \
+         -I../../../ios-dependencies/include \
+         -Wno-error -Wno-gnu-statement-expression-from-macro-expansion -Wno-sign-compare -Wno-gnu-statement-expression \
+         $(echo "${lib.concatStringsSep " " commonCFlags}" | sed 's/-Werror//g') \
+         ${lib.concatStringsSep " " releaseCFlags} \
+         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -DTARGET_OS_IPHONE=1 \
+         -o $abs_litehook_dylib_obj)
+      if [ ! -f $litehook_dylib_obj ]; then
+        echo "Error: litehook_dylib object file not created!"
+        exit 1
+      fi
+      $CC -dynamiclib src/extensions/WawonaSSHRunner/WawonaGuestHooks.m $litehook_dylib_obj \
+         -Isrc -Isrc/extensions/WawonaSSHRunner -Isrc/extensions/WawonaSSHRunner/litehook \
+         -Iios-dependencies/include \
+         -fobjc-arc -fPIC \
+         ${lib.concatStringsSep " " commonObjCFlags} \
+         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -install_name @executable_path/WawonaHooks.dylib \
+         -framework Foundation \
+         -o WawonaHooks.dylib
+
+      # Build hello_world (Binary and Dylib for nested spawning test)
+      echo "Building hello_world binary and dylib..."
+      $CC -x objective-c src/bin/hello_world.c \
+         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -fobjc-arc -framework Foundation \
+         -o hello_world
+      $CC -x objective-c src/bin/hello_world.c \
+         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -fobjc-arc -framework Foundation \
+         -dynamiclib \
+         -o hello_world.dylib
+      
+      # Build openssh_test_ios (SSH connection test)
+      if [ -f src/bin/openssh_test_ios.m ]; then
+        echo "Building openssh_test_ios..."
+        # Find required object files from main app build
+        KERNEL_OBJ=""
+        PREFS_MGR_OBJ=""
+        echo "Searching for object files..."
+        echo "OBJ_FILES contains $(echo $OBJ_FILES | wc -w) files"
+        for obj in $OBJ_FILES; do
+          if [[ "$obj" == *"WawonaKernel"* ]] || [[ "$obj" == *"core_WawonaKernel"* ]] || [[ "$obj" == *"Kernel"* ]]; then
+            if [[ "$obj" == *.o ]] && [ -f "$obj" ]; then
+              KERNEL_OBJ="$obj"
+              echo "    Found KERNEL_OBJ: $KERNEL_OBJ"
+            fi
+          fi
+          if [[ "$obj" == *"WawonaPreferencesManager"* ]] || [[ "$obj" == *"Settings_WawonaPreferencesManager"* ]] || [[ "$obj" == *"PreferencesManager"* ]]; then
+            if [[ "$obj" == *.o ]] && [ -f "$obj" ]; then
+              PREFS_MGR_OBJ="$obj"
+              echo "    Found PREFS_MGR_OBJ: $PREFS_MGR_OBJ"
+            fi
+          fi
+        done
+        
+        # Also try to find by listing .o files directly
+        if [ -z "$KERNEL_OBJ" ] || [ -z "$PREFS_MGR_OBJ" ]; then
+          echo "Trying alternative search in current directory..."
+          for obj_file in *.o; do
+            if [ -f "$obj_file" ]; then
+              if [[ "$obj_file" == *"Kernel"* ]] && [ -z "$KERNEL_OBJ" ]; then
+                KERNEL_OBJ="$obj_file"
+                echo "    Found KERNEL_OBJ (alt): $KERNEL_OBJ"
+              fi
+              if [[ "$obj_file" == *"PreferencesManager"* ]] && [ -z "$PREFS_MGR_OBJ" ]; then
+                PREFS_MGR_OBJ="$obj_file"
+                echo "    Found PREFS_MGR_OBJ (alt): $PREFS_MGR_OBJ"
+              fi
+            fi
+          done
+        fi
+        
+        # Compile test binary
+        TEST_OBJ="openssh_test_ios.o"
+        echo "Compiling test binary source..."
+        $CC -c src/bin/openssh_test_ios.m \
+           -Isrc -Isrc/core -Isrc/ui/Settings \
+           -Iios-dependencies/include \
+           -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+           -fobjc-arc ${lib.concatStringsSep " " commonObjCFlags} \
+           -DTARGET_OS_IPHONE=1 \
+           -o $TEST_OBJ || {
+          echo "Error: Failed to compile openssh_test_ios.m"
+          exit 1
+        }
+        
+        # Link test binary with required objects
+        # Link test binary with required objects and HIAHKernel library
+        if [ -n "$PREFS_MGR_OBJ" ] && [ -f "$PREFS_MGR_OBJ" ]; then
+          echo "Linking test binary with $PREFS_MGR_OBJ and HIAHKernel library"
+          $CC $TEST_OBJ $PREFS_MGR_OBJ \
+             -Lios-dependencies/lib \
+             -lHIAHKernel \
+             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+             -fobjc-arc -framework Foundation -framework Security \
+             -Wl,-rpath,@executable_path/../Frameworks \
+             -o openssh_test_ios || {
+            echo "Error: Failed to link openssh_test_ios"
+            exit 1
+          }
+          echo "✓ Built openssh_test_ios"
+        else
+          echo "Warning: Required object files not found, skipping openssh_test_ios"
+          echo "  PREFS_MGR_OBJ=$PREFS_MGR_OBJ (exists: $([ -f "$PREFS_MGR_OBJ" ] && echo yes || echo no))"
+          echo "  Available object files:"
+          ls -1 *.o 2>/dev/null | grep -i "prefs" | head -10 || echo "  (none found)"
+        fi
+      else
+        echo "Note: src/bin/openssh_test_ios.m not found, skipping test binary"
+      fi
+  
+      # Create extension bundle structure
+      mkdir -p HIAHProcessRunner.appex/bin
+      cp WawonaSSHRunner HIAHProcessRunner.appex/HIAHProcessRunner
+      cp WawonaHooks.dylib HIAHProcessRunner.appex/
+      install -m 755 hello_world HIAHProcessRunner.appex/bin/
+      cp hello_world.dylib HIAHProcessRunner.appex/
+      cp src/extensions/WawonaSSHRunner/Info.plist HIAHProcessRunner.appex/
+      cp src/extensions/WawonaSSHRunner/Entitlements.plist HIAHProcessRunner.appex/
+      
+      # Copy HIAHKernel library to extension Frameworks folder
+      mkdir -p HIAHProcessRunner.appex/Frameworks
+      cp ios-dependencies/lib/libHIAHKernel.dylib HIAHProcessRunner.appex/Frameworks/
+
+      # Patch Info.plist to match new name and standard extension point
+      /usr/libexec/PlistBuddy -c "Set :CFBundleName HIAHProcessRunner" HIAHProcessRunner.appex/Info.plist
+      /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable HIAHProcessRunner" HIAHProcessRunner.appex/Info.plist
+      /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.aspauldingcode.Wawona.HIAHProcessRunner" HIAHProcessRunner.appex/Info.plist
+      /usr/libexec/PlistBuddy -c "Set :NSExtension:NSExtensionPointIdentifier com.apple.services" HIAHProcessRunner.appex/Info.plist
+      
+      # Add required attributes for com.apple.services
+      /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionAttributes dict" HIAHProcessRunner.appex/Info.plist || true
+      /usr/libexec/PlistBuddy -c "Delete :NSExtension:NSExtensionAttributes:NSExtensionActivationRule" HIAHProcessRunner.appex/Info.plist || true
+      /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionAttributes:NSExtensionActivationRule dict" HIAHProcessRunner.appex/Info.plist
+      /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionAttributes:NSExtensionActivationRule:NSExtensionActivationSupportsFileWithMaxCount integer 1" HIAHProcessRunner.appex/Info.plist
+      
+      # Put hello_world in main app bin too
+      mkdir -p bin
+      install -m 755 hello_world bin/
+      
+      echo "Extension binary created: $(ls -lh WawonaSSHRunner | awk '{print $5}')"
+
       runHook postBuild
     '';
 
     installPhase = ''
+            echo "Force rebuild 6"
             set -e
             echo "DEBUG: Starting installPhase"
+            
+            # Define temp dir for signing artifacts
+            SIGNING_TEMP_DIR=$(mktemp -d)
+            
             runHook preInstall
             
             # Create app bundle structure
@@ -1408,6 +1831,16 @@ in
             # Copy executable
             echo "DEBUG: Copying executable"
             cp Wawona $out/Applications/Wawona.app/
+            
+            # Copy hello_world to bin/
+            mkdir -p $out/Applications/Wawona.app/bin
+            install -m 755 hello_world $out/Applications/Wawona.app/bin/
+            
+            # Copy openssh_test_ios if built
+            if [ -f openssh_test_ios ]; then
+              install -m 755 openssh_test_ios $out/Applications/Wawona.app/bin/
+              echo "✓ Copied openssh_test_ios to bin/"
+            fi
             
             # Copy Metal shader library
             if [ -f metal_shaders.metallib ]; then
@@ -1431,12 +1864,58 @@ in
               cp -r $src/src/resources/Settings.bundle $out/Applications/Wawona.app/
             fi
             
+            # Install WawonaSSHRunner app extension (as HIAHProcessRunner.appex to match kernel expectations)
+            echo "DEBUG: Installing HIAHProcessRunner.appex"
+            mkdir -p $out/Applications/Wawona.app/PlugIns
+            cp -r HIAHProcessRunner.appex $out/Applications/Wawona.app/PlugIns/
+            chmod -R 755 $out/Applications/Wawona.app/PlugIns/HIAHProcessRunner.appex
+            
+            # Code sign extension with entitlements
+            if command -v codesign >/dev/null 2>&1; then
+              echo "DEBUG: Code signing extension with entitlements"
+              
+              # Create explicit entitlements for extension
+              cat > "$SIGNING_TEMP_DIR/extension-entitlements.plist" <<EXT_ENTITLEMENTS
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.aspauldingcode.Wawona</string>
+    </array>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
+EXT_ENTITLEMENTS
+
+              codesign --force --sign - --timestamp=none \
+                --entitlements "$SIGNING_TEMP_DIR/extension-entitlements.plist" \
+                $out/Applications/Wawona.app/PlugIns/HIAHProcessRunner.appex/HIAHProcessRunner || \
+                echo "Warning: Failed to code sign extension binary"
+              
+              # Sign the bundle itself
+              codesign --force --sign - --timestamp=none \
+                --entitlements $out/Applications/Wawona.app/PlugIns/HIAHProcessRunner.appex/Entitlements.plist \
+                $out/Applications/Wawona.app/PlugIns/HIAHProcessRunner.appex || \
+                echo "Warning: Failed to code sign extension bundle"
+              
+              echo "Extension installed and code signed"
+            else
+              echo "Warning: codesign not found, extension may not work"
+            fi
+            
             # Copy dynamic libraries to Frameworks
             echo "DEBUG: Processing Frameworks"
             mkdir -p $out/Applications/Wawona.app/Frameworks
             if [ -d ios-dependencies/lib ]; then
-              # Copy dylibs
-              find ios-dependencies/lib -name "*.dylib" -exec cp -L {} $out/Applications/Wawona.app/Frameworks/ \;
+              # Copy dylibs (use install for proper permissions, not cp which inherits read-only from Nix store)
+              find ios-dependencies/lib -name "*.dylib" -exec install -m 755 {} $out/Applications/Wawona.app/Frameworks/ \;
               
               # Fix dylib paths
               cd $out/Applications/Wawona.app/Frameworks
@@ -1485,21 +1964,256 @@ in
               # 1. In bin/ subdirectory (preferred location)
               echo "DEBUG: Copying waypipe to app bundle"
               mkdir -p $out/Applications/Wawona.app/bin
-              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/bin/waypipe
-              chmod +x $out/Applications/Wawona.app/bin/waypipe
+              # Use install to ensure execute permissions are set correctly
+              install -m 755 "$WAYPIPE_BIN" $out/Applications/Wawona.app/bin/waypipe
+              
+              # Copy waypipe dylib if it exists
+              WAYPIPE_ROOT=$(dirname $(dirname "$WAYPIPE_BIN"))
+              if find "$WAYPIPE_ROOT" -name "libwaypipe.dylib" -exec cp {} $out/Applications/Wawona.app/bin/waypipe.dylib \; 2>/dev/null; then
+                echo "✓ Copied waypipe.dylib to bin/"
+              fi
               
               # 2. In bundle root (fallback for iOS Simulator)
-              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe
-              chmod +x $out/Applications/Wawona.app/waypipe
+              install -m 755 "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe
               
               # 3. Next to executable (another fallback)
-              cp "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe-bin
-              chmod +x $out/Applications/Wawona.app/waypipe-bin
+              install -m 755 "$WAYPIPE_BIN" $out/Applications/Wawona.app/waypipe-bin
               
               echo "Copied Waypipe binary to app bundle (bin/, root, and waypipe-bin)"
               echo "Waypipe binary size: $(ls -lh "$WAYPIPE_BIN" | awk '{print $5}')"
+              
+              # Verify execute permissions
+              if [ -x "$out/Applications/Wawona.app/bin/waypipe" ]; then
+                echo "✓ Waypipe binary in bin/ is executable"
+              else
+                echo "WARNING: Waypipe binary in bin/ is NOT executable, fixing..."
+                chmod +x "$out/Applications/Wawona.app/bin/waypipe"
+              fi
+              if [ -x "$out/Applications/Wawona.app/waypipe" ]; then
+                echo "✓ Waypipe binary in root is executable"
+              else
+                echo "WARNING: Waypipe binary in root is NOT executable, fixing..."
+                chmod +x "$out/Applications/Wawona.app/waypipe"
+              fi
+              
+              # Code sign waypipe binary for iOS
+              if command -v codesign >/dev/null 2>&1; then
+                echo "DEBUG: Code signing waypipe binary with entitlements..."
+                printf '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.get-task-allow</key>
+  <true/>
+  <key>com.apple.security.application-groups</key>
+  <array>
+      <string>group.com.aspauldingcode.Wawona</string>
+  </array>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>\n' > "$SIGNING_TEMP_DIR/waypipe-entitlements.plist"
+          
+                codesign --force --sign - --timestamp=none --entitlements "$SIGNING_TEMP_DIR/waypipe-entitlements.plist" "$out/Applications/Wawona.app/bin/waypipe" 2>/dev/null || echo "Warning: Failed to code sign waypipe binary"
+                codesign --force --sign - --timestamp=none --entitlements "$SIGNING_TEMP_DIR/waypipe-entitlements.plist" "$out/Applications/Wawona.app/waypipe" 2>/dev/null || echo "Warning: Failed to code sign waypipe binary (root)"
+                codesign --force --sign - --timestamp=none --entitlements "$SIGNING_TEMP_DIR/waypipe-entitlements.plist" "$out/Applications/Wawona.app/waypipe-bin" 2>/dev/null || echo "Warning: Failed to code sign waypipe binary (waypipe-bin)"
+                chmod +x "$out/Applications/Wawona.app/bin/waypipe" 2>/dev/null || true
+                chmod +x "$out/Applications/Wawona.app/waypipe" 2>/dev/null || true
+                chmod +x "$out/Applications/Wawona.app/waypipe-bin" 2>/dev/null || true
+                echo "Waypipe binary code signed with entitlements"
+              else
+                echo "Warning: codesign not found, waypipe binary may not be executable on iOS"
+              fi
             else
               echo "Warning: Waypipe binary not found in buildInputs"
+              echo "Searched in: $buildInputs"
+            fi
+            
+            # Copy kosmickrisp Vulkan driver into app bundle
+            # This enables Vulkan 1.3 support on iOS via LunarG's MESA driver
+            echo "DEBUG: Looking for kosmickrisp Vulkan driver"
+            KOSMICKRISP_LIB=""
+            KOSMICKRISP_ICD=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/lib/libvulkan_kosmickrisp.dylib" ]; then
+                KOSMICKRISP_LIB="$dep/lib/libvulkan_kosmickrisp.dylib"
+                echo "Found kosmickrisp Vulkan driver at: $KOSMICKRISP_LIB"
+              fi
+              if [ -f "$dep/share/vulkan/icd.d/kosmickrisp_icd.arm64.json" ]; then
+                KOSMICKRISP_ICD="$dep/share/vulkan/icd.d/kosmickrisp_icd.arm64.json"
+                echo "Found kosmickrisp ICD manifest at: $KOSMICKRISP_ICD"
+              elif [ -d "$dep/share/vulkan/icd.d" ]; then
+                # Find any JSON file in the ICD directory
+                KOSMICKRISP_ICD=$(find "$dep/share/vulkan/icd.d" -name "*.json" -type f | head -1)
+                if [ -n "$KOSMICKRISP_ICD" ]; then
+                  echo "Found kosmickrisp ICD manifest at: $KOSMICKRISP_ICD"
+                fi
+              fi
+            done
+            
+            if [ -n "$KOSMICKRISP_LIB" ] && [ -f "$KOSMICKRISP_LIB" ]; then
+              echo "DEBUG: Copying kosmickrisp Vulkan driver to app bundle"
+              # Copy to Frameworks directory (use install for proper permissions)
+              mkdir -p $out/Applications/Wawona.app/Frameworks
+              # Remove existing file if present (may have been copied earlier with wrong permissions)
+              rm -f $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib
+              install -m 755 "$KOSMICKRISP_LIB" $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib
+              
+              # Fix dylib paths for iOS bundle
+              install_name_tool -id "@rpath/libvulkan_kosmickrisp.dylib" \
+                $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib
+              
+              # Create Vulkan ICD manifest directory
+              mkdir -p $out/Applications/Wawona.app/share/vulkan/icd.d
+              
+              # Generate iOS-specific ICD manifest with relative path
+              cat > $out/Applications/Wawona.app/share/vulkan/icd.d/kosmickrisp_icd.json <<ICD_EOF
+{
+    "ICD": {
+        "api_version": "1.3.335",
+        "library_path": "@rpath/libvulkan_kosmickrisp.dylib"
+    },
+    "file_format_version": "1.0.1"
+}
+ICD_EOF
+              
+              # Code sign kosmickrisp for iOS
+              if command -v codesign >/dev/null 2>&1; then
+                codesign --force --sign - --timestamp=none \
+                  $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib 2>/dev/null || \
+                  echo "Warning: Failed to code sign kosmickrisp"
+              fi
+              
+              echo "✓ Copied kosmickrisp Vulkan 1.3 driver to app bundle"
+              echo "  Library: $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib"
+              echo "  ICD manifest: $out/Applications/Wawona.app/share/vulkan/icd.d/kosmickrisp_icd.json"
+              echo "  Size: $(ls -lh $out/Applications/Wawona.app/Frameworks/libvulkan_kosmickrisp.dylib | awk '{print $5}')"
+            else
+              echo "Warning: kosmickrisp Vulkan driver not found in buildInputs"
+              echo "  iOS Vulkan support will not be available"
+            fi
+            
+            # Copy OpenSSH ssh binary into app bundle
+            # Find openssh in buildInputs
+            echo "DEBUG: Looking for openssh"
+            SSH_BIN=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/bin/ssh" ]; then
+                SSH_BIN="$dep/bin/ssh"
+                echo "Found OpenSSH ssh binary at: $SSH_BIN"
+                break
+              fi
+            done
+            
+            if [ -n "$SSH_BIN" ] && [ -f "$SSH_BIN" ]; then
+              # Copy to multiple locations for maximum compatibility (same as waypipe)
+              # 1. In bin/ subdirectory (preferred location)
+              echo "DEBUG: Copying ssh to app bundle"
+              mkdir -p $out/Applications/Wawona.app/bin
+              # Use install to ensure execute permissions are set correctly
+              install -m 755 "$SSH_BIN" $out/Applications/Wawona.app/bin/ssh
+              
+              # Copy ssh dylib if it exists
+              SSH_ROOT=$(dirname $(dirname "$SSH_BIN"))
+              if [ -f "$SSH_ROOT/lib/ssh.dylib" ]; then
+                cp "$SSH_ROOT/lib/ssh.dylib" $out/Applications/Wawona.app/bin/ssh.dylib
+                echo "✓ Copied ssh.dylib to bin/"
+              fi
+              
+              # 2. In bundle root (fallback for iOS Simulator)
+              install -m 755 "$SSH_BIN" $out/Applications/Wawona.app/ssh
+              
+              echo "Copied OpenSSH ssh binary to app bundle (bin/ and root)"
+              echo "SSH binary size: $(ls -lh "$SSH_BIN" | awk '{print $5}')"
+              
+              # Verify execute permissions
+              if [ -x "$out/Applications/Wawona.app/bin/ssh" ]; then
+                echo "✓ SSH binary in bin/ is executable"
+              else
+                echo "WARNING: SSH binary in bin/ is NOT executable, fixing..."
+                chmod +x "$out/Applications/Wawona.app/bin/ssh"
+              fi
+              if [ -x "$out/Applications/Wawona.app/ssh" ]; then
+                echo "✓ SSH binary in root is executable"
+              else
+                echo "WARNING: SSH binary in root is NOT executable, fixing..."
+                chmod +x "$out/Applications/Wawona.app/ssh"
+              fi
+              
+              # Code sign ssh binary for iOS (required for execution)
+              # Note: This uses ad-hoc signing which works for Simulator
+              # For device builds, proper provisioning profile signing is needed
+              if command -v codesign >/dev/null 2>&1; then
+                echo "DEBUG: Code signing ssh binary with entitlements..."
+          # Create entitlements for ssh binary (same as main app)
+          printf '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.get-task-allow</key>
+  <true/>
+  <key>com.apple.security.application-groups</key>
+  <array>
+      <string>group.com.aspauldingcode.Wawona</string>
+  </array>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>\n' > "$SIGNING_TEMP_DIR/ssh-entitlements.plist"
+          
+          codesign --force --sign - --timestamp=none --entitlements "$SIGNING_TEMP_DIR/ssh-entitlements.plist" "$out/Applications/Wawona.app/bin/ssh" 2>/dev/null || echo "Warning: Failed to code sign ssh binary"
+                codesign --force --sign - --timestamp=none --entitlements "$SIGNING_TEMP_DIR/ssh-entitlements.plist" "$out/Applications/Wawona.app/ssh" 2>/dev/null || echo "Warning: Failed to code sign ssh binary (root)"
+                chmod +x "$out/Applications/Wawona.app/bin/ssh" 2>/dev/null || true
+                chmod +x "$out/Applications/Wawona.app/ssh" 2>/dev/null || true
+                echo "SSH binary code signed with entitlements"
+              else
+                echo "Warning: codesign not found, ssh binary may not be executable on iOS"
+              fi
+            else
+              echo "Warning: OpenSSH ssh binary not found in buildInputs"
+              echo "Searched in: $buildInputs"
+            fi
+            
+            # Copy sshpass binary into app bundle (for non-interactive SSH password auth)
+            echo "DEBUG: Looking for sshpass"
+            SSHPASS_BIN=""
+            for dep in $buildInputs; do
+              if [ -f "$dep/bin/sshpass" ]; then
+                SSHPASS_BIN="$dep/bin/sshpass"
+                echo "Found sshpass binary at: $SSHPASS_BIN"
+                break
+              fi
+            done
+            
+            if [ -n "$SSHPASS_BIN" ] && [ -f "$SSHPASS_BIN" ]; then
+              echo "DEBUG: Copying sshpass to app bundle"
+              mkdir -p $out/Applications/Wawona.app/bin
+              install -m 755 "$SSHPASS_BIN" $out/Applications/Wawona.app/bin/sshpass
+              
+              echo "Copied sshpass binary to app bundle (bin/)"
+              echo "sshpass binary size: $(ls -lh "$SSHPASS_BIN" | awk '{print $5}')"
+              
+              # Verify execute permissions
+              if [ -x "$out/Applications/Wawona.app/bin/sshpass" ]; then
+                echo "✓ sshpass binary in bin/ is executable"
+              else
+                echo "WARNING: sshpass binary in bin/ is NOT executable, fixing..."
+                chmod +x "$out/Applications/Wawona.app/bin/sshpass"
+              fi
+              
+              # Code sign sshpass binary
+              if command -v codesign >/dev/null 2>&1; then
+                echo "DEBUG: Code signing sshpass binary..."
+                codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/bin/sshpass" 2>/dev/null || echo "Warning: Failed to code sign sshpass binary"
+                chmod +x "$out/Applications/Wawona.app/bin/sshpass" 2>/dev/null || true
+                echo "sshpass binary code signed"
+              fi
+            else
+              echo "Warning: sshpass binary not found in buildInputs"
               echo "Searched in: $buildInputs"
             fi
             
@@ -1509,15 +2223,51 @@ in
             ln -s $out/Applications/Wawona.app/Wawona $out/bin/Wawona
             
             # Create iOS simulator launcher script
-            echo "DEBUG: Creating simulator launcher script"
-            cat > $out/bin/wawona-ios-simulator <<'EOF'
-      #!/usr/bin/env bash
-      set -e
+      echo "DEBUG: Creating simulator launcher script"
+      cat > $out/bin/wawona-ios-simulator <<'EOF'
+#!/usr/bin/env bash
+set -e
 
-      APP_BUNDLE="$1"
-      if [ -z "$APP_BUNDLE" ]; then
-        APP_BUNDLE="$(dirname "$0")/../Applications/Wawona.app"
+APP_BUNDLE=""
+FOLLOW_LOGS="''${WAWONA_IOS_FOLLOW_LOGS:-1}"
+LOG_LEVEL="''${WAWONA_IOS_LOG_LEVEL:-}"
+
+if [ -z "$LOG_LEVEL" ]; then
+  if [ "$FOLLOW_LOGS" = "1" ]; then
+    LOG_LEVEL=debug
+  else
+    LOG_LEVEL=info
+  fi
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --follow-logs)
+      FOLLOW_LOGS=1
+      ;;
+    --no-logs)
+      FOLLOW_LOGS=0
+      ;;
+    --log-level)
+      shift
+      LOG_LEVEL="''${1:-$LOG_LEVEL}"
+      ;;
+    --app)
+      shift
+      APP_BUNDLE="''${1:-$APP_BUNDLE}"
+      ;;
+    *)
+      if [ -z "$APP_BUNDLE" ] && [ -d "$1" ]; then
+        APP_BUNDLE="$1"
       fi
+      ;;
+  esac
+  shift || true
+done
+
+if [ -z "$APP_BUNDLE" ]; then
+  APP_BUNDLE="$(dirname "$0")/../Applications/Wawona.app"
+fi
 
       if [ ! -d "$APP_BUNDLE" ]; then
         exit 1
@@ -1598,34 +2348,93 @@ in
       }
 
       # Fix permissions - make all files writable (simulator needs to modify them during install)
+      # Also make them executable so codesign can process them correctly
       chmod -R u+w "$TEMP_APP_BUNDLE" || true
+      chmod -R +x "$TEMP_APP_BUNDLE" || true
 
       # Ad-hoc sign the app bundle for Simulator (required for Apple Silicon)
       if command -v codesign >/dev/null 2>&1; then
+        codesign_item() {
+          local item="$1"
+          shift
+          local out
+          if ! out=$(codesign --force --sign - --timestamp=none "$@" "$item" 2>&1); then
+            printf '%s\n' "$out" >&2
+            return 1
+          fi
+          return 0
+        }
+
         # Create minimal entitlements for Simulator
         # Note: keychain-access-groups removed - iOS Simulator may not require it
         # If Keychain access fails, we'll handle it gracefully in code
+        # IMPORTANT: get-task-allow is required for debugging and for spawning child processes
         cat > "$TEMP_APP_DIR/entitlements.plist" <<ENTITLEMENTS
       <?xml version="1.0" encoding="UTF-8"?>
       <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
       <plist version="1.0">
       <dict>
-          <key>com.apple.security.get-task-allow</key>
-          <true/>
+        <key>com.apple.security.get-task-allow</key>
+        <true/>
+        <key>com.apple.security.application-groups</key>
+        <array>
+            <string>group.com.aspauldingcode.Wawona</string>
+        </array>
+        <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+        <true/>
+        <key>com.apple.security.cs.disable-library-validation</key>
+        <true/>
       </dict>
       </plist>
-      ENTITLEMENTS
+ENTITLEMENTS
 
         # Sign frameworks first
         if [ -d "$TEMP_APP_BUNDLE/Frameworks" ]; then
           find "$TEMP_APP_BUNDLE/Frameworks" -name "*.dylib" -o -name "*.framework" | while read -r fw; do
-            codesign --force --sign - --timestamp=none "$fw" || true
+            codesign_item "$fw" || true
           done
         fi
         
+        # Sign PlugIns (Extensions) - WITH ENTITLEMENTS
+        if [ -d "$TEMP_APP_BUNDLE/PlugIns" ]; then
+          find "$TEMP_APP_BUNDLE/PlugIns" -name "*.appex" | while read -r appex; do
+            echo "Signing extension $(basename "$appex") with entitlements..."
+            codesign_item "$appex" --entitlements "$TEMP_APP_DIR/entitlements.plist" || true
+          done
+        fi
+
+        # Sign binaries in bin/ directory (waypipe, ssh, etc.) - WITH ENTITLEMENTS
+        # Ensure they are executable first so find can see them
+        if [ -d "$TEMP_APP_BUNDLE/bin" ]; then
+          chmod -R +x "$TEMP_APP_BUNDLE/bin" || true
+          find "$TEMP_APP_BUNDLE/bin" -type f | while read -r bin; do
+            BIN_NAME=$(basename "$bin")
+            echo "Signing $BIN_NAME with identifier and entitlements..."
+            codesign_item "$bin" --identifier "com.aspauldingcode.Wawona.bin.$BIN_NAME" --entitlements "$TEMP_APP_DIR/entitlements.plist" || true
+          done
+        fi
+        
+        # Sign binaries in extensions' bin/ directory
+        if [ -d "$TEMP_APP_BUNDLE/PlugIns/WawonaSSHRunner.appex/bin" ]; then
+          chmod -R +x "$TEMP_APP_BUNDLE/PlugIns/WawonaSSHRunner.appex/bin" || true
+          find "$TEMP_APP_BUNDLE/PlugIns/WawonaSSHRunner.appex/bin" -type f | while read -r bin; do
+            BIN_NAME=$(basename "$bin")
+            echo "Signing extension bin: $BIN_NAME with entitlements and identifier..."
+            codesign_item "$bin" --identifier "com.aspauldingcode.Wawona.extbin.$BIN_NAME" --entitlements "$TEMP_APP_DIR/entitlements.plist" || true
+          done
+        fi
+        
+        # Sign binaries in bundle root (waypipe, ssh fallback locations) - WITH ENTITLEMENTS
+        for bin in "$TEMP_APP_BUNDLE/waypipe" "$TEMP_APP_BUNDLE/waypipe-bin" "$TEMP_APP_BUNDLE/ssh"; do
+          if [ -f "$bin" ] && [ -x "$bin" ]; then
+            echo "Signing $(basename "$bin") (root) with entitlements..."
+            codesign_item "$bin" --entitlements "$TEMP_APP_DIR/entitlements.plist" || true
+          fi
+        done
+        
         # Sign main executable
-        codesign --force --sign - --timestamp=none --entitlements "$TEMP_APP_DIR/entitlements.plist" "$TEMP_APP_BUNDLE" 2>/dev/null || \
-        codesign --force --sign - --timestamp=none "$TEMP_APP_BUNDLE" || true
+        codesign_item "$TEMP_APP_BUNDLE" --entitlements "$TEMP_APP_DIR/entitlements.plist" || \
+        codesign_item "$TEMP_APP_BUNDLE" || true
       fi
 
       # Cleanup function - use force removal to handle permission issues
@@ -1650,11 +2459,48 @@ in
       # Launch the app
       xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID" 2>&1 || true
 
-      # Stream logs to stdout for debugging
-      xcrun simctl spawn "$DEVICE_ID" log stream --predicate 'processImagePath contains "Wawona" OR processImagePath endswith "Wawona"' --level debug --style compact
-      EOF
-            chmod +x $out/bin/wawona-ios-simulator
-            echo "DEBUG: installPhase finished"
+      # Stream logs to stdout or file
+      if [ "$FOLLOW_LOGS" = "1" ]; then
+        LOG_FILE="''${WAWONA_IOS_LOG_FILE:-}"
+        if [ -n "$LOG_FILE" ]; then
+          echo "Redirecting logs to $LOG_FILE (overwriting)"
+          # Truncate log file
+          > "$LOG_FILE"
+          
+          # Background log stream
+          xcrun simctl spawn "$DEVICE_ID" log stream --predicate 'processImagePath contains "Wawona" OR processImagePath endswith "Wawona"' --level "$LOG_LEVEL" --style compact >> "$LOG_FILE" 2>&1 &
+          LOG_PID=$!
+          
+          echo "Log stream started (PID: $LOG_PID). Instructions for LLDB:"
+          echo "  xcrun simctl spawn booted lldb"
+          echo "  (lldb) process attach -n Wawona"
+          echo "  (lldb) process attach -n WawonaSSHRunner"
+          
+          # Monitoring loop for termination
+          echo "Waiting for tests to complete..."
+          while sleep 2; do
+            if grep -q "ALL TESTS COMPLETED" "$LOG_FILE"; then
+              echo "✅ Kernel tests finished. Terminating..."
+              kill $LOG_PID 2>/dev/null || true
+              break
+            fi
+            # Check if log stream is still alive
+            if ! kill -0 $LOG_PID 2>/dev/null; then
+               echo "❌ Log stream terminated unexpectedly."
+               break
+            fi
+          done
+        else
+          xcrun simctl spawn "$DEVICE_ID" log stream --predicate 'processImagePath contains "Wawona" OR processImagePath endswith "Wawona"' --level "$LOG_LEVEL" --style compact
+        fi
+      else
+        echo "Launched $BUNDLE_ID on simulator $DEVICE_NAME ($DEVICE_ID)."
+        echo "To stream logs: WAWONA_IOS_FOLLOW_LOGS=1 nix run .#wawona-ios"
+      fi
+EOF
+      chmod 755 $out/bin/wawona-ios-simulator
+      ls -l $out/bin/wawona-ios-simulator
+      echo "DEBUG: installPhase finished"
     '';
 
     meta = {

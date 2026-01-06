@@ -167,8 +167,9 @@ let
             ;
           buildModule = iosModuleSelf;
         }
-      else if name == "libssh2" then
-        (import ./deps/libssh2/ios.nix) {
+      # Note: libssh2 removed - using OpenSSH binary instead
+      else if name == "mbedtls" then
+        (import ./deps/mbedtls/ios.nix) {
           inherit
             lib
             pkgs
@@ -177,8 +178,8 @@ let
             ;
           buildModule = iosModuleSelf;
         }
-      else if name == "mbedtls" then
-        (import ./deps/mbedtls/ios.nix) {
+      else if name == "openssh" then
+        (import ./deps/openssh/ios.nix) {
           inherit
             lib
             pkgs
@@ -240,6 +241,42 @@ let
           inherit lib pkgs common;
           buildModule = macosModuleSelf;
         }
+      else if name == "sshpass" then
+        (import ./deps/sshpass/macos.nix) {
+          inherit lib pkgs common;
+        }
+      # Font stack dependencies for foot terminal
+      else if name == "tllist" then
+        (import ./deps/tllist/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
+      else if name == "freetype" then
+        (import ./deps/freetype/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
+      else if name == "fontconfig" then
+        (import ./deps/fontconfig/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
+      else if name == "utf8proc" then
+        (import ./deps/utf8proc/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
+      else if name == "fcft" then
+        (import ./deps/fcft/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
+      # Applications
+      else if name == "foot" then
+        (import ./applications/foot/macos.nix) {
+          inherit lib pkgs common;
+          buildModule = macosModuleSelf;
+        }
       else
         (import ./platforms/macos.nix {
           inherit lib pkgs common;
@@ -284,7 +321,8 @@ let
             libclc = iosModule.buildForIOS "libclc" { };
             pixman = iosModule.buildForIOS "pixman" { };
             mbedtls = iosModule.buildForIOS "mbedtls" { };
-            libssh2 = iosModule.buildForIOS "libssh2" { };
+            # Note: libssh2 removed - using OpenSSH binary instead
+            openssh = iosModule.buildForIOS "openssh" { };
             test-toolchain = pkgs.callPackage ./utils/test-ios-toolchain.nix { };
             test-toolchain-cross = pkgs.callPackage ./utils/test-ios-toolchain-cross.nix { };
           }
@@ -302,6 +340,15 @@ let
             ffmpeg = macosModule.buildForMacOS "ffmpeg" { };
             "spirv-tools" = macosModule.buildForMacOS "spirv-tools" { };
             "spirv-llvm-translator" = macosModule.buildForMacOS "spirv-llvm-translator" { };
+            sshpass = macosModule.buildForMacOS "sshpass" { };
+            # Font stack for foot terminal
+            tllist = macosModule.buildForMacOS "tllist" { };
+            freetype = macosModule.buildForMacOS "freetype" { };
+            fontconfig = macosModule.buildForMacOS "fontconfig" { };
+            utf8proc = macosModule.buildForMacOS "utf8proc" { };
+            fcft = macosModule.buildForMacOS "fcft" { };
+            # Applications
+            foot = macosModule.buildForMacOS "foot" { };
           }
         else if platform == "android" then
           {

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include "compat/macos/stubs/libinput-macos/posix-compat.h"
+#include "logging.h"
 
 // Pointer implementation
 static void
@@ -25,7 +26,7 @@ pointer_destroy_handler(struct wl_resource *resource)
 {
     struct wl_seat_impl *seat = wl_resource_get_user_data(resource);
     if (seat && seat->pointer_resource == resource) {
-        fprintf(stderr, "[SEAT] Pointer resource destroyed (clearing seat->pointer_resource)\n");
+        log_printf("SEAT", "Pointer resource destroyed (clearing seat->pointer_resource)\n");
         seat->pointer_resource = NULL;
     }
 }
@@ -79,7 +80,7 @@ seat_get_pointer(struct wl_client *client, struct wl_resource *resource, uint32_
     
     wl_resource_set_implementation(pointer, &pointer_implementation, seat, pointer_destroy_handler);
     seat->pointer_resource = pointer; // Simple tracking (last one wins)
-    fprintf(stderr, "[SEAT] Client requested pointer (resource=%p, id=%u)\n", (void *)pointer, id);
+    log_printf("SEAT", "Client requested pointer (resource=%p, id=%u)\n", (void *)pointer, id);
 }
 
 static void
@@ -107,12 +108,12 @@ seat_get_keyboard(struct wl_client *client, struct wl_resource *resource, uint32
             fcntl(client_fd, F_SETFD, 0);
             wl_keyboard_send_keymap(keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, client_fd, seat->keymap_size);
             // Note: Wayland takes ownership of client_fd, so we don't close it here
-            fprintf(stderr, "[SEAT] Sent keymap to keyboard client (fd=%d, size=%u)\n", client_fd, seat->keymap_size);
+            log_printf("SEAT", "✓ Sent keymap to keyboard client (fd=%d, size=%u)\n", client_fd, seat->keymap_size);
         } else {
-            fprintf(stderr, "[SEAT] Failed to duplicate keymap fd: %s\n", strerror(errno));
+            log_printf("SEAT", "❌ Failed to duplicate keymap fd: %s\n", strerror(errno));
         }
     } else {
-        fprintf(stderr, "[SEAT] Warning: No keymap available (fd=%d, size=%u)\n", seat->keymap_fd, seat->keymap_size);
+        log_printf("SEAT", "⚠️ Warning: No keymap available (fd=%d, size=%u)\n", seat->keymap_fd, seat->keymap_size);
     }
 }
 
@@ -212,19 +213,19 @@ wl_seat_create(struct wl_display *display)
                                 munmap(map, seat->keymap_size);
                                 // Ensure fd is at offset 0
                                 lseek(seat->keymap_fd, 0, SEEK_SET);
-                                fprintf(stderr, "[SEAT] Created keymap fd=%d, size=%u\n", seat->keymap_fd, seat->keymap_size);
+                                log_printf("SEAT", "✓ Created keymap fd=%d, size=%u\n", seat->keymap_fd, seat->keymap_size);
                             } else {
-                                fprintf(stderr, "[SEAT] Failed to mmap keymap fd: %s\n", strerror(errno));
+                                log_printf("SEAT", "❌ Failed to mmap keymap fd: %s\n", strerror(errno));
                                 close(seat->keymap_fd);
                                 seat->keymap_fd = -1;
                             }
                         } else {
-                            fprintf(stderr, "[SEAT] Failed to ftruncate keymap fd: %s\n", strerror(errno));
+                            log_printf("SEAT", "❌ Failed to ftruncate keymap fd: %s\n", strerror(errno));
                             close(seat->keymap_fd);
                             seat->keymap_fd = -1;
                         }
                     } else {
-                        fprintf(stderr, "[SEAT] Failed to create keymap fd: %s\n", strerror(errno));
+                        log_printf("SEAT", "❌ Failed to create keymap fd: %s\n", strerror(errno));
                     }
                     free(keymap_string);
                 }
@@ -241,7 +242,7 @@ wl_seat_create(struct wl_display *display)
         return NULL;
     }
     
-    fprintf(stderr, "[SEAT] Created seat with keymap (fd=%d, size=%u)\n", seat->keymap_fd, seat->keymap_size);
+    log_printf("SEAT", "✓ Created seat with keymap (fd=%d, size=%u)\n", seat->keymap_fd, seat->keymap_size);
 
     return seat;
 }
@@ -297,13 +298,17 @@ wl_seat_set_focused_surface(struct wl_seat_impl *seat, void *surface)
 
 // Input event handlers
 void wl_seat_send_pointer_enter(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial, double x, double y) {
-    if (seat && seat->pointer_resource) {
+    if (seat && seat->pointer_resource && surface) {
         wl_pointer_send_enter(seat->pointer_resource, serial, surface, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    } else if (!surface) {
+        log_printf("SEAT", "⚠️ wl_seat_send_pointer_enter: surface is NULL, skipping\n");
     }
 }
 void wl_seat_send_pointer_leave(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial) {
-    if (seat && seat->pointer_resource) {
+    if (seat && seat->pointer_resource && surface) {
         wl_pointer_send_leave(seat->pointer_resource, serial, surface);
+    } else if (!surface) {
+        log_printf("SEAT", "⚠️ wl_seat_send_pointer_leave: surface is NULL, skipping\n");
     }
 }
 void wl_seat_send_pointer_motion(struct wl_seat_impl *seat, uint32_t time, double x, double y) {
@@ -324,13 +329,17 @@ void wl_seat_send_pointer_frame(struct wl_seat_impl *seat) {
     }
 }
 void wl_seat_send_keyboard_enter(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial, struct wl_array *keys) {
-    if (seat && seat->keyboard_resource) {
+    if (seat && seat->keyboard_resource && surface) {
         wl_keyboard_send_enter(seat->keyboard_resource, serial, surface, keys);
+    } else if (!surface) {
+        log_printf("SEAT", "⚠️ wl_seat_send_keyboard_enter: surface is NULL, skipping\n");
     }
 }
 void wl_seat_send_keyboard_leave(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial) {
-    if (seat && seat->keyboard_resource) {
+    if (seat && seat->keyboard_resource && surface) {
         wl_keyboard_send_leave(seat->keyboard_resource, serial, surface);
+    } else if (!surface) {
+        log_printf("SEAT", "⚠️ wl_seat_send_keyboard_leave: surface is NULL, skipping\n");
     }
 }
 void wl_seat_send_keyboard_key(struct wl_seat_impl *seat, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
