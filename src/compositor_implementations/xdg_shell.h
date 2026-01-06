@@ -33,15 +33,18 @@ struct xdg_surface_impl {
 struct xdg_toplevel_impl {
     struct wl_resource *resource;
     struct xdg_surface_impl *xdg_surface;
-    
+
     // Window state
     char *title;
     char *app_id;
     uint32_t states;
     int32_t width, height;
-    
+
     // Decoration mode: 0 = unset, 1 = CLIENT_SIDE, 2 = SERVER_SIDE
     uint32_t decoration_mode;
+
+    // Native window (NSWindow *)
+    void *native_window;
 };
 
 struct xdg_popup_impl {

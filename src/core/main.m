@@ -929,18 +929,9 @@ int main(int argc, char *argv[]) {
     [appMenu addItem:quitItem];
     [appMenuItem setSubmenu:appMenu];
 
-    // Create compositor window
-    NSRect frame = NSMakeRect(100, 100, 1024, 768);
-    NSWindow *window =
-        [[NSWindow alloc] initWithContentRect:frame
-                                    styleMask:(NSWindowStyleMaskTitled |
-                                               NSWindowStyleMaskClosable |
-                                               NSWindowStyleMaskResizable |
-                                               NSWindowStyleMaskMiniaturizable)
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO];
-
-    [window setTitle:@"Wawona"];
+    // Wawona is now headless - no main compositor window
+    // Only Wayland client windows will be created
+    NSWindow *window = nil;
 
     // Set up XDG_RUNTIME_DIR
     const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
