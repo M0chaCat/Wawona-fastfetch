@@ -346,13 +346,11 @@ let
     "src/extensions/WawonaSSHRunner/HIAHProcessRunner.m"  # Patched copy from postPatch
   ];
 
-  # macOS sources - exclude Vulkan renderer for now (Metal is primary, Vulkan linking issues)
-  macosSources = lib.filter (
-    f:
-    f != "src/rendering/vulkan_renderer.m"
-    && f != "src/rendering/vulkan_renderer.h"
-    && f != "src/core/WawonaSettings.c"
-  ) commonSources;
+  # macOS sources - include Vulkan renderer using KosmicKrisp as libvulkan
+  macosSources = commonSources ++ [
+    "src/rendering/vulkan_renderer.m"
+    "src/rendering/vulkan_renderer.h"
+  ];
 
   # Android sources - only C files, no Objective-C (no Apple frameworks)
   # Exclude Apple-specific files that use TargetConditionals.h or Apple frameworks
@@ -709,17 +707,7 @@ in
             substituteInPlace src/rendering/metal_renderer.m \
               --replace-fail '(void *)metalSurface' '(__bridge void *)metalSurface'
             
-            # Make VulkanRenderer references conditional in metal_renderer.m for macOS
-            sed -i 's|^[[:space:]]*_vulkanRenderer =|// _vulkanRenderer =|g' src/rendering/metal_renderer.m
-            sed -i 's|if (_vulkanRenderer)|if (0 /* _vulkanRenderer disabled for macOS */)|g' src/rendering/metal_renderer.m
-            sed -i 's|self\.vulkanRenderer|nil /* self.vulkanRenderer disabled for macOS */|g' src/rendering/metal_renderer.m
-            sed -i 's|(VulkanRenderer \*)|(id /* VulkanRenderer disabled for macOS */)|g' src/rendering/metal_renderer.m
-            
-            # Make VulkanRenderer property conditional in metal_renderer.h
-            substituteInPlace src/rendering/metal_renderer.h \
-              --replace-fail '@class VulkanRenderer;' '// @class VulkanRenderer; // Disabled for macOS'
-            substituteInPlace src/rendering/metal_renderer.h \
-              --replace-fail '@property (nonatomic, strong) VulkanRenderer *vulkanRenderer;' '// @property (nonatomic, strong) VulkanRenderer *vulkanRenderer; // Disabled for macOS'
+            # VulkanRenderer is now enabled for macOS using KosmicKrisp ICD
             
             # Create macOS-compatible egl_buffer_handler.h stub
             # macOS doesn't use EGL, so we need to stub it out
@@ -909,14 +897,10 @@ in
       done
 
       # Link executable
-      # Find Vulkan library - try multiple approaches
+      # Use Vulkan loader, which will load KosmicKrisp ICD
       VULKAN_LIB=""
       if [ -f macos-dependencies/lib/libvulkan.dylib ]; then
         VULKAN_LIB="-Lmacos-dependencies/lib -lvulkan"
-      elif [ -f macos-dependencies/lib/libvulkan_kosmickrisp.dylib ]; then
-        # Try linking directly with full path
-        VULKAN_LIB_PATH="$(pwd)/macos-dependencies/lib/libvulkan_kosmickrisp.dylib"
-        VULKAN_LIB="$VULKAN_LIB_PATH"
       elif pkg-config --exists vulkan; then
         VULKAN_LIB=$(pkg-config --libs vulkan)
       fi

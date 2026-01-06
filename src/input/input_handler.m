@@ -501,15 +501,15 @@ static uint32_t getWaylandTime(void) {
     static struct wl_surface_impl *last_keyboard_surface = NULL;
     if (surface != last_keyboard_surface) {
         // Leave old surface
-        if (last_keyboard_surface && last_keyboard_surface->resource && _seat->keyboard_resource && wl_resource_get_client(_seat->keyboard_resource)) {
+        if (last_keyboard_surface && last_keyboard_surface->resource && _seat->keyboard_resource && wl_resource_get_client(_seat->keyboard_resource) && wl_resource_get_client(last_keyboard_surface->resource)) {
             uint32_t serial = wl_seat_get_serial(_seat);
             wl_seat_send_keyboard_leave(_seat, last_keyboard_surface->resource, serial);
             NSLog(@"[INPUT] Keyboard left surface %p", (void *)last_keyboard_surface);
-        } else if (last_keyboard_surface && last_keyboard_surface->resource && _seat->keyboard_resource && !wl_resource_get_client(_seat->keyboard_resource)) {
-            NSLog(@"[INPUT] ⚠️ Skipping keyboard leave: keyboard resource is invalid");
+        } else if (last_keyboard_surface && last_keyboard_surface->resource && _seat->keyboard_resource && (!wl_resource_get_client(_seat->keyboard_resource) || !wl_resource_get_client(last_keyboard_surface->resource))) {
+            NSLog(@"[INPUT] ⚠️ Skipping keyboard leave: keyboard or surface resource is invalid");
         }
         // Enter new surface
-        if (surface && surface->resource && _seat->keyboard_resource && wl_resource_get_client(_seat->keyboard_resource)) {
+        if (surface && surface->resource && _seat->keyboard_resource && wl_resource_get_client(_seat->keyboard_resource) && wl_resource_get_client(surface->resource)) {
             uint32_t serial = wl_seat_get_serial(_seat);
             // Create empty keys array for keyboard enter (no pressed keys initially)
             struct wl_array keys;
@@ -519,8 +519,8 @@ static uint32_t getWaylandTime(void) {
             // Send current modifiers after enter
             wl_seat_send_keyboard_modifiers(_seat, serial);
             NSLog(@"[INPUT] Keyboard entered surface %p", (void *)surface);
-        } else if (surface && surface->resource && _seat->keyboard_resource && !wl_resource_get_client(_seat->keyboard_resource)) {
-            NSLog(@"[INPUT] ⚠️ Skipping keyboard enter: keyboard resource is invalid");
+        } else if (surface && surface->resource && _seat->keyboard_resource && (!wl_resource_get_client(_seat->keyboard_resource) || !wl_resource_get_client(surface->resource))) {
+            NSLog(@"[INPUT] ⚠️ Skipping keyboard enter: keyboard or surface resource is invalid");
         }
         last_keyboard_surface = surface;
     }
@@ -638,9 +638,9 @@ static uint32_t getWaylandTime(void) {
         surface = surface->next;
     }
     if (surface && surface->resource && surface != last_keyboard_surface_entered) {
-        // Defensive check: ensure keyboard resource is still valid
-        if (!_seat->keyboard_resource || !wl_resource_get_client(_seat->keyboard_resource)) {
-            NSLog(@"[INPUT] ⚠️ Skipping keyboard enter: keyboard resource is invalid");
+        // Defensive check: ensure keyboard and surface resources are still valid
+        if (!_seat->keyboard_resource || !wl_resource_get_client(_seat->keyboard_resource) || !wl_resource_get_client(surface->resource)) {
+            NSLog(@"[INPUT] ⚠️ Skipping keyboard enter: keyboard or surface resource is invalid");
             return;
         }
         uint32_t serial = wl_seat_get_serial(_seat);

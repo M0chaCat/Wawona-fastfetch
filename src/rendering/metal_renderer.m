@@ -350,7 +350,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // Render via Vulkan bridge if available
 #if HAVE_VULKAN
             if (self.vulkanRenderer) {
-                id<MTLTexture> vulkanTexture = [(VulkanRenderer *)self.vulkanRenderer renderEGLSurface:surface];
+                id<MTLTexture> vulkanTexture = [(VulkanRenderer *)self.vulkanRenderer renderSurface:surface];
                 if (vulkanTexture) {
                     // We got a texture from Vulkan!
                     // Update MetalSurface and return
