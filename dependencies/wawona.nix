@@ -208,6 +208,8 @@ let
     "src/logging/WawonaLog.m"
 
     # Wayland protocol implementations
+    "src/compositor_implementations/wayland_compositor.c"
+    "src/compositor_implementations/wayland_compositor.h"
     "src/compositor_implementations/wayland_output.c"
     "src/compositor_implementations/wayland_output.h"
     "src/compositor_implementations/wayland_shm.c"

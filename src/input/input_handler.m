@@ -599,8 +599,9 @@ static uint32_t getWaylandTime(void) {
 
   // Convert to pixel coordinates (Wayland uses pixels, not points)
   CGFloat scale = _window.backingScaleFactor;
+  CGFloat viewHeight = _window.contentView.bounds.size.height;
   double window_x = locationInView.x * scale;
-  double window_y = locationInView.y * scale;
+  double window_y = (viewHeight - locationInView.y) * scale;
 
   NSEventType eventType = [event type];
   struct timespec ts;

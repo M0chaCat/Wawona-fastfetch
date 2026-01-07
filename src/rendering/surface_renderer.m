@@ -15,7 +15,7 @@
 #include <wayland-server.h>
 
 // Forward declaration for global compositor instance
-extern WawonaCompositor *g_compositor_instance;
+extern WawonaCompositor *g_wl_compositor_instance;
 
 // Helper for timestamp
 static uint32_t get_time_in_milliseconds(void) {
@@ -188,7 +188,7 @@ static CGImageRef createCGImageFromData(void *data, int32_t width,
   }
 
   // Check if this toplevel is associated with our window
-  WawonaCompositor *compositor = (WawonaCompositor *)g_compositor_instance;
+  WawonaCompositor *compositor = (WawonaCompositor *)g_wl_compositor_instance;
   if (!compositor || !compositor.windowToToplevelMap) {
     return NO;
   }
@@ -384,10 +384,10 @@ static CGImageRef createCGImageFromData(void *data, int32_t width,
         NSLog(@"[RENDERER] Using zero-copy path for dmabuf (size: %dx%d)",
               dmabuf_buffer->width, dmabuf_buffer->height);
 
-        // Update surface dimensions from dmabuf buffer
-        // CRITICAL: This must be done before rendering to ensure proper sizing
-        surface->width = dmabuf_buffer->width;
-        surface->height = dmabuf_buffer->height;
+        // Update logical surface dimensions using buffer scale
+        int32_t scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
+        surface->width = dmabuf_buffer->width / scale;
+        surface->height = dmabuf_buffer->height / scale;
         surface->buffer_width = dmabuf_buffer->width;
         surface->buffer_height = dmabuf_buffer->height;
 
@@ -401,10 +401,10 @@ static CGImageRef createCGImageFromData(void *data, int32_t width,
           self.surfaceImages[key] = surfaceImage;
         }
 
-        // Update frame dimensions
+        // Update frame dimensions using logical surface size
         struct wl_viewport_impl *vp_dest = wl_viewport_from_surface(surface);
-        CGFloat destW = dmabuf_buffer->width;
-        CGFloat destH = dmabuf_buffer->height;
+        CGFloat destW = surface->width;
+        CGFloat destH = surface->height;
         if (vp_dest && vp_dest->has_destination) {
           destW = vp_dest->dst_width;
           destH = vp_dest->dst_height;
@@ -653,9 +653,9 @@ static CGImageRef createCGImageFromData(void *data, int32_t width,
     return;
   }
 
-  // Update surface dimensions
-  surface->width = width;
-  surface->height = height;
+  // Ensure buffer dimensions are stored for reference, but don't overwrite
+  // logical surface dimensions which were already handled in
+  // wayland_compositor.c
   surface->buffer_width = width;
   surface->buffer_height = height;
 
@@ -729,16 +729,34 @@ static CGImageRef createCGImageFromData(void *data, int32_t width,
     // Apply viewporter destination sizing if present, then clamp to compositor
     // window bounds
     struct wl_viewport_impl *vp_dest = wl_viewport_from_surface(surface);
-    CGFloat destW = width;
-    CGFloat destH = height;
+    CGFloat destW = surface->width;
+    CGFloat destH = surface->height;
     if (vp_dest && vp_dest->has_destination) {
       destW = vp_dest->dst_width;
       destH = vp_dest->dst_height;
     }
     CGFloat clampedWidth = (destW < maxWidth) ? destW : maxWidth;
     CGFloat clampedHeight = (destH < maxHeight) ? destH : maxHeight;
-    CGRect newFrame =
-        CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
+    // Offset the drawing based on xdg_surface geometry to align logical window
+    // content with the macOS window.
+    // ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE = 1
+    int32_t offsetX = 0;
+    int32_t offsetY = 0;
+    extern struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(
+        struct wl_surface_impl * wl_surface);
+    struct xdg_toplevel_impl *toplevel =
+        xdg_surface_get_toplevel_from_wl_surface(surface);
+    if (toplevel && toplevel->decoration_mode != 1 && toplevel->xdg_surface &&
+        toplevel->xdg_surface->has_geometry) {
+      // If client is doing CSD (mode 1), we don't offset here because the
+      // NSWindow is already sized to the full surface (including shadows).
+      // For SSD, we offset so the logical window starts at 0,0
+      offsetX = -toplevel->xdg_surface->geometry_x;
+      offsetY = -toplevel->xdg_surface->geometry_y;
+    }
+
+    CGRect newFrame = CGRectMake(surface->x + offsetX, surface->y + offsetY,
+                                 clampedWidth, clampedHeight);
 
     // Only update frame if it changed (optimization)
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR

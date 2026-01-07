@@ -1,19 +1,37 @@
 #import "WawonaCompositor.h"
-#include "../compositor_implementations/xdg_shell.h"
-#import "../input/input_handler.h"
-#include "../input/wayland_seat.h"
-#include "WawonaSettings.h"
-#ifdef __APPLE__
+#import "../rendering/surface_renderer.h"
 #import "../ui/Settings/WawonaPreferencesManager.h"
+#include "WawonaSettings.h"
+#include <wayland-server-core.h>
+
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+@interface NSWindow (Private)
+- (void)performWindowResizeWithEdge:(NSInteger)edge event:(NSEvent *)event;
+@end
+
+@interface WawonaWindow : NSWindow
+@end
+
+@implementation WawonaWindow
+- (BOOL)canBecomeKeyWindow {
+  return YES;
+}
+- (BOOL)canBecomeMainWindow {
+  return YES;
+}
+@end
+#endif
+
+#ifdef __APPLE__
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <libproc.h>
 #endif
 #endif
-#include "logging.h"
-#include "wayland_fullscreen_shell.h"
-#include "wayland_linux_dmabuf.h"
+#include "../compositor_implementations/wayland_fullscreen_shell.h"
+#include "../compositor_implementations/wayland_linux_dmabuf.h"
+#include "../logging/logging.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #ifdef __APPLE__
@@ -26,27 +44,34 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
-// removed missing header
-#include <wayland-server-protocol.h>
-#include <wayland-server.h>
-// XDG protocol externs
-extern void xdg_toplevel_send_configure(struct wl_resource *, int32_t, int32_t,
-                                        struct wl_array *);
-extern void xdg_surface_send_configure(struct wl_resource *, uint32_t);
 // --- Forward Declarations ---
 
-static struct wl_surface_impl *g_surface_list = NULL;
-static struct wl_compositor_impl *g_compositor = NULL;
+int macos_compositor_get_client_count(void) {
+  if (g_wl_compositor_instance) {
+    return (int)g_wl_compositor_instance.connectedClientCount;
+  }
+  return 0;
+}
 
-// Forward declarations for compositor implementation
-static void compositor_create_surface(struct wl_client *client,
-                                      struct wl_resource *resource,
-                                      uint32_t id);
-static void compositor_create_region(struct wl_client *client,
-                                     struct wl_resource *resource, uint32_t id);
+bool macos_compositor_multiple_clients_enabled(void) {
+#ifdef __APPLE__
+  @try {
+    WawonaPreferencesManager *prefsManager =
+        [WawonaPreferencesManager sharedManager];
+    if (prefsManager) {
+      return [prefsManager multipleClientsEnabled];
+    }
+  } @catch (NSException *exception) {
+    NSLog(@"⚠️ Failed to read multipleClientsEnabled preference: %@", exception);
+  }
+#else
+  return WawonaSettings_GetMultipleClientsEnabled();
+#endif
+  return false;
+}
 
 #ifdef __APPLE__
-WawonaCompositor *g_compositor_instance;
+WawonaCompositor *g_wl_compositor_instance;
 #else
 struct WawonaCompositor {
   struct wl_display *display;
@@ -54,7 +79,7 @@ struct WawonaCompositor {
   int connectedClientCount;
   // Add other fields as needed
 };
-static struct WawonaCompositor *g_compositor_instance;
+static struct WawonaCompositor *g_wl_compositor_instance;
 #endif
 
 // Timer callback to check for TCP connections
@@ -125,11 +150,11 @@ static int tcp_accept_timer_handler(void *data) {
       }
       BOOL allowMultiple = WawonaSettings_GetMultipleClientsEnabled();
 #ifdef __APPLE__
-      if (!allowMultiple && g_compositor_instance &&
-          g_compositor_instance.connectedClientCount > 0) {
+      if (!allowMultiple && g_wl_compositor_instance &&
+          g_wl_compositor_instance.connectedClientCount > 0) {
 #else
-      if (!allowMultiple && g_compositor_instance &&
-          g_compositor_instance->connectedClientCount > 0) {
+      if (!allowMultiple && g_wl_compositor_instance &&
+          g_wl_compositor_instance->connectedClientCount > 0) {
 #endif
         log_printf("COMPOSITOR",
                    "🚫 TCP client rejected: multiple clients disabled\n");
@@ -187,505 +212,6 @@ static int tcp_accept_timer_handler(void *data) {
   return 50;
 }
 
-static void surface_destroy_resource(struct wl_resource *resource);
-static void region_destroy_resource(struct wl_resource *resource);
-
-// --- Region Implementation ---
-
-struct wl_region_impl {
-  struct wl_resource *resource;
-};
-
-static void region_destroy(struct wl_client *client,
-                           struct wl_resource *resource) {
-  (void)client;
-  wl_resource_destroy(resource);
-}
-
-static void region_add(struct wl_client *client, struct wl_resource *resource,
-                       int32_t x, int32_t y, int32_t width, int32_t height) {
-  (void)client;
-  (void)resource;
-  (void)x;
-  (void)y;
-  (void)width;
-  (void)height;
-}
-
-static void region_subtract(struct wl_client *client,
-                            struct wl_resource *resource, int32_t x, int32_t y,
-                            int32_t width, int32_t height) {
-  (void)client;
-  (void)resource;
-  (void)x;
-  (void)y;
-  (void)width;
-  (void)height;
-}
-
-static const struct wl_region_interface region_interface = {
-    region_destroy, region_add, region_subtract};
-
-static void region_destroy_resource(struct wl_resource *resource) {
-  struct wl_region_impl *region = wl_resource_get_user_data(resource);
-  free(region);
-}
-
-static void compositor_destroy_bound_resource(struct wl_resource *resource) {
-  // NOTE: We don't clear frame callbacks here because:
-  // 1. Frame callbacks are cleared in surface_destroy_resource when surfaces
-  // are destroyed
-  // 2. Clearing callbacks here can cause issues if called at the wrong time
-  // (e.g., during connection)
-  // 3. The validation in wl_send_frame_callbacks will skip invalid callbacks
-  // safely
-  (void)resource;
-  macos_compositor_handle_client_disconnect();
-}
-
-// --- Surface Implementation ---
-
-static void surface_destroy(struct wl_client *client,
-                            struct wl_resource *resource) {
-  (void)client;
-  wl_resource_destroy(resource);
-}
-
-static void surface_attach(struct wl_client *client,
-                           struct wl_resource *resource,
-                           struct wl_resource *buffer, int32_t x, int32_t y) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-
-  // CRITICAL: Release old buffer if a new one is being attached
-  // This is required by Wayland protocol - when a new buffer is attached,
-  // the old one must be released (unless it's NULL, which means detach)
-  if (surface->buffer_resource && surface->buffer_resource != buffer &&
-      !surface->buffer_release_sent) {
-    struct wl_client *old_buffer_client =
-        wl_resource_get_client(surface->buffer_resource);
-    if (old_buffer_client) {
-      wl_buffer_send_release(surface->buffer_resource);
-      surface->buffer_release_sent = true;
-    }
-  }
-
-  // Pending state update
-  surface->buffer_resource = buffer;
-  // Reset release sent flag for the new buffer (or re-attached buffer)
-  // If buffer is NULL (detach), keep the flag as-is
-  if (buffer) {
-    surface->buffer_release_sent = false;
-  }
-  surface->x = x;
-  surface->y = y;
-}
-
-static void surface_damage(struct wl_client *client,
-                           struct wl_resource *resource, int32_t x, int32_t y,
-                           int32_t width, int32_t height) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-  if (surface) {
-    int32_t *rect = wl_array_add(&surface->pending_damage, sizeof(int32_t) * 4);
-    if (rect) {
-      rect[0] = x;
-      rect[1] = y;
-      rect[2] = width;
-      rect[3] = height;
-    }
-  }
-}
-
-static void frame_callback_destructor(struct wl_resource *resource) {
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-  if (surface && surface->frame_callback == resource) {
-    surface->frame_callback = NULL;
-  }
-}
-
-static void surface_frame(struct wl_client *client,
-                          struct wl_resource *resource, uint32_t callback) {
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-
-  struct wl_resource *callback_resource =
-      wl_resource_create(client, &wl_callback_interface, 1, callback);
-  if (!callback_resource) {
-    wl_resource_post_no_memory(resource);
-    return;
-  }
-
-  // Store callback to be fired on next frame
-  // Simple implementation: replace existing (should be a list)
-  // For now, we just keep one.
-  // Ideally, we should append to a list.
-  // Given the header structure: struct wl_resource *frame_callback;
-  // It seems it only stores one? Or maybe it's a list head?
-  // Let's assume it's a single callback for now or I should change header to
-  // support list. But header is fixed.
-
-  if (surface->frame_callback) {
-    wl_resource_destroy(surface->frame_callback);
-  }
-
-  surface->frame_callback = callback_resource;
-
-  // Set implementation and destructor for safe cleanup
-  // We use surface as user data so wl_send_frame_callbacks can validate it
-  wl_resource_set_implementation(callback_resource, NULL, surface,
-                                 frame_callback_destructor);
-
-  // Log frame callback requests for debugging
-  static int frame_request_count = 0;
-  frame_request_count++;
-  if (frame_request_count <= 20 || frame_request_count % 100 == 0) {
-    log_printf(
-        "SURFACE",
-        "Frame callback requested (surface=%p, callback=%p, request #%d)\n",
-        (void *)surface, (void *)callback_resource, frame_request_count);
-  }
-
-  // Notify compositor to ensure frame callback timer is running
-  if (g_compositor && g_compositor->frame_callback_requested) {
-    g_compositor->frame_callback_requested();
-  }
-}
-
-static void surface_set_opaque_region(struct wl_client *client,
-                                      struct wl_resource *resource,
-                                      struct wl_resource *region_resource) {
-  (void)client;
-  (void)resource;
-  (void)region_resource;
-}
-
-static void surface_set_input_region(struct wl_client *client,
-                                     struct wl_resource *resource,
-                                     struct wl_resource *region_resource) {
-  (void)client;
-  (void)resource;
-  (void)region_resource;
-}
-
-static void surface_commit(struct wl_client *client,
-                           struct wl_resource *resource) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-
-  surface->committed = true;
-
-  // Update buffer dimensions if we have a buffer
-  if (surface->buffer_resource) {
-    // Query buffer details if shm
-    struct wl_shm_buffer *shm_buffer =
-        wl_shm_buffer_get(surface->buffer_resource);
-    if (shm_buffer) {
-      surface->buffer_width = wl_shm_buffer_get_width(shm_buffer);
-      surface->buffer_height = wl_shm_buffer_get_height(shm_buffer);
-      surface->width = surface->buffer_width;
-      surface->height = surface->buffer_height;
-    } else {
-      // Check for dmabuf buffer first (before EGL)
-      // This is critical for waypipe which uses dmabuf buffers
-      if (is_dmabuf_buffer(surface->buffer_resource)) {
-        struct metal_dmabuf_buffer *dmabuf_buffer =
-            dmabuf_buffer_get(surface->buffer_resource);
-        if (dmabuf_buffer) {
-          // Update surface dimensions from dmabuf buffer
-          surface->buffer_width = dmabuf_buffer->width;
-          surface->buffer_height = dmabuf_buffer->height;
-          surface->width = dmabuf_buffer->width;
-          surface->height = dmabuf_buffer->height;
-        }
-      }
-      // EGL or other buffer. Width/height should be known or queried via EGL.
-#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-      else {
-        struct egl_buffer_handler *egl_handler =
-            macos_compositor_get_egl_buffer_handler();
-        if (egl_handler) {
-          int32_t width, height;
-          EGLint format;
-          if (egl_buffer_handler_query_buffer(egl_handler,
-                                              surface->buffer_resource, &width,
-                                              &height, &format) == 0) {
-            surface->buffer_width = width;
-            surface->buffer_height = height;
-            surface->width = width;
-            surface->height = height;
-          }
-        }
-      }
-#endif
-    }
-
-    // Apply buffer scale to logical dimensions
-    if (surface->buffer_scale < 1)
-      surface->buffer_scale = 1;
-    surface->width = surface->buffer_width / surface->buffer_scale;
-    surface->height = surface->buffer_height / surface->buffer_scale;
-  }
-  // Clear pending damage after commit
-  wl_array_release(&surface->pending_damage);
-  wl_array_init(&surface->pending_damage);
-
-  // Notify compositor to render
-  if (g_compositor && g_compositor->render_callback) {
-    g_compositor->render_callback(surface);
-  }
-}
-
-static void surface_set_buffer_transform(struct wl_client *client,
-                                         struct wl_resource *resource,
-                                         int32_t transform) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-  if (surface) {
-    surface->buffer_transform = transform;
-  }
-}
-
-static void surface_set_buffer_scale(struct wl_client *client,
-                                     struct wl_resource *resource,
-                                     int32_t scale) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-  if (surface) {
-    surface->buffer_scale = scale;
-  }
-}
-
-static void surface_damage_buffer(struct wl_client *client,
-                                  struct wl_resource *resource, int32_t x,
-                                  int32_t y, int32_t width, int32_t height) {
-  (void)client;
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-  if (surface) {
-    int32_t *rect = wl_array_add(&surface->pending_damage, sizeof(int32_t) * 4);
-    if (rect) {
-      rect[0] = x;
-      rect[1] = y;
-      rect[2] = width;
-      rect[3] = height;
-    }
-  }
-}
-
-static const struct wl_surface_interface surface_interface = {
-    surface_destroy,
-    surface_attach,
-    surface_damage,
-    surface_frame,
-    surface_set_opaque_region,
-    surface_set_input_region,
-    surface_commit,
-    surface_set_buffer_transform,
-    surface_set_buffer_scale,
-    surface_damage_buffer};
-
-static void surface_destroy_resource(struct wl_resource *resource) {
-  struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
-
-  // Log surface destruction for debugging
-  log_printf("COMPOSITOR",
-             "⚠️ Destroying surface %p (resource=%p, g_surface_list=%p)\n",
-             (void *)surface, (void *)resource, (void *)g_surface_list);
-
-  // CRITICAL: Clear frame callback pointer FIRST before any other cleanup
-  // This prevents the frame callback timer from trying to send to a destroyed
-  // resource The callback resource is owned by the same client and will be
-  // destroyed automatically
-  if (surface->frame_callback) {
-    surface->frame_callback = NULL;
-  }
-
-  // CRITICAL: Clear focused_surface from seat if it points to this surface
-  // This prevents windowDidResignKey from crashing when trying to access
-  // freed memory
-#ifdef __APPLE__
-  if (g_compositor_instance && g_compositor_instance.seat) {
-    if (g_compositor_instance.seat->focused_surface == surface) {
-      log_printf("COMPOSITOR", "   Clearing focused_surface (was %p)\n",
-                 (void *)surface);
-      g_compositor_instance.seat->focused_surface = NULL;
-    }
-  }
-#endif
-
-  // CRITICAL: Acquire lock and remove from global list atomically
-  // This prevents renderFrame from iterating over this surface while we're
-  // destroying it. Must hold lock while modifying the list to prevent race
-  // conditions.
-  wl_compositor_lock_surfaces();
-
-  // Clear the resource pointer FIRST while holding the lock
-  // This signals to any iterators that the surface is being destroyed
-  surface->resource = NULL;
-
-  // Now remove from list
-  if (g_surface_list == surface) {
-    g_surface_list = surface->next;
-  } else {
-    struct wl_surface_impl *prev = g_surface_list;
-    while (prev && prev->next != surface) {
-      prev = prev->next;
-    }
-    if (prev) {
-      prev->next = surface->next;
-    }
-  }
-  surface->next = NULL;
-
-  wl_compositor_unlock_surfaces();
-
-  log_printf("COMPOSITOR", "   Surface removed from list, g_surface_list=%p\n",
-             (void *)g_surface_list);
-
-  // CRITICAL: Notify renderer to remove this surface
-  // Now safe to call because surface is no longer in g_surface_list
-  remove_surface_from_renderer(surface);
-
-  log_printf("COMPOSITOR", "   Surface destroyed\n");
-
-  wl_array_release(&surface->pending_damage);
-  free(surface);
-}
-
-// --- Compositor Implementation ---
-
-static void compositor_create_surface(struct wl_client *client,
-                                      struct wl_resource *resource,
-                                      uint32_t id) {
-  (void)client;
-  (void)resource;
-  (void)id;
-
-  struct wl_surface_impl *surface = calloc(1, sizeof(struct wl_surface_impl));
-  if (!surface) {
-    wl_resource_post_no_memory(resource);
-    return;
-  }
-
-  surface->resource = wl_resource_create(client, &wl_surface_interface,
-                                         wl_resource_get_version(resource), id);
-  if (!surface->resource) {
-    free(surface);
-    wl_resource_post_no_memory(resource);
-    return;
-  }
-
-  wl_resource_set_implementation(surface->resource, &surface_interface, surface,
-                                 surface_destroy_resource);
-
-  // Add to global list
-  surface->next = g_surface_list;
-  g_surface_list = surface;
-
-  // Initialize defaults
-  surface->buffer_scale = 1;
-  surface->buffer_transform = WL_OUTPUT_TRANSFORM_NORMAL;
-  surface->configured = false;
-  surface->pending_configure_serial = 0;
-  wl_array_init(&surface->pending_damage);
-
-  // Log surface creation for debugging
-  log_printf("COMPOSITOR",
-             "✓ Created surface %p (resource id=%u, g_surface_list=%p)\n",
-             (void *)surface, id, (void *)g_surface_list);
-}
-
-static void compositor_create_region(struct wl_client *client,
-                                     struct wl_resource *resource,
-                                     uint32_t id) {
-  struct wl_region_impl *region = calloc(1, sizeof(struct wl_region_impl));
-  if (!region) {
-    wl_resource_post_no_memory(resource);
-    return;
-  }
-
-  region->resource = wl_resource_create(client, &wl_region_interface,
-                                        wl_resource_get_version(resource), id);
-  if (!region->resource) {
-    free(region);
-    wl_resource_post_no_memory(resource);
-    return;
-  }
-
-  wl_resource_set_implementation(region->resource, &region_interface, region,
-                                 region_destroy_resource);
-}
-
-static const struct wl_compositor_interface compositor_interface = {
-    compositor_create_surface, compositor_create_region};
-
-static void compositor_bind(struct wl_client *client, void *data,
-                            uint32_t version, uint32_t id) {
-  struct wl_compositor_impl *compositor = data;
-  BOOL allowMultiple = NO;
-#ifdef __APPLE__
-  @try {
-    WawonaPreferencesManager *prefsManager =
-        [WawonaPreferencesManager sharedManager];
-    if (prefsManager) {
-      allowMultiple = [prefsManager multipleClientsEnabled];
-    }
-  } @catch (NSException *exception) {
-    NSLog(@"⚠️ Failed to read multipleClientsEnabled preference: %@", exception);
-    allowMultiple = NO;
-  }
-  if (!allowMultiple && g_compositor_instance &&
-      g_compositor_instance.connectedClientCount > 0) {
-#else
-  allowMultiple = WawonaSettings_GetMultipleClientsEnabled();
-  if (!allowMultiple && g_compositor_instance &&
-      g_compositor_instance->connectedClientCount > 0) {
-#endif
-    NSLog(@"🚫 Additional client connection rejected: multiple clients "
-          @"disabled");
-    wl_client_destroy(client);
-    return;
-  }
-  struct wl_resource *resource =
-      wl_resource_create(client, &wl_compositor_interface, version, id);
-  if (!resource) {
-    wl_client_post_no_memory(client);
-    return;
-  }
-  wl_resource_set_implementation(resource, &compositor_interface, compositor,
-                                 compositor_destroy_bound_resource);
-  macos_compositor_handle_client_connect();
-}
-
-// --- Public API ---
-
-struct wl_compositor_impl *wl_compositor_create(struct wl_display *display) {
-  struct wl_compositor_impl *compositor =
-      calloc(1, sizeof(struct wl_compositor_impl));
-  if (!compositor)
-    return NULL;
-
-  compositor->display = display;
-  compositor->global = wl_global_create(display, &wl_compositor_interface, 4,
-                                        compositor, compositor_bind);
-
-  if (!compositor->global) {
-    free(compositor);
-    return NULL;
-  }
-
-  g_compositor = compositor;
-  return compositor;
-}
-
-void wl_compositor_destroy(struct wl_compositor_impl *compositor) {
-  if (!compositor)
-    return;
-  if (g_compositor == compositor)
-    g_compositor = NULL;
-  wl_global_destroy(compositor->global);
-  free(compositor);
-}
-
 void wl_compositor_set_render_callback(struct wl_compositor_impl *compositor,
                                        wl_surface_render_callback_t callback) {
   if (compositor)
@@ -708,40 +234,28 @@ void wl_compositor_set_frame_callback_requested(
 
 void wl_compositor_set_seat(struct wl_seat_impl *seat) { (void)seat; }
 
-// Simple spinlock for protecting surface list during iteration
-// This prevents race conditions between main thread (renderFrame) and
-// event thread (surface_destroy_resource)
-static volatile int g_surface_list_lock = 0;
-static inline void acquire_surface_lock(void) {
-  while (__atomic_test_and_set(&g_surface_list_lock, __ATOMIC_ACQUIRE)) {
-    // Spin wait - very brief for quick operations
+static volatile int g_wl_surface_list_lock = 0;
+void wl_compositor_lock_surfaces(void) {
+  while (__atomic_test_and_set(&g_wl_surface_list_lock, __ATOMIC_ACQUIRE)) {
   }
 }
-static inline void release_surface_lock(void) {
-  __atomic_clear(&g_surface_list_lock, __ATOMIC_RELEASE);
+void wl_compositor_unlock_surfaces(void) {
+  __atomic_clear(&g_wl_surface_list_lock, __ATOMIC_RELEASE);
 }
 
 void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator,
                                     void *data) {
-  acquire_surface_lock();
-  struct wl_surface_impl *s = g_surface_list;
+  wl_compositor_lock_surfaces();
+  struct wl_surface_impl *s = g_wl_surface_list;
   while (s) {
-    // SAFETY: Take a copy of next before calling iterator, in case
-    // the iterator somehow modifies the list (it shouldn't, but be safe)
     struct wl_surface_impl *next = s->next;
-    // Additional safety: only call iterator if surface appears valid
-    // (resource being NULL means surface is being destroyed)
     if (s->resource) {
       iterator(s, data);
     }
     s = next;
   }
-  release_surface_lock();
+  wl_compositor_unlock_surfaces();
 }
-
-void wl_compositor_lock_surfaces(void) { acquire_surface_lock(); }
-
-void wl_compositor_unlock_surfaces(void) { release_surface_lock(); }
 
 struct wl_surface_impl *wl_surface_from_resource(struct wl_resource *resource) {
   if (wl_resource_instance_of(resource, &wl_surface_interface,
@@ -795,9 +309,7 @@ void wl_buffer_end_shm_access(struct wl_resource *buffer) {
   }
 }
 
-struct wl_surface_impl *wl_get_all_surfaces(void) { return g_surface_list; }
-
-// Update compositor_create_surface to use g_surface_list
+// Update compositor_create_surface to use g_wl_surface_list
 // Re-implementing parts of compositor_create_surface here to ensure correct
 // linking (Code above was simplified)
 #include "metal_waypipe.h"
@@ -1112,7 +624,7 @@ struct wl_surface_impl *wl_get_all_surfaces(void) { return g_surface_list; }
 #endif
 
 // Static reference to compositor instance for C callback
-WawonaCompositor *g_compositor_instance = NULL;
+WawonaCompositor *g_wl_compositor_instance = NULL;
 
 // Forward declarations
 static int send_frame_callbacks_timer(void *data);
@@ -1125,13 +637,13 @@ static void trigger_first_frame_callback_idle(void *data);
 // C function for frame callback requested callback
 // Called from event thread when a client requests a frame callback
 static void wawona_compositor_frame_callback_requested(void) {
-  if (!g_compositor_instance)
+  if (!g_wl_compositor_instance)
     return;
 
   // This runs on the event thread - safe to create timer directly
-  if (g_compositor_instance.display) {
+  if (g_wl_compositor_instance.display) {
     BOOL timer_was_missing =
-        (g_compositor_instance.frame_callback_source == NULL);
+        (g_wl_compositor_instance.frame_callback_source == NULL);
 
     // Ensure timer exists - if it was missing, create it with delay 1ms to
     // fire almost immediately Using 1ms instead of 0ms because Wayland timers
@@ -1143,7 +655,7 @@ static void wawona_compositor_frame_callback_requested(void) {
                                "Creating timer (first frame request)\n");
       // Create timer with 16ms delay for continuous operation
       if (!ensure_frame_callback_timer_on_event_thread(
-              g_compositor_instance, 16, "first frame request")) {
+              g_wl_compositor_instance, 16, "first frame request")) {
         log_printf("COMPOSITOR", "wawona_compositor_frame_callback_"
                                  "requested: Failed to create timer\n");
       } else {
@@ -1154,9 +666,9 @@ static void wawona_compositor_frame_callback_requested(void) {
         // This avoids waiting 16ms for the first frame and ensures start-up
         // is snappy
         struct wl_event_loop *eventLoop =
-            wl_display_get_event_loop(g_compositor_instance.display);
+            wl_display_get_event_loop(g_wl_compositor_instance.display);
         wl_event_loop_add_idle(eventLoop, trigger_first_frame_callback_idle,
-                               (__bridge void *)g_compositor_instance);
+                               (__bridge void *)g_wl_compositor_instance);
       }
     }
     // If timer already exists, do nothing - it will fire at its scheduled
@@ -1166,9 +678,9 @@ static void wawona_compositor_frame_callback_requested(void) {
 
 // C function to update window title when focus changes
 void wawona_compositor_update_title(struct wl_client *client) {
-  if (g_compositor_instance) {
+  if (g_wl_compositor_instance) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      [g_compositor_instance updateWindowTitleForClient:client];
+      [g_wl_compositor_instance updateWindowTitleForClient:client];
     });
   }
 }
@@ -1177,8 +689,8 @@ void wawona_compositor_update_title(struct wl_client *client) {
 // OPTIMIZED: Only switch to Metal for actual nested compositors, not proxies
 // like waypipe
 void wawona_compositor_detect_full_compositor(struct wl_client *client) {
-  if (!g_compositor_instance) {
-    NSLog(@"⚠️ g_compositor_instance is NULL, cannot detect compositor");
+  if (!g_wl_compositor_instance) {
+    NSLog(@"⚠️ g_wl_compositor_instance is NULL, cannot detect compositor");
     return;
   }
 
@@ -1275,7 +787,7 @@ void wawona_compositor_detect_full_compositor(struct wl_client *client) {
   // via prefs
   if (shouldSwitchToMetal) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      [g_compositor_instance switchToMetalBackend];
+      [g_wl_compositor_instance switchToMetalBackend];
     });
   } else {
     NSLog(@"ℹ️ Client binding to wl_compositor but not a nested compositor - "
@@ -1284,7 +796,7 @@ void wawona_compositor_detect_full_compositor(struct wl_client *client) {
 
   // Update window title with client name (regardless of backend)
   dispatch_async(dispatch_get_main_queue(), ^{
-    [g_compositor_instance updateWindowTitleForClient:client];
+    [g_wl_compositor_instance updateWindowTitleForClient:client];
   });
 }
 
@@ -1314,7 +826,7 @@ static void render_surface_callback(struct wl_surface_impl *surface) {
   if (!client)
     return;
 
-  if (g_compositor_instance && g_compositor_instance.renderingBackend) {
+  if (g_wl_compositor_instance && g_wl_compositor_instance.renderingBackend) {
     // CRITICAL: Render SYNCHRONOUSLY on main thread for immediate updates
     // Wayland compositors MUST repaint immediately when clients commit
     // buffers Async dispatch causes race conditions and delays that break
@@ -1332,7 +844,7 @@ static void render_surface_callback(struct wl_surface_impl *surface) {
 // Helper function to find the appropriate renderer for a surface
 static id<RenderingBackend>
 findRendererForSurface(struct wl_surface_impl *surface) {
-  if (!g_compositor_instance || !surface) {
+  if (!g_wl_compositor_instance || !surface) {
     return nil;
   }
 
@@ -1342,16 +854,16 @@ findRendererForSurface(struct wl_surface_impl *surface) {
   struct xdg_toplevel_impl *toplevel =
       xdg_surface_get_toplevel_from_wl_surface(surface);
 
-  [g_compositor_instance.mapLock lock];
+  [g_wl_compositor_instance.mapLock lock];
   NSLog(@"[RENDER] findRendererForSurface: surface=%p, toplevel=%p, "
         @"mapCount=%lu",
         (void *)surface, (void *)toplevel,
-        (unsigned long)g_compositor_instance.windowToToplevelMap.count);
-  if (toplevel && g_compositor_instance.windowToToplevelMap) {
+        (unsigned long)g_wl_compositor_instance.windowToToplevelMap.count);
+  if (toplevel && g_wl_compositor_instance.windowToToplevelMap) {
     // Find the window for this toplevel
-    for (NSValue *windowValue in g_compositor_instance.windowToToplevelMap) {
-      NSValue *toplevelValue =
-          [g_compositor_instance.windowToToplevelMap objectForKey:windowValue];
+    for (NSValue *windowValue in g_wl_compositor_instance.windowToToplevelMap) {
+      NSValue *toplevelValue = [g_wl_compositor_instance.windowToToplevelMap
+          objectForKey:windowValue];
       struct xdg_toplevel_impl *mappedToplevel = [toplevelValue pointerValue];
       if (mappedToplevel == toplevel) {
         // Found the window - get its renderer's CompositorView
@@ -1362,7 +874,7 @@ findRendererForSurface(struct wl_surface_impl *surface) {
           NSLog(@"[RENDER] findRendererForSurface: Found window %p, renderer "
                 @"%p",
                 (__bridge void *)window, compositorView.renderer);
-          [g_compositor_instance.mapLock unlock];
+          [g_wl_compositor_instance.mapLock unlock];
           return compositorView.renderer;
         }
         break;
@@ -1373,18 +885,18 @@ findRendererForSurface(struct wl_surface_impl *surface) {
   // No specific window found, use main compositor renderer fallback
   NSLog(@"[RENDER] findRendererForSurface: Falling back to main "
         @"renderingBackend %p",
-        g_compositor_instance.renderingBackend);
-  [g_compositor_instance.mapLock unlock];
-  return g_compositor_instance.renderingBackend;
+        g_wl_compositor_instance.renderingBackend);
+  [g_wl_compositor_instance.mapLock unlock];
+  return g_wl_compositor_instance.renderingBackend;
 }
 
 // Helper function to render surface immediately on main thread
 static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
-  if (!g_compositor_instance || !surface)
+  if (!g_wl_compositor_instance || !surface)
     return;
 
   // Check if window needs to be shown and sized for first client
-  if (!g_compositor_instance.windowShown && surface->buffer_resource) {
+  if (!g_wl_compositor_instance.windowShown && surface->buffer_resource) {
     // Get buffer size appropriately
     int32_t w = 0, h = 0;
     struct wl_shm_buffer *shm_buf = wl_shm_buffer_get(surface->buffer_resource);
@@ -1409,7 +921,31 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
     }
 
     if (w > 0 && h > 0) {
-      [g_compositor_instance showAndSizeWindowForFirstClient:w height:h];
+      [g_wl_compositor_instance showAndSizeWindowForFirstClient:w height:h];
+    }
+  } else if (surface->buffer_resource) {
+    // Check if window needs to be resized for subsequent surface commits (CSD
+    // only)
+    extern struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(
+        struct wl_surface_impl * wl_surface);
+    struct xdg_toplevel_impl *toplevel =
+        xdg_surface_get_toplevel_from_wl_surface(surface);
+    if (toplevel && toplevel->decoration_mode == 1 && toplevel->native_window) {
+      NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+      // Get buffer size
+      int32_t w = surface->width;
+      int32_t h = surface->height;
+
+      if (w > 0 && h > 0 &&
+          (window.frame.size.width != w || window.frame.size.height != h)) {
+        NSLog(@"[WINDOW] Resizing CSD window to match surface: %dx%d", w, h);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          NSRect frame = window.frame;
+          frame.size.width = w;
+          frame.size.height = h;
+          [window setFrame:frame display:YES];
+        });
+      }
     }
   }
 
@@ -1423,22 +959,29 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
   // This ensures nested compositors (like Weston) see updates immediately
   // Wayland spec requires compositors to repaint immediately on surface
   // commit
-  if ([g_compositor_instance.renderingBackend
-          respondsToSelector:@selector(setNeedsDisplay)]) {
-    [g_compositor_instance.renderingBackend setNeedsDisplay];
+  extern struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(
+      struct wl_surface_impl * wl_surface);
+  struct xdg_toplevel_impl *toplevel =
+      xdg_surface_get_toplevel_from_wl_surface(surface);
+  if (toplevel && toplevel->native_window) {
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    [window.contentView setNeedsDisplay:YES];
+  } else if ([g_wl_compositor_instance.renderingBackend
+                 respondsToSelector:@selector(setNeedsDisplay)]) {
+    [g_wl_compositor_instance.renderingBackend setNeedsDisplay];
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  } else if (g_compositor_instance.window &&
-             g_compositor_instance.window.rootViewController.view) {
+  } else if (g_wl_compositor_instance.window &&
+             g_wl_compositor_instance.window.rootViewController.view) {
     // iOS: Fallback for Cocoa backend
     dispatch_async(dispatch_get_main_queue(), ^{
-      [g_compositor_instance.window.rootViewController.view setNeedsDisplay];
+      [g_wl_compositor_instance.window.rootViewController.view setNeedsDisplay];
     });
 #else
-  } else if (g_compositor_instance.window &&
-             g_compositor_instance.window.contentView) {
+  } else if (g_wl_compositor_instance.window &&
+             g_wl_compositor_instance.window.contentView) {
     // macOS: Fallback for Cocoa backend - force immediate redraw
     dispatch_async(dispatch_get_main_queue(), ^{
-      NSView *contentView = g_compositor_instance.window.contentView;
+      NSView *contentView = g_wl_compositor_instance.window.contentView;
       [contentView setNeedsDisplay:YES];
       // Force immediate display update
       [contentView displayIfNeeded];
@@ -1448,11 +991,11 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
 }
 
 // C wrapper function to remove surface from renderer's internal tracking
-// NOTE: The surface must already be removed from g_surface_list before
+// NOTE: The surface must already be removed from g_wl_surface_list before
 // calling this! This is ONLY called from the main thread to avoid deadlocks
 // and use-after-free issues.
 void remove_surface_from_renderer(struct wl_surface_impl *surface) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
@@ -1460,13 +1003,15 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
   // If called from the event thread (surface_destroy_resource), we skip this.
   //
   // Why this is safe:
-  // 1. The surface has already been removed from g_surface_list
-  // 2. The renderer iterates g_surface_list in drawSurfacesInRect/renderFrame
-  // 3. Since the surface is no longer in g_surface_list, it won't be rendered
+  // 1. The surface has already been removed from g_wl_surface_list
+  // 2. The renderer iterates g_wl_surface_list in
+  // drawSurfacesInRect/renderFrame
+  // 3. Since the surface is no longer in g_wl_surface_list, it won't be
+  // rendered
   // 4. The renderer's surfaceImages/surfaceTextures dictionary may have a
   // stale
   //    entry, but it won't be accessed because the surface isn't in
-  //    g_surface_list
+  //    g_wl_surface_list
   // 5. The stale entry will be cleaned up when renderSurface detects
   // surface->resource is NULL
   //
@@ -1476,10 +1021,10 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
 
   if ([NSThread isMainThread]) {
     // Remove from renderer if active
-    if (g_compositor_instance.renderingBackend &&
-        [g_compositor_instance.renderingBackend
+    if (g_wl_compositor_instance.renderingBackend &&
+        [g_wl_compositor_instance.renderingBackend
             respondsToSelector:@selector(removeSurface:)]) {
-      [g_compositor_instance.renderingBackend removeSurface:surface];
+      [g_wl_compositor_instance.renderingBackend removeSurface:surface];
     }
   }
   // If not on main thread, skip - the renderer will clean up stale entries
@@ -1489,7 +1034,7 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
 // C function to check if window should be hidden after client disconnects
 // Called from client_destroy_listener after removing all surfaces
 void macos_compositor_check_and_hide_window_if_needed(void) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
@@ -1500,14 +1045,15 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
   // The actual surface count check will be done in client_destroy_listener
 #ifdef __APPLE__
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (g_compositor_instance.windowShown && g_compositor_instance.window) {
+    if (g_wl_compositor_instance.windowShown &&
+        g_wl_compositor_instance.window) {
       NSLog(@"[WINDOW] All clients disconnected - hiding window");
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-      g_compositor_instance.window.hidden = YES;
+      g_wl_compositor_instance.window.hidden = YES;
 #else
-            [g_compositor_instance.window orderOut:nil];
+            [g_wl_compositor_instance.window orderOut:nil];
 #endif
-      g_compositor_instance.windowShown = NO;
+      g_wl_compositor_instance.windowShown = NO;
     }
   });
 #else
@@ -1543,6 +1089,14 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     _windowToToplevelMap = [[NSMutableDictionary alloc] init];
     _mapLock = [[NSRecursiveLock alloc] init];
     _nativeWindows = [[NSMutableArray alloc] init];
+    _decoration_manager = NULL;
+
+    // Register for Force SSD change notifications for hot-reload
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(handleForceSSDChanged:)
+               name:kWawonaForceSSDChangedNotification
+             object:nil];
 
     // Create custom view that accepts first responder and handles drawing
     CompositorView *compositorView;
@@ -1640,7 +1194,7 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
 
     // Store global reference for C callbacks (MUST be set before clients
     // connect)
-    g_compositor_instance = self;
+    g_wl_compositor_instance = self;
     NSLog(@"   Global compositor instance set for client detection: %p",
           (__bridge void *)self);
 
@@ -1658,148 +1212,6 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
 }
 
 // Implementation of wayland frame callback functions
-int wl_send_frame_callbacks(void) {
-  if (!g_compositor_instance || !g_surface_list) {
-    return 0;
-  }
-
-  int count = 0;
-  struct wl_surface_impl *surface = g_surface_list;
-  while (surface) {
-    // Store next pointer before any operations that might modify the list
-    struct wl_surface_impl *next_surface = surface->next;
-
-    if (surface->frame_callback) {
-      // SAFETY: Multiple validation checks to prevent crashes when client
-      // disconnects This is critical because client disconnection can happen
-      // asynchronously and leave dangling pointers in our data structures
-
-      // CRITICAL: First check if frame_callback pointer itself is valid
-      // If it's a very small number or invalid pointer, it's likely freed
-      // memory
-      uintptr_t callback_addr = (uintptr_t)surface->frame_callback;
-      if (callback_addr < 0x1000 || callback_addr > 0x7FFFFFFFFFFFF000) {
-        // Invalid pointer - likely freed memory, clear it
-        surface->frame_callback = NULL;
-        surface = next_surface;
-        continue;
-      }
-
-      // First, verify the surface resource itself is still valid
-      if (!surface->resource) {
-        // Surface resource is NULL - surface was destroyed, clear callback
-        surface->frame_callback = NULL;
-        surface = next_surface;
-        continue;
-      }
-
-      // Check surface's user_data is still pointing to this surface
-      // (if user_data is NULL or different, the resource was invalidated)
-      void *surface_user_data = wl_resource_get_user_data(surface->resource);
-      if (surface_user_data != surface) {
-        // Surface resource was invalidated - clear callback
-        surface->frame_callback = NULL;
-        surface = next_surface;
-        continue;
-      }
-
-      // Validate the surface's client is still connected
-      struct wl_client *surface_client =
-          wl_resource_get_client(surface->resource);
-      if (!surface_client) {
-        // Surface's client disconnected - clear callback and skip
-        surface->frame_callback = NULL;
-        surface = next_surface;
-        continue;
-      }
-
-      // Check if the frame_callback resource is still valid
-      // We expect cb_user_data to be the surface pointer
-      void *cb_user_data = wl_resource_get_user_data(surface->frame_callback);
-      if (cb_user_data != surface) {
-        // Frame callback resource was destroyed or belongs to different
-        // surface
-        surface->frame_callback = NULL;
-        surface = next_surface;
-        continue;
-      }
-
-      // CRITICAL: We avoid calling wl_resource_get_client on the
-      // frame_callback resource because it can crash if the resource is
-      // invalid. Instead, we rely on the fact that frame callbacks are always
-      // created by the same client as the surface, so if the surface's client
-      // is valid, we can assume the callback is valid too. The frame callback
-      // will be cleared in surface_destroy_resource when the surface is
-      // destroyed, so we don't need to validate it separately here. We
-      // already validated the callback_addr pointer at the beginning of this
-      // block.
-
-      // Get current time in milliseconds (wayland time is in milliseconds
-      // since epoch)
-      struct timespec ts;
-      clock_gettime(CLOCK_MONOTONIC, &ts);
-      uint32_t time = (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
-
-      // Send frame callback done event
-      // This is the dangerous call - if resource is invalid, this will crash
-      // But we've done our best to validate it above
-      wl_callback_send_done(surface->frame_callback, time);
-      wl_resource_destroy(surface->frame_callback);
-      surface->frame_callback = NULL;
-      count++;
-    }
-    surface = next_surface;
-  }
-  return count;
-}
-
-bool wl_has_pending_frame_callbacks(void) {
-  if (!g_surface_list) {
-    return false;
-  }
-
-  struct wl_surface_impl *surface = g_surface_list;
-  while (surface) {
-    if (surface->frame_callback) {
-      // Check if the frame_callback resource is still valid
-      void *cb_user_data = wl_resource_get_user_data(surface->frame_callback);
-      if (!cb_user_data) {
-        // Frame callback resource was destroyed - clear it
-        surface->frame_callback = NULL;
-        continue;
-      }
-
-      // CRITICAL: We avoid calling wl_resource_get_client on the
-      // frame_callback resource because it can crash if the resource is
-      // invalid. Instead, we check if the surface resource is valid - if it
-      // is, we assume the frame callback is valid too (since they're created
-      // by the same client).
-      if (surface->resource) {
-        void *surface_user_data = wl_resource_get_user_data(surface->resource);
-        if (surface_user_data == surface) {
-          // Surface is valid - check if its client is still connected
-          struct wl_client *surface_client =
-              wl_resource_get_client(surface->resource);
-          if (surface_client) {
-            // Surface's client is valid - assume frame callback is valid too
-            return true;
-          } else {
-            // Surface's client disconnected - clear the callback
-            surface->frame_callback = NULL;
-          }
-        } else {
-          // Surface resource was invalidated - clear the callback
-          surface->frame_callback = NULL;
-        }
-      } else {
-        // Surface resource is NULL - clear the callback
-        surface->frame_callback = NULL;
-      }
-    }
-    surface = surface->next;
-  }
-  return false;
-}
 
 - (void)setupInputHandling {
   if (_seat && _window) {
@@ -1853,7 +1265,7 @@ bool wl_has_pending_frame_callbacks(void) {
   NSLog(@"   ✓ wl_compositor created (supports EGL platform extensions)");
 
   // Set up render callback for immediate rendering on commit
-  g_compositor_instance = self;
+  g_wl_compositor_instance = self;
   wl_compositor_set_render_callback(_compositor, render_surface_callback);
 
   // Set up title update callback to update window title when focus changes
@@ -1988,14 +1400,13 @@ bool wl_has_pending_frame_callbacks(void) {
     NSLog(@"   ✓ Primary selection protocol created");
   }
 
-  // Decoration manager protocol (iOS only, macOS uses native decorations)
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+  // Decoration manager protocol (Available on both iOS and macOS)
   struct wl_decoration_manager_impl *decoration =
       wl_decoration_create(_display);
   if (decoration) {
+    self.decoration_manager = decoration;
     NSLog(@"   ✓ Decoration manager protocol created");
   }
-#endif
 
   // Toplevel icon protocol
   struct wl_toplevel_icon_manager_impl *toplevel_icon =
@@ -2656,11 +2067,22 @@ displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeStamp *inNow,
         outputRect.size.width, outputRect.size.height, scale, pixelWidth,
         pixelHeight);
 
-  // Store for resize handling on event thread to avoid race conditions
-  _pending_resize_width = pixelWidth;
-  _pending_resize_height = pixelHeight;
+  // Store logical dimensions (points) for Wayland xdg-shell protocol
+  // Wayland specifies dimensions in logical coordinates.
+  _pending_resize_width = (int32_t)outputRect.size.width;
+  _pending_resize_height = (int32_t)outputRect.size.height;
   _pending_resize_scale = scaleInt;
   _needs_resize_configure = YES;
+}
+
+- (void)handleForceSSDChanged:(NSNotification *)notification {
+  if (self.decoration_manager) {
+    log_printf("COMPOSITOR",
+               "ℹ️ Force SSD setting changed, triggering hot-reload\n");
+    // This function iterates decoration list and sends configure events
+    // and calls macos_update_toplevel_decoration_mode
+    wl_decoration_hot_reload(self.decoration_manager);
+  }
 }
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -3182,9 +2604,13 @@ static int send_frame_callbacks_timer(void *data) {
   if (compositor.needs_resize_configure) {
     // Update wl_output mode/geometry (must be done on event thread to avoid
     // races)
+    // wl_output dimensions MUST be in pixels
     if (compositor.output) {
-      wl_output_update_size(compositor.output, compositor.pending_resize_width,
-                            compositor.pending_resize_height,
+      int32_t pixelWidth =
+          compositor.pending_resize_width * compositor.pending_resize_scale;
+      int32_t pixelHeight =
+          compositor.pending_resize_height * compositor.pending_resize_scale;
+      wl_output_update_size(compositor.output, pixelWidth, pixelHeight,
                             compositor.pending_resize_scale);
     }
 
@@ -3434,8 +2860,8 @@ static void disconnect_all_clients(struct wl_display *display) {
   NSLog(@"🛑 Stopping compositor backend...");
 
   // Clear global reference
-  if (g_compositor_instance == self) {
-    g_compositor_instance = NULL;
+  if (g_wl_compositor_instance == self) {
+    g_wl_compositor_instance = NULL;
   }
 
   // CRITICAL: Disconnect clients FIRST while event thread is still running
@@ -3841,7 +3267,7 @@ static void disconnect_all_clients(struct wl_display *display) {
 // decorations)
 void macos_compositor_set_csd_mode_for_toplevel(
     struct xdg_toplevel_impl *toplevel, bool csd) {
-  if (!g_compositor_instance || !toplevel) {
+  if (!g_wl_compositor_instance || !toplevel) {
     return;
   }
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -3849,7 +3275,7 @@ void macos_compositor_set_csd_mode_for_toplevel(
 #else
   // Dispatch to main thread to update UI
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSWindow *window = g_compositor_instance.window;
+    NSWindow *window = g_wl_compositor_instance.window;
     if (!window) {
       return;
     }
@@ -3861,7 +3287,7 @@ void macos_compositor_set_csd_mode_for_toplevel(
     // throws exception We'll handle fullscreen titlebar visibility by exiting
     // fullscreen after client disconnect (see
     // macos_compositor_handle_client_disconnect)
-    BOOL isFullscreen = g_compositor_instance.isFullscreen;
+    BOOL isFullscreen = g_wl_compositor_instance.isFullscreen;
 
     // Don't change style mask while in fullscreen - wait for fullscreen to
     // exit first
@@ -3899,23 +3325,23 @@ void macos_compositor_set_csd_mode_for_toplevel(
 }
 
 void wl_compositor_flush_and_trigger_frame(void) {
-  if (g_compositor_instance) {
-    if (g_compositor_instance.display) {
-      wl_display_flush_clients(g_compositor_instance.display);
+  if (g_wl_compositor_instance) {
+    if (g_wl_compositor_instance.display) {
+      wl_display_flush_clients(g_wl_compositor_instance.display);
     }
-    [g_compositor_instance sendFrameCallbacksImmediately];
+    [g_wl_compositor_instance sendFrameCallbacksImmediately];
   }
 }
 
 // C function to activate/raise the window (called from activation protocol)
 void macos_compositor_activate_window(void) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
   // Dispatch to main thread to raise window
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSWindow *window = g_compositor_instance.window;
+    NSWindow *window = g_wl_compositor_instance.window;
     if (!window) {
       return;
     }
@@ -3932,7 +3358,7 @@ void macos_compositor_activate_window(void) {
 
 // C function to update toplevel window title
 void macos_update_toplevel_title(struct xdg_toplevel_impl *toplevel) {
-  if (!toplevel || !g_compositor_instance) {
+  if (!toplevel || !g_wl_compositor_instance) {
     return;
   }
 
@@ -3985,13 +3411,13 @@ void macos_update_toplevel_title(struct xdg_toplevel_impl *toplevel) {
 
 // C function to handle client disconnection (may exit fullscreen if needed)
 void macos_compositor_handle_client_disconnect(void) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
 #ifdef __APPLE__
   dispatch_async(dispatch_get_main_queue(), ^{
-    WawonaCompositor *compositor = g_compositor_instance;
+    WawonaCompositor *compositor = g_wl_compositor_instance;
 
     // Decrement client count
     if (compositor.connectedClientCount > 0) {
@@ -4044,23 +3470,23 @@ void macos_compositor_handle_client_disconnect(void) {
     }
   });
 #else
-  if (g_compositor_instance->connectedClientCount > 0) {
-    g_compositor_instance->connectedClientCount--;
+  if (g_wl_compositor_instance->connectedClientCount > 0) {
+    g_wl_compositor_instance->connectedClientCount--;
   }
   log_printf("FULLSCREEN", "Client disconnected. Connected clients: %d\n",
-             g_compositor_instance->connectedClientCount);
+             g_wl_compositor_instance->connectedClientCount);
 #endif
 }
 
 // C function to handle new client connection (cancel fullscreen exit timer)
 void macos_compositor_handle_client_connect(void) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
 #ifdef __APPLE__
   dispatch_async(dispatch_get_main_queue(), ^{
-    WawonaCompositor *compositor = g_compositor_instance;
+    WawonaCompositor *compositor = g_wl_compositor_instance;
 
     // Increment client count
     compositor.connectedClientCount++;
@@ -4076,21 +3502,21 @@ void macos_compositor_handle_client_connect(void) {
     }
   });
 #else
-  g_compositor_instance->connectedClientCount++;
+  g_wl_compositor_instance->connectedClientCount++;
   log_printf("FULLSCREEN", "Client connected. Connected clients: %d\n",
-             g_compositor_instance->connectedClientCount);
+             g_wl_compositor_instance->connectedClientCount);
 #endif
 }
 
 // C function to update window title when no clients are connected
 void macos_compositor_update_title_no_clients(void) {
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
 #ifdef __APPLE__
   dispatch_async(dispatch_get_main_queue(), ^{
-    WawonaCompositor *compositor = g_compositor_instance;
+    WawonaCompositor *compositor = g_wl_compositor_instance;
     if (compositor.window) {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
       // iOS: Window titles not displayed
@@ -4114,10 +3540,10 @@ struct egl_buffer_handler *macos_compositor_get_egl_buffer_handler(void) {
   // iOS: EGL is disabled
   return NULL;
 #else
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return NULL;
   }
-  return g_compositor_instance.egl_buffer_handler;
+  return g_wl_compositor_instance.egl_buffer_handler;
 #endif
 }
 
@@ -4154,18 +3580,104 @@ struct egl_buffer_handler *macos_compositor_get_egl_buffer_handler(void) {
 #endif
 }
 
+// C function to start toplevel window move (drag)
+void macos_start_toplevel_move(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !g_wl_compositor_instance) {
+    return;
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (toplevel->native_window) {
+      NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+
+      // Use the current event to start the drag
+      // This is safe to call from any point where a move is initiated by client
+      NSEvent *currentEvent = [NSApp currentEvent];
+      if (currentEvent) {
+        [window performWindowDragWithEvent:currentEvent];
+        NSLog(@"[WINDOW] Started window drag for toplevel %p",
+              (void *)toplevel);
+      } else {
+        NSLog(@"⚠️ [WINDOW] Failed to start drag: no current event");
+      }
+    }
+  });
+}
+
+// C function to update toplevel decoration mode (SSD vs CSD)
+void macos_update_toplevel_decoration_mode(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !g_wl_compositor_instance) {
+    return;
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (toplevel->native_window) {
+      NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+      // For SSD vs CSD, we must handle frame adjustments to maintain content
+      // size
+      NSRect currentContentRect = [window contentRectForFrameRect:window.frame];
+      NSWindowStyleMask newStyleMask;
+
+      // ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE = 1
+      // ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE = 2
+      if (toplevel->decoration_mode == 1) {
+        NSLog(@"[WINDOW] Switching to CSD for toplevel %p", (void *)toplevel);
+        newStyleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable |
+                       NSWindowStyleMaskClosable |
+                       NSWindowStyleMaskMiniaturizable |
+                       NSWindowStyleMaskFullSizeContentView;
+      } else {
+        NSLog(@"[WINDOW] Switching to SSD for toplevel %p", (void *)toplevel);
+        newStyleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                       NSWindowStyleMaskMiniaturizable |
+                       NSWindowStyleMaskResizable;
+      }
+
+      if (window.styleMask != newStyleMask ||
+          (toplevel->decoration_mode == 1 &&
+           window.titlebarAppearsTransparent == NO)) {
+        window.styleMask = newStyleMask;
+
+        if (toplevel->decoration_mode == 1) {
+          // CSD: Titled but with hidden title and transparent titlebar
+          // This gives us Apple traffic lights and native resizing
+          window.titleVisibility = NSWindowTitleHidden;
+          window.titlebarAppearsTransparent = YES;
+          // IMPORTANT: FullSizeContentView is already in the mask now
+          window.hasShadow = YES; // Enable for better window behavior
+          window.opaque = NO;
+          window.backgroundColor = [NSColor clearColor];
+          window.movableByWindowBackground = YES;
+        } else {
+          // SSD: Standard titlebar and opacity
+          window.titleVisibility = NSWindowTitleVisible;
+          window.titlebarAppearsTransparent = NO;
+          window.hasShadow = YES;
+          window.opaque = YES;
+          window.backgroundColor = [NSColor windowBackgroundColor];
+          window.movableByWindowBackground = NO;
+        }
+
+        // Adjust frame to maintain the same content size
+        NSRect newFrame = [window frameRectForContentRect:currentContentRect];
+        [window setFrame:newFrame display:YES];
+      }
+    }
+  });
+}
+
 // C function to create a native window for a toplevel
 void macos_create_window_for_toplevel(struct xdg_toplevel_impl *toplevel) {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
   // iOS: Single window, no need to create new windows
   (void)toplevel;
 #else
-  if (!g_compositor_instance) {
+  if (!g_wl_compositor_instance) {
     return;
   }
 
   dispatch_async(dispatch_get_main_queue(), ^{
-    WawonaCompositor *compositor = g_compositor_instance;
+    WawonaCompositor *compositor = g_wl_compositor_instance;
 
     // Check if toplevel is still valid
     if (!toplevel->resource || !wl_resource_get_client(toplevel->resource)) {
@@ -4173,36 +3685,72 @@ void macos_create_window_for_toplevel(struct xdg_toplevel_impl *toplevel) {
       return;
     }
 
-    // Determine initial window size from surface buffer if available
-    int32_t initialWidth = 800;
-    int32_t initialHeight = 600;
-    struct wl_surface_impl *surface = toplevel->xdg_surface->wl_surface;
-    if (surface && surface->width > 0 && surface->height > 0) {
-      initialWidth = surface->width;
-      initialHeight = surface->height;
-      NSLog(@"[WINDOW] Creating window with initial size from surface: %dx%d",
+    // Determine initial window size from toplevel (last sent configure)
+    int32_t initialWidth = toplevel->width > 0 ? toplevel->width : 1024;
+    int32_t initialHeight = toplevel->height > 0 ? toplevel->height : 768;
+
+    // Use window geometry if available as an override
+    if (toplevel->xdg_surface && toplevel->xdg_surface->has_geometry) {
+      initialWidth = toplevel->xdg_surface->geometry_width;
+      initialHeight = toplevel->xdg_surface->geometry_height;
+      NSLog(@"[WINDOW] Overriding initial size with geometry: %dx%d",
             initialWidth, initialHeight);
+    } else {
+      struct wl_surface_impl *surface = toplevel->xdg_surface->wl_surface;
+      if (surface && surface->width > 0 && surface->height > 0) {
+        initialWidth = surface->width;
+        initialHeight = surface->height;
+        NSLog(@"[WINDOW] Overriding initial size with surface: %dx%d",
+              initialWidth, initialHeight);
+      }
     }
+
+    NSLog(@"[WINDOW] Creating window with content size: %dx%d", initialWidth,
+          initialHeight);
 
     // Create a new NSWindow for this toplevel
     NSRect contentRect = NSMakeRect(100, 100, initialWidth, initialHeight);
-    NSRect windowFrame =
-        [NSWindow frameRectForContentRect:contentRect
-                                styleMask:NSWindowStyleMaskTitled |
-                                          NSWindowStyleMaskClosable |
-                                          NSWindowStyleMaskMiniaturizable |
-                                          NSWindowStyleMaskResizable];
-    NSWindow *window =
-        [[NSWindow alloc] initWithContentRect:contentRect
-                                    styleMask:NSWindowStyleMaskTitled |
-                                              NSWindowStyleMaskClosable |
-                                              NSWindowStyleMaskMiniaturizable |
-                                              NSWindowStyleMaskResizable
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO];
+
+    // Choose style mask based on initial decoration mode
+    NSWindowStyleMask styleMask;
+    if (toplevel->decoration_mode == 1) { // CSD
+      styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable |
+                  NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                  NSWindowStyleMaskFullSizeContentView;
+      // For CSD, we use the raw surface/buffer size, not the geometry size,
+      // to ensure shadows aren't clipped by the NSWindow.
+      struct wl_surface_impl *surface = toplevel->xdg_surface->wl_surface;
+      if (surface && surface->width > 0 && surface->height > 0) {
+        initialWidth = surface->width;
+        initialHeight = surface->height;
+        NSLog(@"[WINDOW] CSD: Using full surface size for window: %dx%d",
+              initialWidth, initialHeight);
+      }
+    } else { // SSD (default)
+      styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                  NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    }
+
+    WawonaWindow *window =
+        [[WawonaWindow alloc] initWithContentRect:contentRect
+                                        styleMask:styleMask
+                                          backing:NSBackingStoreBuffered
+                                            defer:NO];
     if (!window) {
       NSLog(@"❌ Failed to create window for toplevel");
       return;
+    }
+
+    // Apply initial decoration settings
+    if (toplevel->decoration_mode == 1) {
+      window.titleVisibility = NSWindowTitleHidden;
+      window.titlebarAppearsTransparent = YES;
+      window.hasShadow = YES; // Enable for better window behavior
+      window.opaque = NO;
+      window.backgroundColor = [NSColor clearColor];
+      window.movableByWindowBackground = YES;
+    } else {
+      window.hasShadow = YES;
     }
 
     // Set window properties
@@ -4255,7 +3803,8 @@ void macos_create_window_for_toplevel(struct xdg_toplevel_impl *toplevel) {
     // Store window in nativeWindows to ensure it is retained by ARC
     [compositor.nativeWindows addObject:window];
 
-    NSLog(@"✅ Created window for toplevel: %@", window);
+    NSLog(@"✅ Created window for toplevel: %@ (Mode: %u)", window,
+          toplevel->decoration_mode);
   });
 #endif
 }
@@ -4274,10 +3823,10 @@ void macos_create_window_for_toplevel(struct xdg_toplevel_impl *toplevel) {
     struct xdg_toplevel_impl *toplevel = [toplevelValue pointerValue];
     CGSize size = [window.contentView bounds].size;
 
-    // Convert point size to pixels (backing store size)
-    CGFloat scale = window.backingScaleFactor;
-    int32_t width = (int32_t)(size.width * scale);
-    int32_t height = (int32_t)(size.height * scale);
+    // Use logical points for Wayland protocol communication (NOT pixels)
+    // Wayland xdg-shell protocol specifies dimensions in logical coordinates.
+    int32_t width = (int32_t)size.width;
+    int32_t height = (int32_t)size.height;
 
     // Update toplevel geometry
     toplevel->width = width;
@@ -4424,3 +3973,118 @@ bool wawona_is_egl_enabled(void) {
   return [[NSUserDefaults standardUserDefaults] boolForKey:@"EnableEGLDrivers"];
 #endif
 }
+
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+void macos_toplevel_set_minimized(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    [window miniaturize:nil];
+  });
+}
+
+void macos_toplevel_set_maximized(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    if (![window isZoomed]) {
+      [window zoom:nil];
+    }
+  });
+}
+
+void macos_toplevel_unset_maximized(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    if ([window isZoomed]) {
+      [window zoom:nil];
+    }
+  });
+}
+
+void macos_toplevel_close(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    [window close];
+  });
+}
+
+void macos_toplevel_set_fullscreen(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    if (!((window.styleMask & NSWindowStyleMaskFullScreen) ==
+          NSWindowStyleMaskFullScreen)) {
+      [window toggleFullScreen:nil];
+    }
+  });
+}
+
+void macos_toplevel_unset_fullscreen(struct xdg_toplevel_impl *toplevel) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    if ((window.styleMask & NSWindowStyleMaskFullScreen) ==
+        NSWindowStyleMaskFullScreen) {
+      [window toggleFullScreen:nil];
+    }
+  });
+}
+
+void macos_start_toplevel_resize(struct xdg_toplevel_impl *toplevel,
+                                 uint32_t edges) {
+  if (!toplevel || !toplevel->native_window)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSWindow *window = (__bridge NSWindow *)toplevel->native_window;
+    NSEvent *event = [NSApp currentEvent];
+    if (event) {
+      // Mapping xdg_toplevel.resize edges to NSWindowEdge
+      // xdg: 1=T, 2=B, 4=L, 5=TL, 6=BL, 8=R, 9=TR, 10=BR
+      // AppKit: L=0, R=1, T=2, B=3, TL=4, TR=5, BL=6, BR=7
+      NSInteger appKitEdge = 0;
+      switch (edges) {
+      case 1:
+        appKitEdge = 2;
+        break; // Top
+      case 2:
+        appKitEdge = 3;
+        break; // Bottom
+      case 4:
+        appKitEdge = 0;
+        break; // Left
+      case 8:
+        appKitEdge = 1;
+        break; // Right
+      case 5:
+        appKitEdge = 4;
+        break; // TopLeft
+      case 9:
+        appKitEdge = 5;
+        break; // TopRight
+      case 6:
+        appKitEdge = 6;
+        break; // BottomLeft
+      case 10:
+        appKitEdge = 7;
+        break; // BottomRight
+      default:
+        return; // No valid edge
+      }
+
+      if ([window respondsToSelector:@selector
+                  (performWindowResizeWithEdge:event:)]) {
+        [window performWindowResizeWithEdge:appKitEdge event:event];
+      }
+    }
+  });
+}
+#endif

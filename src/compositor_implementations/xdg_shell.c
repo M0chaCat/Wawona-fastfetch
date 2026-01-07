@@ -1,11 +1,17 @@
 #include "xdg_shell.h"
 #include "../core/WawonaCompositor.h"
+#include "../core/WawonaSettings.h"
+#include "../protocols/xdg-decoration-protocol.h"
+#include "wayland_decoration.h"
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
+#include <wayland-server.h>
 
-#include "logging.h" // Include logging header
+#include "../logging/logging.h" // Include logging header
 
 // Forward declaration for macOS window creation
 extern void
@@ -57,6 +63,8 @@ static void xdg_toplevel_set_fullscreen(struct wl_client *,
                                         struct wl_resource *);
 static void xdg_toplevel_unset_fullscreen(struct wl_client *,
                                           struct wl_resource *);
+static void xdg_toplevel_set_minimized(struct wl_client *,
+                                       struct wl_resource *);
 
 // --- Interface Implementations ---
 static const struct xdg_surface_interface xdg_surface_implementation = {
@@ -80,6 +88,7 @@ static const struct xdg_toplevel_interface xdg_toplevel_implementation = {
     .unset_maximized = xdg_toplevel_unset_maximized,
     .set_fullscreen = xdg_toplevel_set_fullscreen,
     .unset_fullscreen = xdg_toplevel_unset_fullscreen,
+    .set_minimized = xdg_toplevel_set_minimized,
 };
 
 // --- XDG Toplevel ---
@@ -144,9 +153,21 @@ static void xdg_toplevel_move(struct wl_client *client,
                               struct wl_resource *resource,
                               struct wl_resource *seat, uint32_t serial) {
   (void)client;
-  (void)resource;
   (void)seat;
   (void)serial;
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_start_toplevel_move(toplevel);
+  }
+}
+
+static void xdg_toplevel_set_minimized(struct wl_client *client,
+                                       struct wl_resource *resource) {
+  (void)client;
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_toplevel_set_minimized(toplevel);
+  }
 }
 
 static void xdg_toplevel_resize(struct wl_client *client,
@@ -154,10 +175,12 @@ static void xdg_toplevel_resize(struct wl_client *client,
                                 struct wl_resource *seat, uint32_t serial,
                                 uint32_t edges) {
   (void)client;
-  (void)resource;
   (void)seat;
   (void)serial;
-  (void)edges;
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_start_toplevel_resize(toplevel, edges);
+  }
 }
 
 static void xdg_toplevel_set_min_size(struct wl_client *client,
@@ -183,31 +206,39 @@ static void xdg_toplevel_set_max_size(struct wl_client *client,
 static void xdg_toplevel_set_maximized(struct wl_client *client,
                                        struct wl_resource *resource) {
   (void)client;
-  (void)resource;
-  // Stub - not implemented
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_toplevel_set_maximized(toplevel);
+  }
 }
 
 static void xdg_toplevel_unset_maximized(struct wl_client *client,
                                          struct wl_resource *resource) {
   (void)client;
-  (void)resource;
-  // Stub - not implemented
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_toplevel_unset_maximized(toplevel);
+  }
 }
 
 static void xdg_toplevel_set_fullscreen(struct wl_client *client,
                                         struct wl_resource *resource,
                                         struct wl_resource *output) {
   (void)client;
-  (void)resource;
   (void)output;
-  // Stub - not implemented
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_toplevel_set_fullscreen(toplevel);
+  }
 }
 
 static void xdg_toplevel_unset_fullscreen(struct wl_client *client,
                                           struct wl_resource *resource) {
   (void)client;
-  (void)resource;
-  // Stub - not implemented
+  struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
+  if (toplevel) {
+    macos_toplevel_unset_fullscreen(toplevel);
+  }
 }
 
 static void xdg_toplevel_destroy(struct wl_client *client,
@@ -255,6 +286,15 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
 
   toplevel->resource = toplevel_resource;
   toplevel->xdg_surface = xdg_surface;
+  toplevel->decoration_data = NULL;
+
+  // Initialize decoration mode based on compositor settings
+  // 1 = CLIENT_SIDE (CSD), 2 = SERVER_SIDE (SSD)
+  bool force_ssd = WawonaSettings_GetForceServerSideDecorations();
+  toplevel->decoration_mode =
+      force_ssd ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+
   xdg_surface->role = toplevel;
 
   wl_resource_set_implementation(toplevel_resource,
@@ -303,6 +343,8 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
   }
   log_printf("XDG", "Sending initial configure to toplevel %p (size: %dx%d)\n",
              toplevel_resource, cfg_width, cfg_height);
+  toplevel->width = cfg_width;
+  toplevel->height = cfg_height;
   xdg_toplevel_send_configure(toplevel_resource, cfg_width, cfg_height,
                               &states);
   wl_array_release(&states);
@@ -329,11 +371,18 @@ static void xdg_surface_set_window_geometry(struct wl_client *client,
                                             int32_t x, int32_t y, int32_t width,
                                             int32_t height) {
   (void)client;
-  (void)resource;
-  (void)x;
-  (void)y;
-  (void)width;
-  (void)height;
+  struct xdg_surface_impl *xdg_surface = wl_resource_get_user_data(resource);
+  if (!xdg_surface) {
+    return;
+  }
+
+  xdg_surface->geometry_x = x;
+  xdg_surface->geometry_y = y;
+  xdg_surface->geometry_width = width;
+  xdg_surface->geometry_height = height;
+  xdg_surface->has_geometry = true;
+
+  log_printf("XDG", "set_window_geometry: %d,%d %dx%d\n", x, y, width, height);
 }
 
 static void xdg_surface_ack_configure(struct wl_client *client,
@@ -566,8 +615,13 @@ void xdg_wm_base_send_configure_to_all_toplevels(
                   : (wm_base->output_height > 0 ? wm_base->output_height : 768);
       log_printf("XDG", "Sending configure %dx%d to toplevel %p\n", cfg_w,
                  cfg_h, toplevel_resource);
+      toplevel->width = cfg_w;
+      toplevel->height = cfg_h;
       xdg_toplevel_send_configure(toplevel_resource, cfg_w, cfg_h, &states);
       wl_array_release(&states);
+
+      // Also send decoration configure if attached
+      wl_decoration_send_configure(toplevel);
 
       xdg_surface_send_configure(surface->resource,
                                  ++surface->configure_serial);

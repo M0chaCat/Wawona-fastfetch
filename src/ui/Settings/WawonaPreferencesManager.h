@@ -6,8 +6,9 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSString *const kWawonaPrefsUniversalClipboard;
 extern NSString *const kWawonaPrefsForceServerSideDecorations;
 extern NSString *const kWawonaPrefsAutoRetinaScaling; // Legacy - use AutoScale
-extern NSString *const kWawonaPrefsAutoScale; // New unified key
-extern NSString *const kWawonaPrefsColorSyncSupport; // Legacy - use ColorOperations
+extern NSString *const kWawonaPrefsAutoScale;         // New unified key
+extern NSString
+    *const kWawonaPrefsColorSyncSupport; // Legacy - use ColorOperations
 extern NSString *const kWawonaPrefsColorOperations; // New unified key
 extern NSString *const kWawonaPrefsNestedCompositorsSupport;
 extern NSString *const kWawonaPrefsUseMetal4ForNested; // Deprecated - removed
@@ -17,8 +18,10 @@ extern NSString *const kWawonaPrefsEnableLauncher;
 extern NSString *const kWawonaPrefsSwapCmdAsCtrl; // Legacy - use SwapCmdWithAlt
 extern NSString *const kWawonaPrefsSwapCmdWithAlt; // New unified key
 extern NSString *const kWawonaPrefsTouchInputType;
-extern NSString *const kWawonaPrefsWaypipeRSSupport; // Deprecated - always enabled
-extern NSString *const kWawonaPrefsEnableTCPListener; // Deprecated - always enabled
+extern NSString
+    *const kWawonaPrefsWaypipeRSSupport; // Deprecated - always enabled
+extern NSString
+    *const kWawonaPrefsEnableTCPListener; // Deprecated - always enabled
 extern NSString *const kWawonaPrefsTCPListenerPort;
 extern NSString *const kWawonaPrefsWaylandSocketDir;
 extern NSString *const kWawonaPrefsWaylandDisplayNumber;
@@ -63,6 +66,7 @@ extern NSString *const kWawonaPrefsSSHPassword;
 extern NSString *const kWawonaPrefsSSHKeyPath;
 extern NSString *const kWawonaPrefsSSHKeyPassphrase;
 extern NSString *const kWawonaPrefsWaypipeUseSSHConfig;
+extern NSString *const kWawonaForceSSDChangedNotification;
 
 @interface WawonaPreferencesManager : NSObject
 

@@ -36,34 +36,81 @@
 static struct wl_display *g_display = NULL;
 static WawonaCompositor *g_compositor = NULL;
 
-// Signal handler for graceful shutdown
-static void signal_handler(int sig) {
-  (void)sig;
-  WLog(@"MAIN", @"🛑 Received signal %d, shutting down gracefully...", sig);
+extern volatile pid_t g_active_waypipe_pgid;
 
-  // Use compositor's stop method which properly disconnects all clients
-  // This ensures clients are notified and can clean up gracefully
+// Global cleanup for atexit
+static void cleanup_on_exit(void) {
+  static int cleaning_up = 0;
+  if (cleaning_up)
+    return;
+  cleaning_up = 1;
+
+  WLog(@"MAIN", @"🧹 Performing final cleanup on exit...");
+
+  // Stop any active waypipe session
+  [[WawonaWaypipeRunner sharedRunner] stopWaypipe];
+
   if (g_compositor) {
     [g_compositor stop];
     g_compositor = nil;
   }
+}
 
-  // Clear global display reference (compositor.stop already destroyed it)
-  g_display = NULL;
+// Emergency crash handler - must be strictly async-signal-safe
+static void crash_handler(int sig) {
+  // Use write() directly for safety
+  const char *msg = "\n💀 CRITICAL: Wawona crashed. Emergency cleanup...\n";
+  write(STDERR_FILENO, msg, strlen(msg));
 
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  // On iOS, don't call exit() immediately - let the app terminate naturally
-  // This prevents crash reports. The signal will be handled by the system.
-  // For SIGTERM, we'll let the app delegate handle termination.
-#else
-  // On macOS CLI, terminate the app gracefully
-  // Give a small delay to ensure cleanup completes
-  dispatch_after(
-      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-      dispatch_get_main_queue(), ^{
-        [NSApp terminate:nil];
-      });
+  // Kill waypipe process group if active
+  pid_t pgid = g_active_waypipe_pgid;
+  if (pgid > 0) {
+    kill(-pgid, SIGKILL);
+  }
+
+  _exit(128 + sig);
+}
+
+// Modern, safe signal handling using GCD
+static void setup_signal_sources(void) {
+  void (^handle_signal)(int) = ^(int sig) {
+    WLog(@"MAIN", @"🛑 Received signal %d, shutting down gracefully...", sig);
+
+    // Stop waypipe gracefully
+    [[WawonaWaypipeRunner sharedRunner] stopWaypipe];
+
+    if (g_compositor) {
+      [g_compositor stop];
+      // Note: g_compositor stop already destroyed display
+    }
+
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // On macOS, terminate the app
+    [NSApp terminate:nil];
 #endif
+  };
+
+  dispatch_source_t source_term = dispatch_source_create(
+      DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
+  if (source_term) {
+    dispatch_source_set_event_handler(source_term, ^{
+      handle_signal(SIGTERM);
+    });
+    dispatch_resume(source_term);
+  }
+
+  dispatch_source_t source_int = dispatch_source_create(
+      DISPATCH_SOURCE_TYPE_SIGNAL, SIGINT, 0, dispatch_get_main_queue());
+  if (source_int) {
+    dispatch_source_set_event_handler(source_int, ^{
+      handle_signal(SIGINT);
+    });
+    dispatch_resume(source_int);
+  }
+
+  // Ensure these signals don't terminate the app before GCD can handle them
+  signal(SIGTERM, SIG_IGN);
+  signal(SIGINT, SIG_IGN);
 }
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -126,7 +173,7 @@ static void signal_handler(int sig) {
       @"group.com.aspauldingcode.Wawona"; // Must match entitlements
   kernel.extensionIdentifier =
       @"com.aspauldingcode.Wawona.HIAHProcessRunner"; // Matches patched
-                                                       // Info.plist
+                                                      // Info.plist
 
   // Setup kernel output logging
   kernel.onOutput = ^(pid_t pid, NSString *output) {
@@ -141,7 +188,7 @@ static void signal_handler(int sig) {
   const char *sshTest = getenv("WAWONA_SSH_TEST");
   const char *waypipeTest = getenv("WAWONA_WAYPIPE_TEST");
 
-  #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
   // SSH Connection Test: Test actual SSH connection with hardcoded or env
   // credentials (iOS only)
   if (sshTest && strcmp(sshTest, "1") == 0) {
@@ -812,6 +859,24 @@ int main(int argc, char *argv[]) {
 // macOS Implementation
 //
 
+@interface WawonaMacAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation WawonaMacAppDelegate
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+  WLog(@"MAIN",
+       @"👋 macOS application will terminate - shutting down gracefully");
+  cleanup_on_exit();
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:
+    (NSApplication *)sender {
+  return NSTerminateNow;
+}
+
+@end
+
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
@@ -894,6 +959,10 @@ int main(int argc, char *argv[]) {
     // Set up NSApplication
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+    // Set delegate for cleanup
+    WawonaMacAppDelegate *delegate = [[WawonaMacAppDelegate alloc] init];
+    [NSApp setDelegate:delegate];
 
     // Set up menu bar
     NSMenu *menubar = [[NSMenu alloc] init];
@@ -1002,8 +1071,13 @@ int main(int argc, char *argv[]) {
         [[WawonaCompositor alloc] initWithDisplay:display window:window];
     g_compositor = compositor;
 
-    signal(SIGTERM, signal_handler);
-    signal(SIGINT, signal_handler);
+    atexit(cleanup_on_exit);
+
+    setup_signal_sources();
+    signal(SIGSEGV, crash_handler);
+    signal(SIGABRT, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGILL, crash_handler);
 
     if (![compositor start]) {
       NSLog(@"❌ Failed to start compositor backend");

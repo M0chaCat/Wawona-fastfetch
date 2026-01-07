@@ -81,3 +81,6 @@ result-*
 .gradle-home/
 *.qcow2.gradle_home
 src/android/.gradle/
+
+# Inspiration
+weston/
