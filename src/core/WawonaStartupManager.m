@@ -2,19 +2,19 @@
 // Extracted from WawonaCompositor.m for better organization
 
 #import "WawonaStartupManager.h"
-#import "WawonaCompositor.h"
-#import "WawonaProtocolSetup.h"
-#import "WawonaEventLoopManager.h"
-#import "WawonaDisplayLinkManager.h"
 #import "../compositor_implementations/wayland_compositor.h"
+#include "../compositor_implementations/wayland_compositor.h"
+#import "../compositor_implementations/wayland_data_device_manager.h"
 #import "../compositor_implementations/wayland_output.h"
-#import "../input/wayland_seat.h"
 #import "../compositor_implementations/wayland_shm.h"
 #import "../compositor_implementations/wayland_subcompositor.h"
-#import "../compositor_implementations/wayland_data_device_manager.h"
 #import "../input/input_handler.h"
-#include "../compositor_implementations/wayland_compositor.h"
+#import "../input/wayland_seat.h"
 #import "../logging/logging.h"
+#import "WawonaCompositor.h"
+#import "WawonaDisplayLinkManager.h"
+#import "WawonaEventLoopManager.h"
+#import "WawonaProtocolSetup.h"
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #import "WawonaCompositorView_ios.h"
 #else
@@ -55,19 +55,25 @@ extern WawonaCompositor *g_wl_compositor_instance;
   // Set up render callback for immediate rendering on commit
   g_wl_compositor_instance = _compositor;
   // Functions defined in WawonaCompositor.m
-  extern void render_surface_callback(struct wl_surface_impl *surface);
-  typedef void (*wl_surface_render_callback_t)(struct wl_surface_impl *surface);
-  typedef void (*wl_title_update_callback_t)(struct wl_client *client);
-  typedef void (*wl_frame_callback_requested_t)(void);
-  extern void wl_compositor_set_render_callback(struct wl_compositor_impl *compositor, wl_surface_render_callback_t callback);
-  extern void wl_compositor_set_title_update_callback(struct wl_compositor_impl *compositor, wl_title_update_callback_t callback);
-  extern void wl_compositor_set_frame_callback_requested(struct wl_compositor_impl *compositor, wl_frame_callback_requested_t callback);
-  extern void wawona_compositor_update_title(struct wl_client *client);
+  extern void render_surface_callback(struct wl_surface_impl * surface);
+  extern void wl_compositor_set_render_callback(
+      struct wl_compositor_impl * compositor,
+      wl_surface_render_callback_t callback);
+  extern void wl_compositor_set_title_update_callback(
+      struct wl_compositor_impl * compositor,
+      wl_title_update_callback_t callback);
+  extern void wl_compositor_set_frame_callback_requested(
+      struct wl_compositor_impl * compositor,
+      wl_frame_callback_requested_t callback);
+  extern void wawona_compositor_update_title(struct wl_client * client);
   extern void wawona_frame_callback_requested(void);
-  
-  wl_compositor_set_render_callback(_compositor.compositor, render_surface_callback);
-  wl_compositor_set_title_update_callback(_compositor.compositor, wawona_compositor_update_title);
-  wl_compositor_set_frame_callback_requested(_compositor.compositor, wawona_frame_callback_requested);
+
+  wl_compositor_set_render_callback(_compositor.compositor,
+                                    render_surface_callback);
+  wl_compositor_set_title_update_callback(_compositor.compositor,
+                                          wawona_compositor_update_title);
+  wl_compositor_set_frame_callback_requested(_compositor.compositor,
+                                             wawona_frame_callback_requested);
 
   // Get window size for output
   // CRITICAL: Use actual CompositorView bounds (already constrained to safe
@@ -113,11 +119,11 @@ extern WawonaCompositor *g_wl_compositor_instance;
   int32_t scaleInt = (int32_t)scale;
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  _compositor.output =
-      wl_output_create(_compositor.display, pixelWidth, pixelHeight, scaleInt, "iOS");
+  _compositor.output = wl_output_create(_compositor.display, pixelWidth,
+                                        pixelHeight, scaleInt, "iOS");
 #else
-  _compositor.output =
-      wl_output_create(_compositor.display, pixelWidth, pixelHeight, scaleInt, "macOS");
+  _compositor.output = wl_output_create(_compositor.display, pixelWidth,
+                                        pixelHeight, scaleInt, "macOS");
 #endif
   if (!_compositor.output) {
     NSLog(@"❌ Failed to create wl_output");
@@ -146,7 +152,7 @@ extern WawonaCompositor *g_wl_compositor_instance;
 
   // Set seat in compositor for focus management
   // wl_compositor_set_seat is defined in WawonaCompositor.m
-  extern void wl_compositor_set_seat(struct wl_seat_impl *seat);
+  extern void wl_compositor_set_seat(struct wl_seat_impl * seat);
   wl_compositor_set_seat(_compositor.seat);
 
   _compositor.shm = wl_shm_create(_compositor.display);
@@ -163,7 +169,8 @@ extern WawonaCompositor *g_wl_compositor_instance;
   }
   NSLog(@"   ✓ wl_subcompositor created");
 
-  _compositor.data_device_manager = wl_data_device_manager_create(_compositor.display);
+  _compositor.data_device_manager =
+      wl_data_device_manager_create(_compositor.display);
   if (!_compositor.data_device_manager) {
     NSLog(@"❌ Failed to create wl_data_device_manager");
     return NO;
@@ -171,20 +178,23 @@ extern WawonaCompositor *g_wl_compositor_instance;
   NSLog(@"   ✓ wl_data_device_manager created");
 
   // Setup Wayland protocols
-  WawonaProtocolSetup *protocolSetup = [[WawonaProtocolSetup alloc] initWithCompositor:_compositor];
+  WawonaProtocolSetup *protocolSetup =
+      [[WawonaProtocolSetup alloc] initWithCompositor:_compositor];
   if (![protocolSetup setupProtocols]) {
     return NO;
   }
 
   // Start dedicated Wayland event processing thread
-  WawonaEventLoopManager *eventLoopManager = [[WawonaEventLoopManager alloc] initWithCompositor:_compositor];
+  WawonaEventLoopManager *eventLoopManager =
+      [[WawonaEventLoopManager alloc] initWithCompositor:_compositor];
   if ([eventLoopManager setupEventLoop]) {
     [eventLoopManager startEventThread];
     _compositor.eventLoopManager = eventLoopManager; // Store reference
   }
 
   // Set up frame rendering using DisplayLinkManager
-  WawonaDisplayLinkManager *displayLinkManager = [[WawonaDisplayLinkManager alloc] initWithCompositor:_compositor];
+  WawonaDisplayLinkManager *displayLinkManager =
+      [[WawonaDisplayLinkManager alloc] initWithCompositor:_compositor];
   [displayLinkManager setupDisplayLink];
 
   // Add a heartbeat timer to show compositor is alive (every 5 seconds)
@@ -212,9 +222,10 @@ extern WawonaCompositor *g_wl_compositor_instance;
   // Set up input handling
   // Create InputHandler and set it up
   if (_compositor.seat && _compositor.window) {
-    _compositor.inputHandler = [[InputHandler alloc] initWithSeat:_compositor.seat
-                                                           window:_compositor.window
-                                                       compositor:_compositor];
+    _compositor.inputHandler =
+        [[InputHandler alloc] initWithSeat:_compositor.seat
+                                    window:_compositor.window
+                                compositor:_compositor];
     [_compositor.inputHandler setupInputHandling];
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -243,4 +254,3 @@ extern WawonaCompositor *g_wl_compositor_instance;
 }
 
 @end
-

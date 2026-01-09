@@ -28,27 +28,33 @@ struct xdg_popup_impl;
 
 // Decoration mode enum (matches xdg-decoration protocol)
 typedef NS_ENUM(NSUInteger, WawonaDecorationMode) {
-    WawonaDecorationModeUnset = 0,
-    WawonaDecorationModeCSD = 1,  // Client-Side Decorations
-    WawonaDecorationModeSSD = 2   // Server-Side Decorations
+  WawonaDecorationModeUnset = 0,
+  WawonaDecorationModeCSD = 1, // Client-Side Decorations
+  WawonaDecorationModeSSD = 2  // Server-Side Decorations
 };
+
+// Constants for CSD resize detection and shadow margins
+extern const CGFloat kResizeEdgeInset;  // pixels from edge
+extern const CGFloat kResizeCornerSize; // corner region size
+extern const CGFloat kCSDShadowMargin;  // Margin for client-side shadows
 
 // Surface layer representation
 // Each Wayland surface gets its own layer tree
 @interface WawonaSurfaceLayer : NSObject
 
-@property (nonatomic, readonly) struct wl_surface_impl *surface;
+@property(nonatomic, readonly) struct wl_surface_impl *surface;
 
 // Layer hierarchy
-@property (nonatomic, strong) CALayer *rootLayer;        // Root container
-@property (nonatomic, strong) CALayer *shadowLayer;      // Shadow (CSD only, click-through)
-@property (nonatomic, strong) CAMetalLayer *contentLayer; // Surface content (GPU)
-@property (nonatomic, strong) NSMutableArray<CALayer *> *subsurfaceLayers; // Child surfaces
+@property(nonatomic, strong) CALayer *rootLayer; // Root container
+@property(nonatomic, strong)
+    CAMetalLayer *contentLayer; // Surface content (GPU)
+@property(nonatomic, strong)
+    NSMutableArray<CALayer *> *subsurfaceLayers; // Child surfaces
 
 // Surface state
-@property (nonatomic, assign) CGRect geometry;
-@property (nonatomic, assign) BOOL needsDisplay;
-@property (nonatomic, assign) BOOL isMapped;
+@property(nonatomic, assign) CGRect geometry;
+@property(nonatomic, assign) BOOL needsDisplay;
+@property(nonatomic, assign) BOOL isMapped;
 
 - (instancetype)initWithSurface:(struct wl_surface_impl *)surface;
 - (void)updateContentWithSize:(CGSize)size;
@@ -62,20 +68,27 @@ typedef NS_ENUM(NSUInteger, WawonaDecorationMode) {
 // Manages the NSWindow and its surface layers
 @interface WawonaWindowContainer : NSObject
 
-@property (nonatomic, readonly) struct xdg_toplevel_impl *toplevel;
-@property (nonatomic, strong) NSWindow *window;
-@property (nonatomic, strong) WawonaSurfaceLayer *surfaceLayer;
-@property (nonatomic, assign) WawonaDecorationMode decorationMode;
+@property(nonatomic, readonly) struct xdg_toplevel_impl *toplevel;
+@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong)
+    CALayer *rootContainerLayer; // Root container for both shadow and content
+@property(nonatomic, strong)
+    CALayer *csdShadowLayer; // Shadow (CSD only, click-through)
+@property(nonatomic, strong) WawonaSurfaceLayer *surfaceLayer;
+@property(nonatomic, assign) WawonaDecorationMode decorationMode;
 
 // CSD-specific properties
-@property (nonatomic, assign) BOOL isResizing;
-@property (nonatomic, assign) NSRectEdge resizeEdge;
-@property (nonatomic, assign) CGPoint resizeStartPoint;
-@property (nonatomic, assign) CGRect resizeStartFrame;
+@property(nonatomic, assign) BOOL isResizing;
+@property(nonatomic, assign) NSRectEdge resizeEdge;
+@property(nonatomic, assign) CGPoint resizeStartPoint;
+@property(nonatomic, assign) CGRect resizeStartFrame;
 
 - (instancetype)initWithToplevel:(struct xdg_toplevel_impl *)toplevel
                   decorationMode:(WawonaDecorationMode)mode
                             size:(CGSize)size;
+
+// Replaces the content view while preserving the layer hierarchy
+- (void)replaceContentView:(NSView *)newView;
 
 // Window management
 - (void)show;
@@ -93,19 +106,23 @@ typedef NS_ENUM(NSUInteger, WawonaDecorationMode) {
 - (void)continueResizeToPoint:(CGPoint)point;
 - (void)endResize;
 
+// Lifecycle safety
+- (void)invalidateToplevel;
+
 @end
 
 // Popup window representation
 // Handles xdg_popup surfaces as floating layers or child windows
 @interface WawonaPopupContainer : NSObject
 
-@property (nonatomic, readonly) struct xdg_popup_impl *popup;
-@property (nonatomic, strong) WawonaSurfaceLayer *surfaceLayer;
-@property (nonatomic, weak) WawonaWindowContainer *parentWindow;
+@property(nonatomic, readonly) struct xdg_popup_impl *popup;
+@property(nonatomic, strong) WawonaSurfaceLayer *surfaceLayer;
+@property(nonatomic, weak) WawonaWindowContainer *parentWindow;
 
 // Popup can be either a floating layer or a child window
-@property (nonatomic, strong) NSWindow *childWindow; // Optional: for popups that need separate window
-@property (nonatomic, assign) CGPoint position;      // Position relative to parent
+@property(nonatomic, strong)
+    NSWindow *childWindow; // Optional: for popups that need separate window
+@property(nonatomic, assign) CGPoint position; // Position relative to parent
 
 - (instancetype)initWithPopup:(struct xdg_popup_impl *)popup
                  parentWindow:(WawonaWindowContainer *)parent
@@ -123,23 +140,29 @@ typedef NS_ENUM(NSUInteger, WawonaDecorationMode) {
 @interface WawonaSurfaceManager : NSObject
 
 // Surface registry
-@property (nonatomic, strong) NSMapTable<NSValue *, WawonaSurfaceLayer *> *surfaceLayers;
-@property (nonatomic, strong) NSMapTable<NSValue *, WawonaWindowContainer *> *windowContainers;
-@property (nonatomic, strong) NSMapTable<NSValue *, WawonaPopupContainer *> *popupContainers;
+@property(nonatomic, strong)
+    NSMapTable<NSValue *, WawonaSurfaceLayer *> *surfaceLayers;
+@property(nonatomic, strong)
+    NSMapTable<NSValue *, WawonaWindowContainer *> *windowContainers;
+@property(nonatomic, strong)
+    NSMapTable<NSValue *, WawonaPopupContainer *> *popupContainers;
 
 + (instancetype)sharedManager;
 
 // Surface lifecycle
-- (WawonaSurfaceLayer *)createSurfaceLayerForSurface:(struct wl_surface_impl *)surface;
+- (WawonaSurfaceLayer *)createSurfaceLayerForSurface:
+    (struct wl_surface_impl *)surface;
 - (void)destroySurfaceLayer:(struct wl_surface_impl *)surface;
 - (WawonaSurfaceLayer *)layerForSurface:(struct wl_surface_impl *)surface;
 
 // Toplevel window management
-- (WawonaWindowContainer *)createWindowForToplevel:(struct xdg_toplevel_impl *)toplevel
+- (WawonaWindowContainer *)createWindowForToplevel:
+                               (struct xdg_toplevel_impl *)toplevel
                                     decorationMode:(WawonaDecorationMode)mode
                                               size:(CGSize)size;
 - (void)destroyWindowForToplevel:(struct xdg_toplevel_impl *)toplevel;
-- (WawonaWindowContainer *)windowForToplevel:(struct xdg_toplevel_impl *)toplevel;
+- (WawonaWindowContainer *)windowForToplevel:
+    (struct xdg_toplevel_impl *)toplevel;
 
 // Popup management
 - (WawonaPopupContainer *)createPopup:(struct xdg_popup_impl *)popup
@@ -153,4 +176,3 @@ typedef NS_ENUM(NSUInteger, WawonaDecorationMode) {
 - (void)setNeedsDisplayForAllSurfaces;
 
 @end
-

@@ -12,7 +12,7 @@ typedef struct WawonaCompositor WawonaCompositor;
 #endif
 #endif
 
-#include "wayland_compositor.h"
+#include "../compositor_implementations/wayland_compositor.h"
 
 // Clear buffer reference from surfaces (called when buffer is destroyed)
 void wl_compositor_clear_buffer_reference(struct wl_resource *buffer_resource);
@@ -81,8 +81,8 @@ extern WawonaCompositor *g_wl_compositor_instance;
 #endif
 #include "../input/input_handler.h"
 #include "../input/wayland_seat.h"
-#include "launcher/WawonaAppScanner.h"
 #include "RenderingBackend.h"
+#include "launcher/WawonaAppScanner.h"
 #include "wayland_color_management.h"
 #include "wayland_data_device_manager.h"
 #include "wayland_decoration.h"
@@ -109,7 +109,8 @@ extern WawonaCompositor *g_wl_compositor_instance;
 // Dispatch a block to be executed on the Wayland event thread
 - (void)dispatchToEventThread:(void (^)(void))block;
 
-// fixCSDWindowResizing: is declared in WawonaCompositor_macos.h (macOS-specific)
+// fixCSDWindowResizing: is declared in WawonaCompositor_macos.h
+// (macOS-specific)
 
 @property(nonatomic, assign)
     int tcp_listen_fd; // TCP listening socket (for manual accept)
@@ -162,8 +163,12 @@ extern WawonaCompositor *g_wl_compositor_instance;
     NSUInteger connectedClientCount; // Track number of connected clients
 @property(nonatomic, strong) NSMutableDictionary
     *windowToToplevelMap; // Map NSWindow to xdg_toplevel_impl
-@property(nonatomic, strong) NSMutableArray
-    *nativeWindows; // Array of NSWindow (strong) to retain created windows
+@property(atomic, strong) NSMutableArray<NSWindow *> *nativeWindows;
+// Map toplevel struct pointers to RenderingBackend objects
+// Key: NSValue(pointer: toplevel), Value: id<RenderingBackend>
+@property(atomic, strong)
+    NSMutableDictionary *toplevelToRendererMap; // Array of NSWindow (strong) to
+                                                // retain created windows
 @property(nonatomic, strong) CompositorView *mainCompositorView;
 @property(nonatomic, strong)
     NSRecursiveLock *mapLock; // Lock for windowToToplevelMap

@@ -1,16 +1,16 @@
 #import "WawonaCompositor.h"
 #import "../ui/Settings/WawonaPreferencesManager.h"
-#import "WawonaSurfaceManager.h"
+#import "WawonaBackendManager.h"
+#import "WawonaClientManager.h"
+#import "WawonaDisplayLinkManager.h"
+#import "WawonaEventLoopManager.h"
 #import "WawonaFrameCallbackManager.h"
 #import "WawonaProtocolSetup.h"
-#import "WawonaClientManager.h"
-#import "WawonaEventLoopManager.h"
-#import "WawonaDisplayLinkManager.h"
-#import "WawonaBackendManager.h"
-#import "WawonaWindowManager.h"
 #import "WawonaRenderManager.h"
-#import "WawonaStartupManager.h"
 #import "WawonaShutdownManager.h"
+#import "WawonaStartupManager.h"
+#import "WawonaSurfaceManager.h"
+#import "WawonaWindowManager.h"
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 #import "WawonaCompositorView_ios.h"
 #else
@@ -101,7 +101,8 @@ struct WawonaCompositor {
 static struct WawonaCompositor *g_wl_compositor_instance;
 #endif
 
-// TCP accept handlers and event loop callbacks moved to WawonaEventLoopManager.m
+// TCP accept handlers and event loop callbacks moved to
+// WawonaEventLoopManager.m
 
 void wl_compositor_set_render_callback(struct wl_compositor_impl *compositor,
                                        wl_surface_render_callback_t callback) {
@@ -230,7 +231,8 @@ void wl_buffer_end_shm_access(struct wl_resource *buffer) {
 WawonaCompositor *g_wl_compositor_instance = NULL;
 
 // Frame callback timer functions moved to WawonaFrameCallbackManager.m
-// C function for frame callback requested callback - now delegates to FrameCallbackManager
+// C function for frame callback requested callback - now delegates to
+// FrameCallbackManager
 static void wawona_compositor_frame_callback_requested(void) {
   wawona_frame_callback_requested();
 }
@@ -309,23 +311,25 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
   // naturally
 }
 
-// macos_compositor_check_and_hide_window_if_needed moved to WawonaClientManager.m
+// macos_compositor_check_and_hide_window_if_needed moved to
+// WawonaClientManager.m
 
 @implementation WawonaCompositor
 
 - (void)runBlock:(void (^)(void))block {
-  if (block) block();
+  if (block)
+    block();
 }
 
 - (void)dispatchToEventThread:(void (^)(void))block {
-    if ([NSThread currentThread] == self.eventThread) {
-        block();
-    } else {
-        [self performSelector:@selector(runBlock:)
-                     onThread:self.eventThread
-                   withObject:[block copy]
-                waitUntilDone:NO];
-    }
+  if ([NSThread currentThread] == self.eventThread) {
+    block();
+  } else {
+    [self performSelector:@selector(runBlock:)
+                 onThread:self.eventThread
+               withObject:[block copy]
+            waitUntilDone:NO];
+  }
 }
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -354,6 +358,7 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
     _windowToToplevelMap = [[NSMutableDictionary alloc] init];
     _mapLock = [[NSRecursiveLock alloc] init];
     _nativeWindows = [[NSMutableArray alloc] init];
+    _toplevelToRendererMap = [[NSMutableDictionary alloc] init];
     _decoration_manager = NULL;
 
     // Register for Force SSD change notifications for hot-reload
@@ -447,9 +452,11 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
     self.mainCompositorView = compositorView;
 
     // Force Metal renderer to avoid EGL/GLX issues - use Vulkan-only path
-    // Create Metal renderer directly to bypass SurfaceRenderer buffer handling issues
-    id<RenderingBackend> renderer = [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL 
-                                                                    withView:compositorView];
+    // Create Metal renderer directly to bypass SurfaceRenderer buffer handling
+    // issues
+    id<RenderingBackend> renderer =
+        [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL
+                                      withView:compositorView];
     _renderingBackend = renderer;
     _backendType = 1; // RENDERING_BACKEND_METAL
 
@@ -559,7 +566,7 @@ displayLinkCallback(CVDisplayLinkRef displayLink, const CVTimeStamp *inNow,
   if (_windowShown) {
     return; // Already shown
   }
-  
+
   if (!_windowManager) {
     _windowManager = [[WawonaWindowManager alloc] initWithCompositor:self];
   }
@@ -632,8 +639,9 @@ static void send_frame_callbacks_timer_idle(void *data) {
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
   if (!WawonaSettings_GetUseMetal4ForNested()) {
-      NSLog(@"[BACKEND] Metal renderer requested but disabled in settings (Render with Metal4)");
-      return;
+    NSLog(@"[BACKEND] Metal renderer requested but disabled in settings "
+          @"(Render with Metal4)");
+    return;
   }
 #endif
 
@@ -770,7 +778,8 @@ static void send_frame_callbacks_timer_idle(void *data) {
 
   // Create Metal renderer
   id<RenderingBackend> metalRenderer =
-      [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL withView:metalView];
+      [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL
+                                    withView:metalView];
   if (!metalRenderer) {
     NSLog(@"❌ Failed to create Metal renderer");
     return;
@@ -961,9 +970,9 @@ void macos_compositor_set_csd_mode_for_toplevel(
       // CLIENT_SIDE decorations - hide macOS window decorations
       // Remove titlebar, close button, etc. - client will draw its own
       // decorations
-      NSWindowStyleMask csdStyle =
-          NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable |
-          NSWindowStyleMaskMiniaturizable;
+      NSWindowStyleMask csdStyle = NSWindowStyleMaskBorderless |
+                                   NSWindowStyleMaskResizable |
+                                   NSWindowStyleMaskMiniaturizable;
       if (currentStyle != csdStyle) {
         window.styleMask = csdStyle;
         NSLog(@"[CSD] Window decorations hidden for CLIENT_SIDE decoration "
@@ -1050,8 +1059,8 @@ void macos_compositor_activate_window(void) {
 #endif
 }
 
-
-// macos_update_toplevel_decoration_mode and macos_create_window_for_toplevel moved to WawonaWindowLifecycle_macos.m
+// macos_update_toplevel_decoration_mode and macos_create_window_for_toplevel
+// moved to WawonaWindowLifecycle_macos.m
 
 @end
 
@@ -1065,4 +1074,3 @@ bool wawona_is_egl_enabled(void) {
 }
 
 // macOS window lifecycle functions moved to WawonaWindowLifecycle_macos.m
-

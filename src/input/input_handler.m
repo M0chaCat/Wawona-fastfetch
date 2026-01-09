@@ -1,11 +1,13 @@
 #import "input_handler.h"
 #include "../compositor_implementations/xdg_shell.h"
+#import "../core/WawonaCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
+#import "../core/WawonaSurfaceManager.h"
 #import "../input/wayland_seat.h"
-#import "WawonaCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
 #include <stdint.h>
 #include <time.h>
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
+#include <wayland-util.h>
 
 // Helper to check if a surface is part of a surface tree rooted at root
 static bool surface_is_in_tree(struct wl_surface_impl *surface,
@@ -469,16 +471,25 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
   double px = (double)location.x;
   double py = (double)location.y;
 
-  // Boundary check against logical window geometry.
-  // Since NSWindow frame already matches geometry, window-local (0,0) is
-  // geometry (0,0).
-  if (px < 0 || px >= (double)gw || py < 0 || py >= (double)gh) {
-    // If we are in CSD mode, ignore clicks in the shadow area
+  // CRITICAL: Offset coordinates for CSD shadow margin
+  if (toplevel && toplevel->decoration_mode == 1) {
+    px -= kCSDShadowMargin;
+    py -= kCSDShadowMargin;
+  }
+
+  // Boundary check against logical window geometry with leeway for resize
+  // handles. We allow clicks within 10px of the edge to be captured for CSD
+  // resize handles.
+  CGFloat leeway = 10.0;
+  if (px < -leeway || px >= (double)gw + leeway || py < -leeway ||
+      py >= (double)gh + leeway) {
+    // If we are in CSD mode, ignore clicks in the deep shadow area
     if (toplevel->decoration_mode == 1) {
       // Use NSLog for debugging shadow clicks
-      NSLog(@"[INPUT] 🛡️ Shadow area click! px=%.1f py=%.1f, root_surface=(%d, "
-            @"%d), geometry=(%d,%d %dx%d)",
-            px, py, root_surface->x, root_surface->y, gx, gy, gw, gh);
+      NSLog(@"[INPUT] 🛡️ Deep shadow area click (passed through)! px=%.1f "
+            @"py=%.1f, "
+            @"geometry=(%d,%d %dx%d)",
+            px, py, gx, gy, gw, gh);
       return NULL;
     }
   }
@@ -713,6 +724,23 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
   // If we send pixels on HiDPI, clients will see double coordinates.
   double window_x = locationInView.x;
   double window_y = locationInView.y;
+
+  // CRITICAL: Offset coordinates for CSD shadow margin
+  struct xdg_toplevel_impl *toplevel =
+      xdg_surface_get_toplevel_from_wl_surface(_seat->focused_surface);
+  if (!toplevel && _window) {
+    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    NSValue *toplevelValue = [compositor.windowToToplevelMap
+        objectForKey:[NSValue valueWithPointer:(__bridge void *)_window]];
+    if (toplevelValue) {
+      toplevel = [toplevelValue pointerValue];
+    }
+  }
+
+  if (toplevel && toplevel->decoration_mode == 1) {
+    window_x -= kCSDShadowMargin;
+    window_y -= kCSDShadowMargin;
+  }
 
   NSEventType eventType = [event type];
   struct timespec ts;

@@ -71,46 +71,22 @@ static void crash_handler(int sig) {
   _exit(128 + sig);
 }
 
-// Modern, safe signal handling using GCD
+// Raw signal handler for immediate termination
+static void raw_signal_handler(int sig) {
+  // We use write() because it's async-signal-safe, preventing deadlocks if
+  // malloc/objc runtime is locked
+  const char *msg = "\n🛑 Received signal, forcing exit...\n";
+  write(STDERR_FILENO, msg, strlen(msg));
+
+  // exit() will call atexit() handlers (cleanup_on_exit) which performs cleanup
+  // This is safer than relying on the runloop to dispatch a block
+  exit(0);
+}
+
+// Simple signal setup
 static void setup_signal_sources(void) {
-  void (^handle_signal)(int) = ^(int sig) {
-    WLog(@"MAIN", @"🛑 Received signal %d, shutting down gracefully...", sig);
-
-    // Stop waypipe gracefully
-    [[WawonaWaypipeRunner sharedRunner] stopWaypipe];
-
-    if (g_compositor) {
-      [g_compositor stop];
-      // Note: g_compositor stop already destroyed display
-    }
-
-#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-    // On macOS, terminate the app
-    [NSApp terminate:nil];
-#endif
-  };
-
-  dispatch_source_t source_term = dispatch_source_create(
-      DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
-  if (source_term) {
-    dispatch_source_set_event_handler(source_term, ^{
-      handle_signal(SIGTERM);
-    });
-    dispatch_resume(source_term);
-  }
-
-  dispatch_source_t source_int = dispatch_source_create(
-      DISPATCH_SOURCE_TYPE_SIGNAL, SIGINT, 0, dispatch_get_main_queue());
-  if (source_int) {
-    dispatch_source_set_event_handler(source_int, ^{
-      handle_signal(SIGINT);
-    });
-    dispatch_resume(source_int);
-  }
-
-  // Ensure these signals don't terminate the app before GCD can handle them
-  signal(SIGTERM, SIG_IGN);
-  signal(SIGINT, SIG_IGN);
+  signal(SIGTERM, raw_signal_handler);
+  signal(SIGINT, raw_signal_handler);
 }
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -875,6 +851,17 @@ int main(int argc, char *argv[]) {
   return NSTerminateNow;
 }
 
+// CRITICAL: Prevent macOS from terminating the app when windows close
+// The compositor should stay running even with no windows open
+// This allows multiple clients to connect/disconnect without killing the
+// compositor
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:
+    (NSApplication *)sender {
+  (void)sender;
+  WLog(@"MAIN", @"Window closed, but compositor will continue running");
+  return NO; // Do NOT terminate when last window closes
+}
+
 @end
 
 int main(int argc, char *argv[]) {
@@ -1084,6 +1071,8 @@ int main(int argc, char *argv[]) {
       wl_display_destroy(display);
       return -1;
     }
+
+    NSLog(@"🚀 Compositor running!");
 
     NSLog(@"🚀 Compositor running!");
 

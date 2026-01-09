@@ -108,9 +108,12 @@ static void toplevel_decoration_unset_mode(struct wl_client *client,
              "Client unset decoration mode (using compositor preference)\n");
 
   // When mode is unset, use compositor preference
+  // When mode is unset, use compositor preference
+  // On macOS, we prefer SSD (native windows) unless the client specifically
+  // asked for CSD before (and now unsets?? No, unset means "I don't care") So
+  // we default to SSD.
   bool force_ssd = WawonaSettings_GetForceServerSideDecorations();
-  uint32_t mode = force_ssd ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-                            : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+  uint32_t mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
 
   decoration->current_mode = mode;
   decoration->requested_mode = 0; // Clear requested mode
@@ -213,10 +216,11 @@ static void decoration_manager_get_toplevel_decoration(
   wl_list_insert(&manager->decorations, &decoration->link);
 
   // Send initial configure with compositor preference
+  // Send initial configure with compositor preference
+  // On macOS, we prefer SSD to provide native window chrome by default.
+  // Clients that prefer CSD will send set_mode(CSD) in response.
   bool force_ssd = WawonaSettings_GetForceServerSideDecorations();
-  uint32_t initial_mode = force_ssd
-                              ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-                              : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+  uint32_t initial_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
 
   decoration->current_mode = initial_mode;
 
@@ -321,13 +325,24 @@ void wl_decoration_hot_reload(struct wl_decoration_manager_impl *manager) {
   struct toplevel_decoration_impl *decoration;
   wl_list_for_each(decoration, &manager->decorations, link) {
     uint32_t final_mode;
+
+    // Logic:
+    // 1. If Force SSD is ON, we MUST use Server-Side Decorations.
+    // 2. If Force SSD is OFF:
+    //    a. If client explicitly requested a mode (requested_mode != 0),
+    //    respect it. b. If client didn't request a mode, default to CSD (or
+    //    whatever default we want).
+
     if (force_ssd) {
       final_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
     } else {
-      // Revert to what client originally requested (or CSD if not forced)
-      final_mode = decoration->requested_mode != 0
-                       ? decoration->requested_mode
-                       : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+      if (decoration->requested_mode != 0) {
+        final_mode = decoration->requested_mode;
+      } else {
+        // Default to SSD if no specific request. CSD is only used if EXPLICITLY
+        // requested.
+        final_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+      }
     }
 
     if (decoration->current_mode == final_mode)
@@ -352,12 +367,27 @@ void wl_decoration_hot_reload(struct wl_decoration_manager_impl *manager) {
     zxdg_toplevel_decoration_v1_send_configure(decoration->resource,
                                                final_mode);
 
+    // CRITICAL: Send xdg_surface.configure to flush the change
+    if (xdg_toplevel && xdg_toplevel->xdg_surface &&
+        xdg_toplevel->xdg_surface->resource) {
+      xdg_surface_send_configure(xdg_toplevel->xdg_surface->resource,
+                                 ++xdg_toplevel->xdg_surface->configure_serial);
+    }
+
     log_printf("DECORATION",
-               "Sent hot-reload configure with mode: %s to decoration %p\n",
+               "Sent hot-reload configure with mode: %s to decoration %p "
+               "(Requested: %s)\n",
                final_mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
                    ? "client-side"
                    : "server-side",
-               (void *)decoration);
+               (void *)decoration,
+               decoration->requested_mode ==
+                       ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+                   ? "CSD"
+               : decoration->requested_mode ==
+                       ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                   ? "SSD"
+                   : "None");
   }
 }
 void wl_decoration_send_configure(struct xdg_toplevel_impl *toplevel) {
@@ -372,10 +402,11 @@ void wl_decoration_send_configure(struct xdg_toplevel_impl *toplevel) {
   if (force_ssd) {
     final_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
   } else {
-    // Fallback to CSD if Force SSD is OFF and client hasn't requested anything
+    // Fallback to SSD if Force SSD is OFF and client hasn't requested anything
+    // We prefer native windows on macOS.
     final_mode = decoration->requested_mode != 0
                      ? decoration->requested_mode
-                     : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+                     : ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
   }
 
   // Always update our internal state

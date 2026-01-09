@@ -2,10 +2,11 @@
 // Extracted from WawonaCompositorView.m for platform separation
 
 #import "WawonaCompositorView_macos.h"
-#import "WawonaCompositor.h"
+#import "../compositor_implementations/xdg_shell.h"
 #import "../input/input_handler.h"
 #import "RenderingBackend.h"
-#import "../compositor_implementations/xdg_shell.h"
+#import "WawonaCompositor.h"
+#import "WawonaSurfaceManager.h"
 #import <MetalKit/MetalKit.h>
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -59,7 +60,7 @@ extern WawonaCompositor *g_wl_compositor_instance;
   if (window) {
     NSValue *toplevelValue = [g_wl_compositor_instance.windowToToplevelMap
         objectForKey:[NSValue valueWithPointer:(__bridge void *)window]];
-    
+
     if (toplevelValue) {
       struct xdg_toplevel_impl *toplevel = [toplevelValue pointerValue];
       if (toplevel->decoration_mode == 1) { // CLIENT_SIDE
@@ -193,4 +194,3 @@ extern WawonaCompositor *g_wl_compositor_instance;
 @end
 
 #endif // !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-
