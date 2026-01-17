@@ -76,6 +76,9 @@ Ko‑fi: https://ko-fi.com/aspauldingcode
 
 Share Wawona with friends!
 
+# Discord:
+https://discord.gg/wHVSV52uw5
+
 ### License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
