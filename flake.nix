@@ -32,6 +32,53 @@
               cargo = self.rustToolchain;
               rustc = self.rustToolchain;
             };
+            wayland = super.wayland.overrideAttrs (old: {
+              meta = old.meta // { platforms = old.meta.platforms ++ [ "aarch64-darwin" "x86_64-darwin" ]; badPlatforms = []; };
+              postPatch = (old.postPatch or "") + ''
+                # Create a fix header with ppoll definition
+                mkdir -p src
+                cat > src/macos-fix.h <<EOF
+                #ifdef __APPLE__
+                #define _DARWIN_C_SOURCE
+                #include <poll.h>
+                #include <time.h>
+                #include <signal.h>
+                #include <unistd.h>
+                #ifndef ppoll
+                static inline int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout_ts, const sigset_t *sigmask) {
+                    int timeout_ms = timeout_ts ? (int)(timeout_ts->tv_sec * 1000 + timeout_ts->tv_nsec / 1000000) : -1;
+                    return poll(fds, nfds, timeout_ms);
+                }
+                #endif
+                #endif
+                EOF
+                
+                # Helper to update file
+                patch_file() {
+                    echo "Patching $1 with macos-fix.h..."
+                    if [ -f "$1" ]; then
+                        sed -i '1s/^/#include "macos-fix.h"\n/' "$1"
+                        echo "DEBUG: Head of $1 after patching:"
+                        head -n 3 "$1"
+                    else
+                        echo "Warning: $1 not found"
+                    fi
+                }
+
+                # Inject include at the top of problematic files
+                for f in src/wayland-client.c src/wayland-server.c src/event-loop.c src/wayland-os.c; do
+                    patch_file "$f"
+                done
+                
+                # Check for patch success
+                if grep -q "macos-fix.h" src/wayland-client.c; then
+                    echo "SUCCESS: wayland-client.c patched"
+                else
+                    echo "FAILURE: wayland-client.c NOT patched"
+                    exit 1
+                fi
+              '';
+            });
           })
         ];
         config = {
@@ -90,6 +137,11 @@ EOF
       else
         exec "${foot}/bin/foot" "$@"
       fi
+    '';
+
+    westonAppWrapper = pkgs: weston: binName: pkgs.writeShellScriptBin binName ''
+      ${macosEnv}
+      exec "${weston}/bin/${binName}" "$@"
     '';
 
     iosWrapper = pkgs: wawona: pkgs.writeShellScriptBin "wawona-ios" ''
@@ -253,7 +305,10 @@ EOF
         inherit buildModule wawonaSrc;
         compositor = compositor;
         wawonaVersion = wawonaVersion;
+        weston = weston;
       };
+
+      weston = pkgs.callPackage ./dependencies/applications/weston/macos.nix { };
 
       androidSDK = pkgs.androidenv.composeAndroidPackages {
         cmdLineToolsVersion = "8.0";
@@ -328,6 +383,10 @@ EOF
         xcodegen-ios = xcodegenProject.project;
         waypipe = waypipeWrapper pkgs buildModule.macos.waypipe;
         foot = footWrapper pkgs buildModule.macos.foot;
+        weston = weston;
+        weston-terminal = westonAppWrapper pkgs weston "weston-terminal";
+        weston-debug = westonAppWrapper pkgs weston "weston-debug";
+        weston-simple-shm = westonAppWrapper pkgs weston "weston-simple-shm";
       });
 
     in {
@@ -373,6 +432,21 @@ EOF
         foot = {
           type = "app";
           program = "${self.packages.${system}.foot}/bin/foot";
+        };
+
+        weston-terminal = {
+          type = "app";
+          program = "${self.packages.${system}.weston-terminal}/bin/weston-terminal";
+        };
+
+        weston-debug = {
+          type = "app";
+          program = "${self.packages.${system}.weston-debug}/bin/weston-debug";
+        };
+
+        weston-simple-shm = {
+          type = "app";
+          program = "${self.packages.${system}.weston-simple-shm}/bin/weston-simple-shm";
         };
       });
     }) systems);

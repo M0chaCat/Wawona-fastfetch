@@ -5,6 +5,7 @@
   wawonaSrc,
   wawonaVersion ? null,
   compositor,
+  weston,
 }:
 
 let
@@ -220,6 +221,7 @@ in
       pkgs.vulkan-loader
       pkgs.libxkbcommon
       compositor
+      weston
     ];
 
     # Fix gbm-wrapper.c include path and egl_buffer_handler.h for macOS
@@ -499,6 +501,30 @@ GEN_HEADER
                 codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/MacOS/waypipe" 2>/dev/null || echo "Warning: Failed to code sign waypipe"
                 codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/Resources/bin/waypipe" 2>/dev/null || true
               fi
+            fi
+            
+            # Bundle Weston clients
+            echo "DEBUG: Bundling Weston clients..."
+            mkdir -p $out/Applications/Wawona.app/Contents/Resources/bin
+            if [ -d "${weston}/bin" ]; then
+              # Copy weston-terminal specifically
+              if [ -f "${weston}/bin/weston-terminal" ]; then
+                 cp "${weston}/bin/weston-terminal" $out/Applications/Wawona.app/Contents/Resources/bin/
+                 chmod +x $out/Applications/Wawona.app/Contents/Resources/bin/weston-terminal
+              fi
+              # Copy other useful clients
+              for client in weston-simple-egl weston-simple-shm weston-flower weston-smoke weston-resizor weston-scaler; do
+                 if [ -f "${weston}/bin/$client" ]; then
+                   cp "${weston}/bin/$client" $out/Applications/Wawona.app/Contents/Resources/bin/
+                   chmod +x $out/Applications/Wawona.app/Contents/Resources/bin/$client
+                 fi
+              done
+            else
+               echo "Warning: Weston bin directory not found at ${weston}/bin"
+            fi
+            
+            if command -v codesign >/dev/null 2>&1; then
+                find "$out/Applications/Wawona.app/Contents/Resources/bin" -type f -perm +111 -exec codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
             fi
             
             cat > $out/Applications/Wawona.app/Contents/Info.plist <<PLIST_EOF
