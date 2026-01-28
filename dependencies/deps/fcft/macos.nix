@@ -172,6 +172,9 @@ static inline void tss_delete(tss_t key) { pthread_key_delete(key); }
 
 #endif /* FCFT_THREADS_H_COMPAT */
 EOF
+    
+    # Fix missing xlocale definitions on macOS
+    sed -i '1i#include <xlocale.h>' fcft.c
   '';
 
   preConfigure = ''
