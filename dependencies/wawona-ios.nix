@@ -243,6 +243,8 @@ let
     # UI components
     "src/ui/Helpers/WawonaUIHelpers.m"
     "src/ui/Helpers/WawonaUIHelpers.h"
+    "src/ui/Helpers/WawonaImageLoader.m"
+    "src/ui/Helpers/WawonaImageLoader.h"
     "src/ui/Settings/WawonaPreferences.m"
     "src/ui/Settings/WawonaPreferences.h"
     "src/ui/Settings/WawonaPreferencesManager.m"
@@ -541,7 +543,7 @@ in
       ${xcodeEnv "ios"}
 
       if command -v metal >/dev/null 2>&1; then
-        metal -c src/rendering/metal_shaders.metal -o metal_shaders.air -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 || true
+        metal -c src/rendering/metal_shaders.metal -o metal_shaders.air -isysroot "$SDKROOT" -mios-simulator-version-min=26.0 || true
         if [ -f metal_shaders.air ] && command -v metallib >/dev/null 2>&1; then
           metallib metal_shaders.air -o metal_shaders.metallib || true
         fi
@@ -572,9 +574,9 @@ in
       fi
       export CC="$IOS_CC"
       export CXX="$IOS_CXX"
-      export CFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
-      export CXXFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
-      export LDFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -lobjc"
+      export CFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0 -fPIC"
+      export CXXFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0 -fPIC"
+      export LDFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0 -lobjc"
     '';
 
     buildPhase = ''
@@ -589,19 +591,19 @@ in
          -I''${WAYLAND_SERVER_INC} -I''${PIXMAN_INC} \
          -Isrc/compat/macos/stubs/libinput-macos \
          -Isrc -Isrc/core -Isrc/compositor_implementations \
-         -Isrc/rendering -Isrc/input -Isrc/ui \
+         -Isrc/rendering -Isrc/input -Isrc/ui -Isrc/ui/Helpers \
          -Isrc/logging -Isrc/stubs -Isrc/protocols \
          -Iios-dependencies/include \
          -fobjc-arc -fPIC \
          ${lib.concatStringsSep " " commonCFlags} \
          ${lib.concatStringsSep " " releaseObjCFlags} \
-         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+         -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=26.0 \
          src/compat/macos/stubs/libinput-macos/gbm-wrapper.c \
          -o gbm-wrapper.o
 
       $CC -c src/rendering/metal_dmabuf.m \
          -Isrc -Isrc/core -Isrc/compositor_implementations \
-         -Isrc/rendering -Isrc/input -Isrc/ui \
+         -Isrc/rendering -Isrc/input -Isrc/ui -Isrc/ui/Helpers \
          -Isrc/logging -Isrc/stubs -Isrc/protocols \
          -Iios-dependencies/include \
          -fobjc-arc -fPIC \
@@ -623,7 +625,7 @@ in
             # Note: libssh2 removed - using OpenSSH binary instead
             $CC -c "$src_file" \
                -Isrc -Isrc/core -Isrc/compositor_implementations \
-               -Isrc/rendering -Isrc/input -Isrc/ui \
+               -Isrc/rendering -Isrc/input -Isrc/ui -Isrc/ui/Helpers \
                -Isrc/logging -Isrc/stubs -Isrc/protocols \
                -Isrc/extensions \
                -Iios-dependencies/include \
@@ -638,7 +640,7 @@ in
           else
             $CC -c "$src_file" \
                -Isrc -Isrc/core -Isrc/compositor_implementations \
-               -Isrc/rendering -Isrc/input -Isrc/ui \
+               -Isrc/rendering -Isrc/input -Isrc/ui -Isrc/ui/Helpers \
                -Isrc/logging -Isrc/stubs -Isrc/protocols \
                -Iios-dependencies/include \
                -fPIC \
@@ -822,7 +824,7 @@ in
              -Wno-error -Wno-gnu-statement-expression-from-macro-expansion -Wno-sign-compare -Wno-gnu-statement-expression \
              $(echo "${lib.concatStringsSep " " commonCFlags}" | sed 's/-Werror//g') \
              ${lib.concatStringsSep " " releaseCFlags} \
-             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=15.0 \
+             -arch $SIMULATOR_ARCH -isysroot "$SDKROOT" -mios-simulator-version-min=26.0 \
              -DTARGET_OS_IPHONE=1 \
              -o $abs_obj_file)
           if [ ! -f $obj_file ]; then

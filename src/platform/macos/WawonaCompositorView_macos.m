@@ -188,6 +188,14 @@ extern WawonaCompositor *g_wl_compositor_instance;
   }
 }
 
+- (void)flagsChanged:(NSEvent *)event {
+  if (self.inputHandler) {
+    [self.inputHandler handleKeyboardEvent:event];
+  } else {
+    [super flagsChanged:event];
+  }
+}
+
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
   if (self.inputHandler && self.inputHandler.seat &&
       self.inputHandler.seat->focused_surface) {

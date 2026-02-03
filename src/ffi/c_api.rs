@@ -133,6 +133,20 @@ pub extern "C" fn wawona_core_set_output_size(
     core.set_output_size(width, height, scale);
 }
 
+/// Set force SSD policy
+#[no_mangle]
+pub extern "C" fn wawona_core_set_force_ssd(
+    core: *mut WawonaCore,
+    enabled: bool
+) {
+    if core.is_null() {
+        return;
+    }
+    
+    let core = unsafe { &*core };
+    core.set_force_ssd(enabled);
+}
+
 /// Inject window resize
 #[no_mangle]
 pub extern "C" fn wawona_core_inject_window_resize(
@@ -177,6 +191,7 @@ pub enum CWindowEventType {
     TitleChanged = 2,
     SizeChanged = 3,
     PopupCreated = 4,
+    PopupRepositioned = 5,
 }
 
 /// C-compatible window event structure
@@ -184,6 +199,7 @@ pub enum CWindowEventType {
 pub struct CWindowEvent {
     pub event_type: u64, // Use u64 for alignment stability
     pub window_id: u64,
+    pub surface_id: u32,
     pub title: *mut c_char,
     pub width: u32,
     pub height: u32,
@@ -206,6 +222,7 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
         let mut c_event = Box::new(CWindowEvent {
             event_type: CWindowEventType::Created as u64, // Default
             window_id: 0,
+            surface_id: 0,
             title: std::ptr::null_mut(),
             width: 0,
             height: 0,
@@ -219,6 +236,10 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
             super::types::WindowEvent::Created { window_id, config } => {
                 c_event.event_type = CWindowEventType::Created as u64;
                 c_event.window_id = window_id.id;
+                // We don't have surface_id in Created event from api.rs yet, 
+                // but we might need it for completeness. For now just window_id is fine for toplevels.
+                // However, the event from CompositorEvent has it.
+                // Let's check api.rs handle_compositor_event
                 c_event.width = config.width;
                 c_event.height = config.height;
                 c_event.title = CString::new(config.title).ok()
@@ -255,7 +276,20 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
                 c_event.width = width;
                 c_event.height = height;
                 
+                // For popups, the surface_id is often the same as window_id in this compositor's internal mapping
+                c_event.surface_id = window_id.id as u32; 
+
                 tracing::info!("FFI: PopupCreated {} parent={} at {},{}", window_id.id, parent_id.id, x, y);
+                true
+            },
+            super::types::WindowEvent::PopupRepositioned { window_id, x, y, width, height } => {
+                c_event.event_type = CWindowEventType::PopupRepositioned as u64;
+                c_event.window_id = window_id.id;
+                c_event.x = x;
+                c_event.y = y;
+                c_event.width = width;
+                c_event.height = height;
+                tracing::info!("FFI: PopupRepositioned {} at {},{} {}x{}", window_id.id, x, y, width, height);
                 true
             },
             _ => {

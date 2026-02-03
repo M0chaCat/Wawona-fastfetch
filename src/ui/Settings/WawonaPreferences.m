@@ -1,6 +1,6 @@
 #import "WawonaPreferences.h"
 #import "../../logging/WawonaLog.h"
-#import "../Helpers/WawonaUIHelpers.h"
+#import "../Helpers/WawonaImageLoader.h"
 #import "WawonaPreferencesManager.h"
 #import "WawonaSettingsModel.h"
 #import "WawonaWaypipeRunner.h"
@@ -26,6 +26,31 @@
 #import <sys/wait.h>
 #import <unistd.h>
 
+#ifndef WAWONA_WAYLAND_VERSION
+#define WAWONA_WAYLAND_VERSION "Bundled"
+#endif
+#ifndef WAWONA_XKBCOMMON_VERSION
+#define WAWONA_XKBCOMMON_VERSION "Bundled"
+#endif
+#ifndef WAWONA_LZ4_VERSION
+#define WAWONA_LZ4_VERSION "Bundled"
+#endif
+#ifndef WAWONA_ZSTD_VERSION
+#define WAWONA_ZSTD_VERSION "Bundled"
+#endif
+#ifndef WAWONA_LIBFFI_VERSION
+#define WAWONA_LIBFFI_VERSION "Bundled"
+#endif
+#ifndef WAWONA_SSHPASS_VERSION
+#define WAWONA_SSHPASS_VERSION "unknown"
+#endif
+#ifndef WAWONA_WAYPIPE_VERSION
+#define WAWONA_WAYPIPE_VERSION "unknown"
+#endif
+#ifndef WAWONA_VERSION
+#define WAWONA_VERSION "0.0.0-unknown"
+#endif
+
 // MARK: - Helper Class Interfaces
 
 #if !TARGET_OS_IPHONE
@@ -44,7 +69,8 @@
 
 // MARK: - Main Class Extension
 
-@interface WawonaPreferences () <WawonaWaypipeRunnerDelegate
+@interface WawonaPreferences () <WawonaWaypipeRunnerDelegate,
+                                 NSTextFieldDelegate
 #if !TARGET_OS_IPHONE
                                  ,
                                  NSToolbarDelegate
@@ -93,6 +119,7 @@
 - (instancetype)init {
   self = [super init];
   if (self) {
+    [WawonaWaypipeRunner sharedRunner].delegate = self;
     self.sections = [self buildSections];
   }
   return self;
@@ -114,7 +141,7 @@
 #endif
 
 #define ITEM(t, k, ty, def, d)                                                 \
-  [WawonaSettingItem itemWithTitle:t key:k type:ty default:def desc:d]
+  [WawonaSettingItem itemWithTitle:t key:k type:ty default:(def)desc:(d)]
 
 - (NSArray<WawonaPreferencesSection *> *)buildSections {
   NSMutableArray *sects = [NSMutableArray array];
@@ -439,19 +466,48 @@
   WawonaSettingItem *headerItem =
       ITEM(@"Wawona", nil, WSettingHeader, nil,
            @"A Wayland Compositor for macOS, iOS & Android");
-  headerItem.imageURL = @"https://avatars.githubusercontent.com/u/55220607";
+  headerItem.imageURL = @"./gallery/Wawona-iOS-Dark-1024x1024@1x.png";
 
   WawonaSettingItem *sourceItem =
       ITEM(@"Source Code", nil, WSettingLink, nil, @"View on GitHub");
   sourceItem.urlString = @"https://github.com/aspauldingcode/Wawona";
+  sourceItem.iconURL = @"https://github.githubassets.com/images/modules/logos_"
+                       @"page/GitHub-Mark.png";
 
-  WawonaSettingItem *donateItem = ITEM(
-      @"Support Development", nil, WSettingLink, nil, @"Buy me a coffee ☕");
+  WawonaSettingItem *donateItem =
+      ITEM(@"GitHub Sponsors", nil, WSettingLink, nil, @"Sponsor on GitHub");
   donateItem.urlString = @"https://github.com/sponsors/aspauldingcode";
+  donateItem.iconURL = @"https://encrypted-tbn0.gstatic.com/images?q=tbn:"
+                       @"ANd9GcRp_gdQoe-SxKGw3IvS-1G_JPsMY70HkqxAPg&s";
 
   WawonaSettingItem *authorItem =
-      ITEM(@"Author", nil, WSettingLink, nil, @"@aspauldingcode");
-  authorItem.urlString = @"https://github.com/aspauldingcode";
+      ITEM(@"Author", nil, WSettingInfo, @"Alex Spaulding", nil);
+
+  WawonaSettingItem *githubItem =
+      ITEM(@"GitHub", nil, WSettingLink, nil, @"View GitHub Profile");
+  githubItem.urlString = @"https://github.com/aspauldingcode";
+  githubItem.iconURL = @"https://github.githubassets.com/images/modules/logos_"
+                       @"page/GitHub-Mark.png";
+
+  WawonaSettingItem *xItem = ITEM(@"X", nil, WSettingLink, nil, @"Follow on X");
+  xItem.urlString = @"https://x.com/aspauldingcode";
+  xItem.iconURL = @"https://x.com/favicon.ico";
+
+  WawonaSettingItem *linkedinItem =
+      ITEM(@"LinkedIn", nil, WSettingLink, nil, @"Connect on LinkedIn");
+  linkedinItem.urlString = @"https://www.linkedin.com/in/aspauldingcode/";
+  linkedinItem.iconURL = @"https://upload.wikimedia.org/wikipedia/commons/c/"
+                         @"ca/LinkedIn_logo_initials.png";
+
+  WawonaSettingItem *websiteItem =
+      ITEM(@"Portfolio", nil, WSettingLink, nil, @"Visit Website");
+  websiteItem.urlString = @"https://aspauldingcode.com";
+  websiteItem.iconURL = @"https://aspauldingcode.com/favicon.ico";
+
+  WawonaSettingItem *kofiItem =
+      ITEM(@"Ko-fi", nil, WSettingLink, nil, @"Buy me a coffee ☕");
+  kofiItem.urlString = @"https://ko-fi.com/aspauldingcode";
+  kofiItem.iconURL = @"https://ko-fi.com/android-icon-192x192.png";
 
   about.items = @[
     headerItem,
@@ -463,7 +519,8 @@
          @"macOS",
 #endif
          nil),
-    authorItem, sourceItem, donateItem
+    authorItem, websiteItem, githubItem, xItem, linkedinItem, kofiItem,
+    donateItem
   ];
   [sects addObject:about];
 
@@ -525,43 +582,7 @@
 }
 
 - (NSString *)findWaypipeBinary {
-  NSFileManager *fm = [NSFileManager defaultManager];
-  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-  NSString *execDir =
-      [[NSBundle mainBundle] executablePath].stringByDeletingLastPathComponent;
-
-  // Potential paths in order of preference
-  NSArray *candidates = @[
-    [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:nil] ?: @"",
-    [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:@"bin"] ?: @"",
-    [bundlePath stringByAppendingPathComponent:@"waypipe"],
-    [bundlePath stringByAppendingPathComponent:@"waypipe-bin"],
-    [bundlePath stringByAppendingPathComponent:@"bin/waypipe"],
-    [execDir stringByAppendingPathComponent:@"waypipe"],
-    [[NSProcessInfo processInfo].environment[@"WAYPIPE_BIN"]
-        stringByStandardizingPath]
-        ?: @""
-  ];
-
-  for (NSString *path in candidates) {
-    if (path.length == 0 || ![fm fileExistsAtPath:path])
-      continue;
-
-    // Fix permissions if needed
-    if (![fm isExecutableFileAtPath:path]) {
-      [fm setAttributes:@{NSFilePosixPermissions : @0755}
-           ofItemAtPath:path
-                  error:nil];
-    }
-
-    if ([fm isExecutableFileAtPath:path]) {
-      WLog(@"PREFS", @"Found Waypipe at: %@", path);
-      return path;
-    }
-  }
-
-  WLog(@"PREFS", @"Waypipe binary not found.");
-  return nil;
+  return [[WawonaWaypipeRunner sharedRunner] findWaypipeBinary];
 }
 
 - (NSString *)localIPAddress {
@@ -599,6 +620,32 @@
   // Free memory
   freeifaddrs(interfaces);
   return address;
+}
+
+- (NSString *)cleanVersion:(NSString *)raw {
+  if (!raw || raw.length == 0)
+    return @"v0.0.0";
+
+  NSMutableString *clean = [NSMutableString stringWithString:@"v"];
+  NSCharacterSet *digitsAndDots =
+      [NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
+
+  // Find numeric content
+  BOOL foundStart = NO;
+  for (NSUInteger i = 0; i < raw.length; i++) {
+    unichar c = [raw characterAtIndex:i];
+    if ([digitsAndDots characterIsMember:c]) {
+      [clean appendFormat:@"%C", c];
+      foundStart = YES;
+    } else if (foundStart) {
+      // Stop at first non-numeric char after finding some numbers
+      break;
+    }
+  }
+
+  if (clean.length == 1)
+    return @"v0.0.0";
+  return clean;
 }
 
 - (NSString *)getOpenSSHVersion {
@@ -649,29 +696,37 @@
       if (commaRange.location != NSNotFound) {
         output = [output substringToIndex:commaRange.location];
       }
-      output =
-          [output stringByReplacingOccurrencesOfString:@"_" withString:@" "];
-      output =
-          [output stringByReplacingOccurrencesOfString:@"p" withString:@"."];
-      return [output stringByTrimmingCharactersInSet:
-                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+      // Preserve "OpenSSH" at the start
+      NSString *versionPart =
+          [output substringFromIndex:8]; // Length of "OpenSSH_"
+      versionPart = [versionPart stringByReplacingOccurrencesOfString:@"p"
+                                                           withString:@"."];
+      versionPart = [versionPart stringByReplacingOccurrencesOfString:@"_"
+                                                           withString:@" "];
+
+      NSString *finalVer =
+          [versionPart stringByTrimmingCharactersInSet:
+                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      return [self cleanVersion:finalVer];
     }
-    return output ?: @"Unknown";
+    return [self cleanVersion:output];
   } @catch (NSException *e) {
-    return @"Error";
+    return @"v0.0.0";
   }
 #endif
 }
 
 - (NSString *)getWaypipeVersion {
-  NSString *waypipePath = [self findWaypipeBinary];
-  if (!waypipePath)
-    return @"Not bundled";
-
 #if TARGET_OS_IPHONE
-  // On iOS, we can't easily run waypipe --version
   return @"Bundled";
 #else
+  NSString *waypipePath = [self findWaypipeBinary];
+  if (!waypipePath) {
+    NSString *ver = [NSString stringWithUTF8String:WAWONA_WAYPIPE_VERSION];
+    return [self cleanVersion:ver];
+  }
+
   NSTask *task = [[NSTask alloc] init];
   task.launchPath = waypipePath;
   task.arguments = @[ @"--version" ];
@@ -707,14 +762,14 @@
             componentsSeparatedByCharactersInSet:[NSCharacterSet
                                                      whitespaceCharacterSet]];
         if (parts.count > 0 && [parts[0] length] > 0) {
-          return [NSString stringWithFormat:@"v%@", parts[0]];
+          return [self cleanVersion:parts[0]];
         }
       }
       return output;
     }
-    return @"Bundled";
+    return @"v0.0.0";
   } @catch (NSException *e) {
-    return @"Bundled";
+    return @"v0.0.0";
   }
 #endif
 }
@@ -741,8 +796,10 @@
     }
   }
 
-  if (!sshpassPath)
-    return @"Not bundled";
+  if (!sshpassPath) {
+    NSString *ver = [NSString stringWithUTF8String:WAWONA_SSHPASS_VERSION];
+    return [self cleanVersion:ver];
+  }
 
   NSTask *task = [[NSTask alloc] init];
   task.launchPath = sshpassPath;
@@ -778,50 +835,57 @@
         if (newlineRange.location != NSNotFound) {
           version = [version substringToIndex:newlineRange.location];
         }
-        return [NSString stringWithFormat:@"v%@", version];
+        return [self cleanVersion:version];
       }
     }
-    return output.length > 0 ? output : @"Bundled";
+    return [self cleanVersion:output];
   } @catch (NSException *e) {
-    return @"Bundled";
+    return @"v0.0.0";
   }
 }
 #endif
 
 - (NSString *)getWawonaVersion {
-  NSString *version = [[NSBundle mainBundle]
-      objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-  NSString *build =
-      [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
-  if (version && build) {
-    return [NSString stringWithFormat:@"%@ (%@)", version, build];
+  // Use Nix-sourced version if available
+  NSString *version = @WAWONA_VERSION;
+
+  // If macro is default or unknown, fall back to bundle info
+  if ([version isEqualToString:@"0.0.0-unknown"] ||
+      [version containsString:@"unknown"]) {
+    version = [[NSBundle mainBundle]
+        objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
   }
-  return version ?: @"Development";
+
+  // Ensure 'v' prefix
+  if (version && ![version hasPrefix:@"v"]) {
+    version = [@"v" stringByAppendingString:version];
+  }
+
+  return version ?: @"v0.0.0";
 }
 
 - (NSString *)getLibffiVersion {
-  // libffi is usually statically linked, return a placeholder
-  return @"Bundled";
+  return
+      [self cleanVersion:[NSString stringWithUTF8String:WAWONA_LIBFFI_VERSION]];
 }
 
 - (NSString *)getLz4Version {
-  // lz4 version - bundled with waypipe
-  return @"Bundled";
+  return [self cleanVersion:[NSString stringWithUTF8String:WAWONA_LZ4_VERSION]];
 }
 
 - (NSString *)getZstdVersion {
-  // zstd version - bundled with waypipe
-  return @"Bundled";
+  return
+      [self cleanVersion:[NSString stringWithUTF8String:WAWONA_ZSTD_VERSION]];
 }
 
 - (NSString *)getXkbcommonVersion {
-  // xkbcommon is bundled
-  return @"Bundled";
+  return [self
+      cleanVersion:[NSString stringWithUTF8String:WAWONA_XKBCOMMON_VERSION]];
 }
 
 - (NSString *)getLibwaylandVersion {
-  // libwayland is bundled
-  return @"Bundled";
+  return [self
+      cleanVersion:[NSString stringWithUTF8String:WAWONA_WAYLAND_VERSION]];
 }
 
 #if TARGET_OS_IPHONE
@@ -1374,9 +1438,11 @@
                                  withObject:@(pid)]; if (proc && [proc
                                  respondsToSelector:@selector(isExited)] &&
                                  [proc isExited]) { exitCode = [[proc
-                                 valueForKey:@"exitCode"] intValue]; found =
-                                 YES; WLog(@"SSH", @"Process marked as");
-                                 exited in kernel with code: %d", exitCode);
+                                  valueForKey:@"exitCode"] intValue];
+                                 found = YES;
+                                 WLog(@"SSH", @"Process marked as exited in "
+                                              @"kernel with code: %d",
+                                      exitCode);
                                    break;
                                  }
                                  */
@@ -1390,39 +1456,30 @@ dispatch_async(dispatch_get_main_queue(), ^{
   [progressAlert
       dismissViewControllerAnimated:YES
                          completion:^{
-                           if (!found) {
-                             UIAlertController *errorAlert = [UIAlertController
-                                 alertControllerWithTitle:@"SS"
-                                                          @"H "
-                                                          @"Co"
-                                                          @"nn"
-                                                          @"ec"
-                                                          @"ti"
-                                                          @"on"
-                                                          @" T"
-                                                          @"im"
-                                                          @"eo"
-                                                          @"ut"
-                                                  message:
-                                                      [NSString
-                                                          stringWithFormat:
-                                                              @"SSH connection "
-                                                              @"test timed out "
-                                                              @"after 10 "
-                                                              @"seconds."
-                                                              @"\n\nPID: "
-                                                              @"%d\n\nThis may "
-                                                              @"indicate:\n- "
-                                                              @"Network "
-                                                              @"connectivity "
-                                                              @"issues\n- SSH "
-                                                              @"server not "
-                                                              @"responding\n- "
-                                                              @"Authentication "
-                                                              @"hanging",
-                                                              pid]
-                                           preferredStyle:
-                                               UIAlertControllerStyleAlert];
+                            if (!found) {
+                              UIAlertController *errorAlert = [UIAlertController
+                                  alertControllerWithTitle:@"SSH Connection "
+                                                           @"Timeout"
+                                                   message:
+                                                       [NSString
+                                                           stringWithFormat:
+                                                               @"SSH connection "
+                                                               @"test timed out "
+                                                               @"after 10 "
+                                                               @"seconds."
+                                                               @"\n\nPID: "
+                                                               @"%d\n\nThis may "
+                                                               @"indicate:\n- "
+                                                               @"Network "
+                                                               @"connectivity "
+                                                               @"issues\n- SSH "
+                                                               @"server not "
+                                                               @"responding\n- "
+                                                               @"Authentication "
+                                                               @"hanging",
+                                                               pid]
+                                            preferredStyle:
+                                                UIAlertControllerStyleAlert];
                              [errorAlert
                                  addAction:
                                      [UIAlertAction
@@ -1941,8 +1998,9 @@ dispatch_async(dispatch_get_main_queue(), ^{
             resultAlert.alertStyle = NSAlertStyleWarning;
           }
 
-          [resultAlert addButtonWithTitle:@"OK"];
-          [resultAlert addButtonWithTitle:@"Copy Log"];
+          [resultAlert addButtonWithTitle:@"OK"]; // First: OK (Right/Default)
+          [resultAlert
+              addButtonWithTitle:@"Copy Log"]; // Second: Copy Log (Left)
 
           NSModalResponse response = [resultAlert runModal];
           if (response == NSAlertSecondButtonReturn) {
@@ -2168,8 +2226,18 @@ dispatch_async(dispatch_get_main_queue(), ^{
       resultAlert.informativeText = success ?
         [NSString stringWithFormat:@"Successfully reached %@\nLatency: %.0f ms", host, latency] :
         [NSString stringWithFormat:@"Failed to reach %@\n%@", host, errorMessage ? errorMessage : @"Unknown error"];
-      [resultAlert addButtonWithTitle:@"OK"];
-      [resultAlert runModal];
+      [resultAlert addButtonWithTitle:@"OK"];       // First: OK (Right/Default)
+      [resultAlert addButtonWithTitle:@"Copy Log"]; // Second: Copy Log (Left)
+
+      NSModalResponse response = [resultAlert runModal];
+      if (response == NSAlertSecondButtonReturn) {
+          // Copy log
+          NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+          [pasteboard clearContents];
+          NSString *log = [NSString stringWithFormat:@"Ping Host: %@\nStatus: %@\nDetails: %@",
+                           host, success ? @"Success" : @"Failed", resultAlert.informativeText];
+          [pasteboard setString:log forType:NSPasteboardTypeString];
+      }
 #endif
     });
   });
@@ -2608,6 +2676,56 @@ dispatch_async(dispatch_get_main_queue(), ^{
 #endif
 }
 
+- (void)runnerDidReceiveOutput:(NSString *)output isError:(BOOL)isError {
+  if (!output || output.length == 0)
+    return;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!self.waypipeStatusText) {
+      self.waypipeStatusText = [NSMutableString string];
+    }
+
+    // Prefix errors for clarity in the log
+    NSString *formattedOutput =
+        isError ? [NSString stringWithFormat:@"[ERROR] %@", output] : output;
+    [self.waypipeStatusText appendString:formattedOutput];
+
+    // Limit log size
+    NSUInteger maxLen = 50000;
+    if (self.waypipeStatusText.length > maxLen) {
+      [self.waypipeStatusText
+          deleteCharactersInRange:NSMakeRange(0, self.waypipeStatusText.length -
+                                                     maxLen)];
+    }
+
+    // Update text view if visible
+    if (self.waypipeStatusTextView) {
+      [self.waypipeStatusTextView.textStorage.mutableString
+          setString:self.waypipeStatusText];
+      [self.waypipeStatusTextView
+          scrollRangeToVisible:NSMakeRange(self.waypipeStatusText.length, 0)];
+    }
+
+    // Re-use existing checks for connection success
+    [self checkWaypipeSuccessIndicators:output];
+  });
+}
+
+- (void)checkWaypipeSuccessIndicators:(NSString *)s {
+  if (!self.waypipeMarkedConnected) {
+    if ([s containsString:@"Authenticated to"] ||
+        [s containsString:@"Entering interactive session"] ||
+        [s containsString:@"Entering session"] ||
+        [s containsString:@"debug1: Authentication succeeded"] ||
+        [s containsString:@"Connection established"]) {
+      self.waypipeMarkedConnected = YES;
+      if (self.waypipeStatusPanel) {
+        self.waypipeStatusPanel.title = @"Waypipe - Connected";
+      }
+    }
+  }
+}
+
 - (void)runnerDidReadData:(NSData *)data {
   if (!data || data.length == 0) {
     return;
@@ -2617,85 +2735,7 @@ dispatch_async(dispatch_get_main_queue(), ^{
   if (!s) {
     s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
   }
-  if (s.length == 0) {
-    return;
-  }
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-#if TARGET_OS_IPHONE
-    // Check if this is a validation error (starts with "Waypipe requires" or
-    // "Invalid waypipe")
-    if ([s containsString:@"Waypipe requires"] ||
-        [s containsString:@"Invalid waypipe"]) {
-      // Show as alert instead of status text
-      UIAlertController *alert = [UIAlertController
-          alertControllerWithTitle:@"Waypipe Configuration Error"
-                           message:s
-                    preferredStyle:UIAlertControllerStyleAlert];
-      [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                style:UIAlertActionStyleDefault
-                                              handler:nil]];
-      [self presentViewController:alert animated:YES completion:nil];
-      return;
-    }
-#else
-    // macOS: Show validation errors in an alert
-    if ([s containsString:@"Waypipe requires"] || [s containsString:@"Invalid waypipe"]) {
-      NSAlert *alert = [[NSAlert alloc] init];
-      alert.messageText = @"Waypipe Configuration Error";
-      alert.informativeText = s;
-      alert.alertStyle = NSAlertStyleWarning;
-      [alert addButtonWithTitle:@"OK"];
-      [alert runModal];
-      return;
-    }
-#endif
-
-    if (!self.waypipeStatusText) {
-      self.waypipeStatusText = [NSMutableString string];
-    }
-    [self.waypipeStatusText appendString:s];
-
-    // Limit log size (larger for macOS since we have a scrolling text view)
-#if TARGET_OS_IPHONE
-    NSUInteger maxLen = 1500;
-#else
-    NSUInteger maxLen = 50000;
-#endif
-    if (self.waypipeStatusText.length > maxLen) {
-      [self.waypipeStatusText
-          deleteCharactersInRange:NSMakeRange(0, self.waypipeStatusText.length -
-                                                     maxLen)];
-    }
-
-    // Check for connection success indicators
-    if (!self.waypipeMarkedConnected) {
-      if ([s containsString:@"Authenticated to"] ||
-          [s containsString:@"Entering interactive session"] ||
-          [s containsString:@"Entering session"] ||
-          [s containsString:@"debug1: Authentication succeeded"] ||
-          [s containsString:@"Connection established"]) {
-        self.waypipeMarkedConnected = YES;
-#if TARGET_OS_IPHONE
-        if (self.waypipeStatusAlert) {
-          self.waypipeStatusAlert.title = @"Connected";
-        }
-#else
-        if (self.waypipeStatusPanel) {
-          self.waypipeStatusPanel.title = @"Waypipe - Connected";
-        }
-#endif
-      }
-    }
-
-#if TARGET_OS_IPHONE
-    if (self.waypipeStatusAlert) {
-      self.waypipeStatusAlert.message = self.waypipeStatusText;
-    }
-#else
-    [self updateWaypipeStatusPanel];
-#endif
-  });
+  [self runnerDidReceiveOutput:s isError:NO];
 }
 
 #if TARGET_OS_IPHONE
@@ -3169,9 +3209,6 @@ dispatch_async(dispatch_get_main_queue(), ^{
                   backing:NSBackingStoreBuffered
                     defer:NO];
   win.title = @"Wawona Settings";
-
-  // Apply Tahoe Liquid Glass styling
-  [WawonaUIHelpers configureWindowForGlassAppearance:win];
   win.movableByWindowBackground = YES;
 
   // Add Toolbar (Liquid Glass Style)
@@ -3275,11 +3312,13 @@ dispatch_async(dispatch_get_main_queue(), ^{
   NSAlert *alert = [[NSAlert alloc] init];
   alert.messageText = @"Waypipe Command Preview";
   alert.informativeText = cmdString;
-  [alert addButtonWithTitle:@"Copy"];
-  [alert addButtonWithTitle:@"OK"];
+  [alert addButtonWithTitle:@"OK"];       // First button: FirstButtonReturn
+                                          // (Default/Right)
+  [alert addButtonWithTitle:@"Copy Log"]; // Second button: SecondButtonReturn
+                                          // (Left)
   NSModalResponse response = [alert runModal];
 
-  if (response == NSAlertFirstButtonReturn) {
+  if (response == NSAlertSecondButtonReturn) {
     NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard clearContents];
     [pasteboard setString:cmdString forType:NSPasteboardTypeString];
@@ -3327,7 +3366,7 @@ dispatch_async(dispatch_get_main_queue(), ^{
   self.outlineView.dataSource = self;
   self.outlineView.delegate = self;
   self.outlineView.headerView = nil;
-  self.outlineView.rowHeight = 28.0; // Standard sidebar height
+  self.outlineView.rowHeight = 24.0; // Standard sidebar height
   NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"M"];
   col.width = 180;    // Ensure column is wide enough for sidebar text
   col.minWidth = 100; // Minimum width to prevent text wrapping
@@ -3405,14 +3444,24 @@ dispatch_async(dispatch_get_main_queue(), ^{
 // MARK: - WawonaPreferenceCell
 // A robust, statically laid-out cell to prevent visual corruption and reduce
 // LOC.
-@interface WawonaPreferenceCell : NSTableCellView
-@property(strong) NSTextField *titleLabel;
-@property(strong) NSTextField *descLabel;
-@property(strong) NSSwitch *switchControl;
-@property(strong) NSTextField *textControl;
-@property(strong) NSButton *buttonControl;
-@property(strong) NSPopUpButton *popupControl;
-@property(strong) WawonaSettingItem *item;
+@interface WawonaPreferenceCell : NSTableCellView <NSTextFieldDelegate>
+@property(nonatomic, strong) NSTextField *titleLabel;
+@property(nonatomic, strong) NSTextField *descLabel;
+@property(nonatomic, strong) NSSwitch *switchControl;
+@property(nonatomic, strong) NSTextField *textControl;
+@property(nonatomic, strong) NSButton *buttonControl;
+@property(nonatomic, strong) NSPopUpButton *popupControl;
+@property(nonatomic, strong) NSImageView *iconView; // For link icons
+@property(nonatomic, strong)
+    NSImageView *headerImageView; // For large logos/avatars
+@property(nonatomic, strong)
+    NSLayoutConstraint *leadingConstraint; // New: for layout
+@property(nonatomic, strong) NSLayoutConstraint *trailingConstraint;
+@property(nonatomic, strong) WawonaSettingItem *item;
+@property(nonatomic, assign) id delegate; // MRC: use assign for delegates
+- (void)configureWithItem:(WawonaSettingItem *)item
+                   target:(id)target
+                   action:(SEL)action;
 @end
 
 @implementation WawonaPreferenceCell
@@ -3433,7 +3482,7 @@ dispatch_async(dispatch_get_main_queue(), ^{
                                  forOrientation:
                                      NSLayoutConstraintOrientationVertical];
     [_titleLabel
-        setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh
                                  forOrientation:
                                      NSLayoutConstraintOrientationHorizontal];
     [self addSubview:_titleLabel];
@@ -3450,7 +3499,7 @@ dispatch_async(dispatch_get_main_queue(), ^{
                                  forOrientation:
                                      NSLayoutConstraintOrientationVertical];
     [_descLabel
-        setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh
                                  forOrientation:
                                      NSLayoutConstraintOrientationHorizontal];
     [self addSubview:_descLabel];
@@ -3461,16 +3510,18 @@ dispatch_async(dispatch_get_main_queue(), ^{
     _switchControl.hidden = YES;
     [self addSubview:_switchControl];
 
-    // Liquid Glass Text Field
-    _textControl = [WawonaUIHelpers createGlassTextFieldWithPlaceholder:@""];
+    // Text Field (standard AppKit)
+    _textControl = [[NSTextField alloc] init];
+    _textControl.placeholderString = @"";
+    _textControl.delegate = self; // Cell handles own delegate events
     _textControl.translatesAutoresizingMaskIntoConstraints = NO;
     _textControl.hidden = YES;
     [self addSubview:_textControl];
 
-    // Liquid Glass Button
-    _buttonControl = [WawonaUIHelpers createGlassButtonWithTitle:@"Run"
-                                                          target:nil
-                                                          action:nil];
+    // Button (standard AppKit)
+    _buttonControl = [[NSButton alloc] init];
+    _buttonControl.title = @"Run";
+    _buttonControl.bezelStyle = NSBezelStyleRounded;
     _buttonControl.translatesAutoresizingMaskIntoConstraints = NO;
     _buttonControl.hidden = YES;
     [self addSubview:_buttonControl];
@@ -3481,6 +3532,21 @@ dispatch_async(dispatch_get_main_queue(), ^{
     _popupControl.hidden = YES;
     [self addSubview:_popupControl];
 
+    _iconView = [[NSImageView alloc] init];
+    _iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    _iconView.hidden = YES;
+    _iconView.imageScaling = NSImageScaleProportionallyUpOrDown;
+    [self addSubview:_iconView];
+
+    _headerImageView = [[NSImageView alloc] init];
+    _headerImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    _headerImageView.hidden = YES;
+    _headerImageView.wantsLayer = YES;
+    _headerImageView.layer.masksToBounds = YES;
+    _headerImageView.layer.cornerRadius = 0.0;
+    _headerImageView.layer.contentsGravity = kCAGravityResizeAspect;
+    [self addSubview:_headerImageView];
+
     // Static Auto Layout - Two column design:
     // Left column (labels): leading to ~55% of width
     // Right column (controls): ~45% of width, right-aligned
@@ -3489,12 +3555,14 @@ dispatch_async(dispatch_get_main_queue(), ^{
 
     [NSLayoutConstraint activateConstraints:@[
       // Title label - left column
-      [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                constant:20],
+      (_leadingConstraint =
+           [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                                     constant:20]),
       [_titleLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
-      [_titleLabel.trailingAnchor
-          constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                   constant:-(controlAreaWidth + spacing + 20)],
+      (_trailingConstraint = [_titleLabel.trailingAnchor
+           constraintLessThanOrEqualToAnchor:self.trailingAnchor
+                                    constant:-(controlAreaWidth + spacing +
+                                               20)]),
 
       // Description label - below title, same width constraints
       [_descLabel.leadingAnchor
@@ -3502,8 +3570,7 @@ dispatch_async(dispatch_get_main_queue(), ^{
       [_descLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor
                                            constant:2],
       [_descLabel.trailingAnchor
-          constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                   constant:-(controlAreaWidth + spacing + 20)],
+          constraintEqualToAnchor:_titleLabel.trailingAnchor],
 
       // Switch control - right column
       [_switchControl.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
@@ -3527,6 +3594,21 @@ dispatch_async(dispatch_get_main_queue(), ^{
                                                    constant:-20],
       [_popupControl.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
       [_popupControl.widthAnchor constraintEqualToConstant:controlAreaWidth],
+
+      // Icon view (for links, etc.)
+      [_iconView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                              constant:20],
+      [_iconView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+      [_iconView.widthAnchor constraintEqualToConstant:24],
+      [_iconView.heightAnchor constraintEqualToConstant:24],
+
+      // Header image view
+      [_headerImageView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                                     constant:20],
+      [_headerImageView.centerYAnchor
+          constraintEqualToAnchor:self.centerYAnchor],
+      [_headerImageView.widthAnchor constraintEqualToConstant:48],
+      [_headerImageView.heightAnchor constraintEqualToConstant:48],
     ]];
   }
   return self;
@@ -3536,16 +3618,37 @@ dispatch_async(dispatch_get_main_queue(), ^{
                    target:(id)target
                    action:(SEL)action {
   self.item = item;
-  self.titleLabel.stringValue = item.title;
-  self.descLabel.stringValue = item.desc ? item.desc : @"";
+  self.delegate = target; // Store controller as delegate
+  self.titleLabel.stringValue = item.title ?: @"";
+  self.descLabel.stringValue = item.desc ?: @"";
 
   // Reset Visibility
   self.switchControl.hidden = YES;
   self.textControl.hidden = YES;
   self.buttonControl.hidden = YES;
   self.popupControl.hidden = YES;
+  self.headerImageView.hidden = YES;
+  self.headerImageView.image = nil;
 
   NSControl *active = nil;
+
+  // Base leading constraint
+  self.leadingConstraint.constant = 20;
+
+  // Icon logic
+  if (item.iconURL) {
+    self.iconView.hidden = NO;
+    [[WawonaImageLoader sharedLoader]
+        loadImageFromURL:item.iconURL
+              completion:^(WImage _Nullable image) {
+                if (image) {
+                  self.iconView.image = image;
+                }
+              }];
+    self.leadingConstraint.constant = 48; // Space for 24x24 icon + margin
+  } else {
+    self.iconView.hidden = YES;
+  }
 
   if (item.type == WSettingSwitch) {
     self.switchControl.hidden = NO;
@@ -3560,7 +3663,8 @@ dispatch_async(dispatch_get_main_queue(), ^{
     self.textControl.hidden = NO;
     NSString *val =
         [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
-    self.textControl.stringValue = val ? val : [item.defaultValue description];
+    self.textControl.stringValue =
+        val ? val : ([item.defaultValue description] ?: @"");
     self.textControl.target = target;
     self.textControl.action = action;
 
@@ -3568,10 +3672,11 @@ dispatch_async(dispatch_get_main_queue(), ^{
     self.textControl.editable = YES;
     self.textControl.selectable = YES;
     self.textControl.bezeled = YES;
-    self.textControl.bezelStyle = NSTextFieldSquareBezel;
-    self.textControl.bordered = YES;
-    self.textControl.drawsBackground = YES;
-    self.textControl.backgroundColor = [NSColor textBackgroundColor];
+    self.textControl.bezelStyle = NSTextFieldRoundedBezel;
+    self.textControl.bordered = NO;
+    self.textControl.drawsBackground =
+        YES; // Needs background for rounded bezel
+    self.textControl.backgroundColor = [NSColor controlBackgroundColor];
 
     // Set placeholder text for empty fields
     if ([item.key isEqualToString:@"WaypipeRemoteCommand"]) {
@@ -3652,7 +3757,8 @@ dispatch_async(dispatch_get_main_queue(), ^{
     self.textControl.hidden = NO;
     NSString *val =
         [[NSUserDefaults standardUserDefaults] stringForKey:item.key];
-    self.textControl.stringValue = val ? val : [item.defaultValue description];
+    self.textControl.stringValue =
+        val ? val : ([item.defaultValue description] ?: @"");
     self.textControl.editable = NO;
     self.textControl.selectable = YES;
     self.textControl.bezeled = NO;
@@ -3669,12 +3775,12 @@ dispatch_async(dispatch_get_main_queue(), ^{
     }
     active = self.textControl;
   } else if (item.type == WSettingLink) {
-    // Link type: show as clickable button
+    // Show a small icon and description for the link
+    self.titleLabel.textColor = [NSColor linkColor];
     self.buttonControl.hidden = NO;
     self.buttonControl.title = item.desc ?: @"Open";
     self.buttonControl.target = target;
     self.buttonControl.action = action;
-    self.titleLabel.textColor = [NSColor linkColor];
     active = self.buttonControl;
   } else if (item.type == WSettingHeader) {
     // Header type: show centered title with image
@@ -3683,20 +3789,41 @@ dispatch_async(dispatch_get_main_queue(), ^{
     self.descLabel.stringValue = item.desc ?: @"";
     self.descLabel.textColor = [NSColor secondaryLabelColor];
 
-    // Show version/subtitle in text control area
-    self.textControl.hidden = NO;
-    self.textControl.stringValue = @"";
-    self.textControl.editable = NO;
-    self.textControl.selectable = NO;
-    self.textControl.bezeled = NO;
-    self.textControl.bordered = NO;
-    self.textControl.backgroundColor = [NSColor clearColor];
-    self.textControl.drawsBackground = NO;
-    active = nil; // No action for header
-    self.textControl.cell.truncatesLastVisibleLine = YES;
+    if (item.imageURL || item.imageName) {
+      self.headerImageView.hidden = NO;
+      NSString *img = item.imageURL ?: item.imageName;
+      [[WawonaImageLoader sharedLoader]
+          loadImageFromURL:img
+                completion:^(WImage _Nullable image) {
+                  if (image) {
+                    self.headerImageView.image = image;
+                  }
+                }];
 
-    // Add copy button functionality via right-click or double-click
-    active = self.textControl;
+      // Shift text labels to the right if image is present
+      self.leadingConstraint.constant = 80;
+    }
+    active = nil; // Headers never have a right-side control
+  }
+
+  // Final layout refinement:
+  // If we have an active control (switch, text, button, etc.), we need to
+  // leave space for it on the right. Otherwise, use full width.
+  if (active) {
+    self.trailingConstraint.constant =
+        -(160 + 16 + 20); // Control + Spacing + Margin
+  } else {
+    self.trailingConstraint.constant = -20; // Full width
+  }
+}
+
+- (void)controlTextDidChange:(NSNotification *)obj {
+  NSTextField *tf = [obj object];
+  if (tf == self.textControl) {
+    // Forward to act: with tag
+    if ([self.delegate respondsToSelector:@selector(act:)]) {
+      [self.delegate performSelector:@selector(act:) withObject:tf];
+    }
   }
 }
 @end

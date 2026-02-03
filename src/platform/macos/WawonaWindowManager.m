@@ -61,17 +61,9 @@
     CGRect windowBounds = _compositor.window.bounds;
     CGRect safeAreaFrame = windowBounds;
 
-    if (@available(iOS 11.0, *)) {
-      UILayoutGuide *safeArea = _compositor.window.safeAreaLayoutGuide;
-      safeAreaFrame = safeArea.layoutFrame;
-      if (CGRectIsEmpty(safeAreaFrame)) {
-        UIEdgeInsets insets = compositorView.safeAreaInsets;
-        if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 ||
-            insets.right != 0) {
-          safeAreaFrame = UIEdgeInsetsInsetRect(windowBounds, insets);
-        }
-      }
-    } else {
+    UILayoutGuide *safeArea = _compositor.window.safeAreaLayoutGuide;
+    safeAreaFrame = safeArea.layoutFrame;
+    if (CGRectIsEmpty(safeAreaFrame)) {
       UIEdgeInsets insets = compositorView.safeAreaInsets;
       if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 ||
           insets.right != 0) {

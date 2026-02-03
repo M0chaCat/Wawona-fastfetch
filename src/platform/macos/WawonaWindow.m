@@ -5,14 +5,58 @@
 //
 // WawonaView Implementation
 //
-@implementation WawonaView
+@implementation WawonaView {
+  CALayer *_contentLayer;
+}
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
+    self.wantsLayer = YES;
+    self.layer.masksToBounds = YES;
+    _contentLayer = [CALayer layer];
+    _contentLayer.contentsGravity = kCAGravityResize;
+    _contentLayer.masksToBounds = YES;
+    _contentLayer.autoresizingMask =
+        kCALayerWidthSizable | kCALayerHeightSizable;
+    [self.layer addSublayer:_contentLayer];
     [self updateTrackingAreas];
   }
   return self;
+}
+
+- (CALayer *)contentLayer {
+  if (!_contentLayer) {
+    _contentLayer = [CALayer layer];
+    _contentLayer.contentsGravity = kCAGravityResize;
+    _contentLayer.masksToBounds = YES;
+    _contentLayer.autoresizingMask =
+        kCALayerWidthSizable | kCALayerHeightSizable;
+    if (self.layer) {
+      [self.layer addSublayer:_contentLayer];
+    }
+  }
+  return _contentLayer;
+}
+
+- (void)setFrame:(NSRect)frame {
+  [super setFrame:frame];
+  _contentLayer.frame = self.bounds;
+}
+
+- (void)setBounds:(NSRect)bounds {
+  [super setBounds:bounds];
+  _contentLayer.frame = self.bounds;
+}
+
+- (void)layout {
+  [super layout];
+  _contentLayer.frame = self.bounds;
+}
+
+- (void)updateLayer {
+  [super updateLayer];
+  _contentLayer.frame = self.bounds;
 }
 
 - (void)updateTrackingAreas {
@@ -38,8 +82,15 @@
   return YES;
 }
 
+- (BOOL)isFlipped {
+  return YES;
+}
+
 // Helper to get window ID
 - (uint64_t)wawonaWindowId {
+  if (self.overrideWindowId != 0) {
+    return self.overrideWindowId;
+  }
   if ([self.window isKindOfClass:[WawonaWindow class]]) {
     return [(WawonaWindow *)self.window wawonaWindowId];
   }
@@ -52,7 +103,7 @@
 
 - (void)mouseEntered:(NSEvent *)event {
   NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-  double y = self.bounds.size.height - loc.y;
+  double y = loc.y;
 
   [[WawonaCompositorBridge sharedBridge]
       injectPointerEnterForWindow:[self wawonaWindowId]
@@ -69,7 +120,7 @@
 
 - (void)mouseMoved:(NSEvent *)event {
   NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-  double y = self.bounds.size.height - loc.y;
+  double y = loc.y;
 
   [[WawonaCompositorBridge sharedBridge]
       injectPointerMotionForWindow:[self wawonaWindowId]
@@ -323,6 +374,9 @@ static uint32_t macos_to_xkb_keycode(unsigned short mac_code) {
 }
 
 - (void)flagsChanged:(NSEvent *)event {
+  WLog(@"INPUT", @"flagsChanged: keyCode=%hu flags=0x%lx", event.keyCode,
+       (unsigned long)event.modifierFlags);
+
   static NSMutableSet *pressedModifiers = nil;
   if (!pressedModifiers) {
     pressedModifiers = [NSMutableSet set];
@@ -345,6 +399,9 @@ static uint32_t macos_to_xkb_keycode(unsigned short mac_code) {
       [pressedModifiers addObject:keyObj];
       isPressed = YES;
     }
+
+    WLog(@"INPUT", @"Determined modifier key state: keycode=%u isPressed=%d",
+         keycode, isPressed);
 
     [[WawonaCompositorBridge sharedBridge]
         injectKeyWithKeycode:keycode
@@ -372,6 +429,9 @@ static uint32_t macos_to_xkb_keycode(unsigned short mac_code) {
     locked |= 2;
   }
 
+  WLog(@"INPUT", @"Injecting modifiers state: depressed=%u locked=%u",
+       depressed, locked);
+
   [[WawonaCompositorBridge sharedBridge] injectModifiersWithDepressed:depressed
                                                               latched:0
                                                                locked:locked
@@ -395,49 +455,19 @@ static uint32_t macos_to_xkb_keycode(unsigned short mac_code) {
                               defer:flag];
   if (self) {
     [self setDelegate:self];
-
-    // =========================================================================
-    // macOS 26 TAHOE LIQUID GLASS STYLING
-    // =========================================================================
-    // Liquid Glass is the new design language in macOS 26 (Tahoe) that provides
-    // translucent, depth-aware window chrome that adapts to content behind it.
-
-    // Enable full-size content view so content extends behind titlebar
-    self.styleMask |= NSWindowStyleMaskFullSizeContentView;
-
-    // Make titlebar transparent to blend with Liquid Glass effect
-    self.titlebarAppearsTransparent = YES;
-    self.titleVisibility = NSWindowTitleHidden;
-
-    // Solid background to rule out recursion/transparency issues
-    self.backgroundColor = [NSColor blackColor];
-    self.opaque = YES;
-
-    // Setup Liquid Glass using macOS 26 APIs (DISABLED for debugging)
-    // [self setupLiquidGlass];
+    // AppKit will automatically apply Liquid Glass styling on macOS Tahoe
   }
   return self;
 }
 
 // Setup macOS 26 Tahoe Liquid Glass effect
-- (void)setupLiquidGlass {
-  // Use NSVisualEffectView for window background
-  NSVisualEffectView *glassView =
-      [[NSVisualEffectView alloc] initWithFrame:self.contentView.bounds];
-  glassView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  glassView.material = NSVisualEffectMaterialHUDWindow;
-  glassView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-  glassView.state = NSVisualEffectStateActive;
-  glassView.wantsLayer = YES;
-  glassView.layer.cornerRadius = 12.0;
-  glassView.layer.masksToBounds = YES;
-
-  [self.contentView addSubview:glassView
-                    positioned:NSWindowBelow
-                    relativeTo:nil];
-}
+// Removed: managed by configureWindowAppearance now
 
 - (void)windowDidResize:(NSNotification *)notification {
+  if (self.processingResize) {
+    return;
+  }
+
   NSSize size = [self.contentView bounds].size;
   // Convert to pixels (handling retina scale if needed, though Wayland handles
   // scale separate) For now just passing points as that's what we likely

@@ -15,7 +15,6 @@
 
 // UI and Settings
 #import "../ui/About/WawonaAboutPanel.h"
-#import "../ui/Helpers/WawonaUIHelpers.h"
 #import "../ui/Settings/WawonaPreferences.h"
 #import "../ui/Settings/WawonaPreferencesManager.h"
 #import "../ui/Settings/WawonaWaypipeRunner.h"
@@ -737,10 +736,17 @@ return YES;
                             weight:UIImageSymbolWeightRegular];
     UIImage *gearImage =
         [UIImage systemImageNamed:@"gear" withConfiguration:config];
-    self.settingsButton = [WawonaUIHelpers
-        createLiquidGlassButtonWithImage:gearImage
-                                  target:self
-                                  action:@selector(showSettings:)];
+
+    // Create standard UIButton with custom styling
+    self.settingsButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.settingsButton setImage:gearImage forState:UIControlStateNormal];
+    self.settingsButton.tintColor = [UIColor whiteColor];
+
+    // Add target-action
+    [self.settingsButton addTarget:self
+                            action:@selector(showSettings:)
+                  forControlEvents:UIControlEventTouchUpInside];
     self.settingsButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
     self.settingsButton.imageEdgeInsets = UIEdgeInsetsMake(6, 6, 6, 6);
     [containerView addSubview:self.settingsButton];
@@ -904,12 +910,64 @@ int main(int argc, char *argv[]) {
 @end
 
 int main(int argc, char *argv[]) {
-  (void)argc;
-  (void)argv;
   @autoreleasepool {
+    // Set process name for Menu Bar
+    [[NSProcessInfo processInfo] setProcessName:@"Wawona"];
+
+    // Set default output behavior
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
+
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+      if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+#ifdef WAWONA_VERSION
+        printf("Wawona v%s\n", WAWONA_VERSION);
+#else
+        printf("Wawona unknown\n");
+#endif
+
+        // Use sw_vers for clean macOS version output
+        FILE *sw_vers_f = popen("sw_vers -productVersion", "r");
+        if (sw_vers_f) {
+          char ver_buf[64];
+          if (fgets(ver_buf, sizeof(ver_buf), sw_vers_f)) {
+            size_t len = strlen(ver_buf);
+            if (len > 0 && ver_buf[len - 1] == '\n')
+              ver_buf[len - 1] = '\0';
+            printf("macOS v%s\n", ver_buf);
+          }
+          pclose(sw_vers_f);
+        } else {
+          // Fallback to NSProcessInfo
+          NSOperatingSystemVersion v =
+              [[NSProcessInfo processInfo] operatingSystemVersion];
+          printf("macOS v%ld.%ld.%ld\n", (long)v.majorVersion,
+                 (long)v.minorVersion, (long)v.patchVersion);
+        }
+
+        // Use uname for architecture
+        FILE *uname_f = popen("uname -m", "r");
+        if (uname_f) {
+          char arch_buf[64];
+          if (fgets(arch_buf, sizeof(arch_buf), uname_f)) {
+            printf("%s", arch_buf); // uname -m includes newline
+          }
+          pclose(uname_f);
+        } else {
+#if defined(__arm64__) || defined(__aarch64__)
+          printf("arm64\n");
+#else
+          printf("x86_64\n");
+#endif
+        }
+        return 0;
+      }
+    }
+
     WLog(@"MAIN", @"Wawona - Wayland Compositor for macOS (Debug Mode)");
+    WLog(@"MAIN", @"macOS Version: %@",
+         [[NSProcessInfo processInfo] operatingSystemVersionString]);
 
     // Disable automatic termination
     [[NSProcessInfo processInfo] disableAutomaticTermination:@"KeepAlive"];
@@ -1111,8 +1169,10 @@ int main(int argc, char *argv[]) {
     WLog(@"MAIN", @"Rust compositor started successfully (macOS)");
     WLog(@"MAIN", @"   Socket: %@", socketPath);
     WLog(@"MAIN", @"   WAYLAND_DISPLAY=%@", socketName);
+    WLog(@"MAIN", @"   XDG_CURRENT_DESKTOP=Wawona");
 
     setenv("WAYLAND_DISPLAY", [socketName UTF8String], 1);
+    setenv("XDG_CURRENT_DESKTOP", "Wawona", 1);
 
     // Setup signal handlers
     atexit(cleanup_on_exit);

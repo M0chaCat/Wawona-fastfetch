@@ -59,9 +59,11 @@ impl Dispatch<ZxdgDecorationManagerV1, ()> for CompositorState {
                     }
                 };
                 
-                let decoration_data = ToplevelDecorationData::new(window_id);
-                // Initialize decoration resource with its own data
+                // Initialize decoration resource first using the id from the request
                 let decoration = data_init.init(id, window_id);
+                
+                // Create data with the cloned resource
+                let decoration_data = ToplevelDecorationData::new(window_id, Some(decoration.clone()));
                 
                 state.decorations.insert(decoration.id().protocol_id(), decoration_data);
                 
@@ -83,6 +85,50 @@ impl Dispatch<ZxdgDecorationManagerV1, ()> for CompositorState {
                         Mode::ServerSide => DecorationMode::ServerSide,
                         _ => DecorationMode::ClientSide,
                     };
+                }
+                
+                // CRITICAL: We must trigger a full configure sequence (toplevel + surface)
+                // for the mode to take effect and for the client to resize (drop shadows)!
+                
+                let mut surface_res = None;
+                let mut toplevel_res = None;
+                let mut internal_surface_id = 0;
+                
+                // 1. Find toplevel to get surface_id and resource
+                for tl in state.xdg_toplevels.values() {
+                    if tl.window_id == window_id {
+                        internal_surface_id = tl.surface_id;
+                        toplevel_res = tl.resource.clone();
+                        break;
+                    }
+                }
+                
+                // 2. Find xdg_surface resource
+                if internal_surface_id != 0 {
+                    for surf in state.xdg_surfaces.values() {
+                        if surf.surface_id == internal_surface_id {
+                            surface_res = surf.resource.clone();
+                            break;
+                        }
+                    }
+                }
+                
+                // 3. Send configure sequence
+                if let Some(tl) = toplevel_res {
+                    // Send size 0,0 to let client decide optimal size without decorations
+                    // Send empty states for initial config
+                    tl.configure(0, 0, vec![]);
+                    
+                    if let Some(surf) = surface_res {
+                        let serial = state.next_serial();
+                        surf.configure(serial);
+                        crate::wlog!(crate::util::logging::COMPOSITOR, "Sent full configure sequence (serial={}) to kickoff window {}", serial, window_id);
+                    }
+                } else if let Some(surf) = surface_res {
+                    // Fallback if toplevel not found (unlikely for decoration object)
+                    let serial = state.next_serial();
+                    surf.configure(serial);
+                    crate::wlog!(crate::util::logging::COMPOSITOR, "Sent xdg_surface.configure serial={} to apply decoration mode for window {}", serial, window_id);
                 }
                 
                 tracing::debug!(
@@ -142,12 +188,54 @@ impl Dispatch<ZxdgToplevelDecorationV1, u32> for CompositorState {
                 }
                 
                 crate::wlog!(crate::util::logging::COMPOSITOR, 
-                    "Set decoration mode for window {}: {:?} (requested {:?})",
-                    window_id, actual_mode, requested_mode
+                    "Set decoration mode for window {}: {:?} (requested {:?}, policy {:?})",
+                    window_id, actual_mode, requested_mode, state.decoration_policy
                 );
                 
                 // Send configure with actual mode
                 resource.configure(actual_mode);
+
+                // CRITICAL: Kick again if we forced a mode change or just to be safe
+                 // Traverse: window_id -> toplevel -> surface_id -> xdg_surface
+                let mut surface_res = None;
+                let mut toplevel_res = None;
+                let mut internal_surface_id = 0;
+                
+                // 1. Find toplevel to get surface_id and resource
+                for tl in state.xdg_toplevels.values() {
+                    if tl.window_id == window_id {
+                        internal_surface_id = tl.surface_id;
+                        toplevel_res = tl.resource.clone();
+                        break;
+                    }
+                }
+                
+                // 2. Find xdg_surface resource
+                if internal_surface_id != 0 {
+                    for surf in state.xdg_surfaces.values() {
+                        if surf.surface_id == internal_surface_id {
+                            surface_res = surf.resource.clone();
+                            break;
+                        }
+                    }
+                }
+                
+                // 3. Send configure sequence
+                if let Some(tl) = toplevel_res {
+                    // Send size 0,0 to let client decide optimal size without decorations
+                    // Send empty states for initial config
+                    tl.configure(0, 0, vec![]);
+                    
+                    if let Some(surf) = surface_res {
+                        let serial = state.next_serial();
+                        surf.configure(serial);
+                        crate::wlog!(crate::util::logging::COMPOSITOR, "Sent full configure sequence (serial={}) to kickoff window {} in response to SetMode", serial, window_id);
+                    }
+                } else if let Some(surf) = surface_res {
+                    let serial = state.next_serial();
+                    surf.configure(serial);
+                    crate::wlog!(crate::util::logging::COMPOSITOR, "Sent xdg_surface.configure serial={} to apply decoration mode for window {} in response to SetMode", serial, window_id);
+                }
             }
             zxdg_toplevel_decoration_v1::Request::UnsetMode => {
                 tracing::debug!("Client unsets decoration mode");

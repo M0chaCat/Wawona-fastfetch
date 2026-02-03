@@ -172,8 +172,8 @@ rec {
     "src/input/cursor_shape_bridge.m"
 
     # UI components
-    "src/ui/Helpers/WawonaUIHelpers.m"
-    "src/ui/Helpers/WawonaUIHelpers.h"
+    "src/ui/Helpers/WawonaImageLoader.m"
+    "src/ui/Helpers/WawonaImageLoader.h"
     "src/ui/Settings/WawonaPreferences.m"
     "src/ui/Settings/WawonaPreferences.h"
     "src/ui/Settings/WawonaPreferencesManager.m"
@@ -250,6 +250,7 @@ rec {
     "-Wno-cast-qual"
     "-Wno-empty-translation-unit"
     "-Wno-format-pedantic"
+    "-mmacosx-version-min=26.0"
   ];
 
   commonObjCFlags = [
@@ -275,6 +276,7 @@ rec {
     "-Wno-cast-qual"
     "-Wno-format-nonliteral"
     "-Wno-format-pedantic"
+    "-mmacosx-version-min=26.0"
   ];
 
   releaseCFlags = [

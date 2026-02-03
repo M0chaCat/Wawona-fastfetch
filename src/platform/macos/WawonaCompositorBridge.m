@@ -3,6 +3,8 @@
 
 #import "WawonaCompositorBridge.h"
 #import "../../logging/WawonaLog.h"
+#import "WawonaMacOSPopup.h"
+#import "WawonaMacOSWindowPopup.h"
 #import "WawonaPlatformCallbacks.h"
 #import "WawonaWindow.h"
 #import <Cocoa/Cocoa.h>
@@ -28,11 +30,15 @@ extern void wawona_core_inject_window_resize(void *core, uint64_t window_id,
                                              uint32_t width, uint32_t height);
 extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
                                              bool active);
+extern void wawona_core_set_force_ssd(void *core, bool enabled);
+extern CBufferData *wawona_core_pop_pending_buffer(void *core);
+extern void wawona_buffer_data_free(CBufferData *data);
 
 @implementation WawonaCompositorBridge {
   void *_rustCore;
   NSTimer *_eventTimer;
   NSMutableDictionary<NSNumber *, WawonaWindow *> *_windows;
+  NSMutableDictionary<NSNumber *, id<WawonaPopupHost>> *_popups;
 }
 
 + (instancetype)sharedBridge {
@@ -57,6 +63,7 @@ extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
 
     WLog(@"BRIDGE", @"WawonaCore created successfully via C API!");
     _windows = [NSMutableDictionary dictionary];
+    _popups = [NSMutableDictionary dictionary];
   }
   return self;
 }
@@ -181,10 +188,24 @@ extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
 
     NSNumber *windowId = @(buffer->window_id);
     WawonaWindow *window = [_windows objectForKey:windowId];
+    id<WawonaPopupHost> popup = [_popups objectForKey:windowId];
 
-    if (window) {
-      WLog(@"BUFFER", @"Found window for id %llu, creating image...",
+    if (window || popup) {
+      CALayer *targetLayer = nil;
+      if (window) {
+        targetLayer = ((WawonaView *)window.contentView).contentLayer;
+      } else if (popup) {
+        targetLayer = ((WawonaView *)popup.contentView).contentLayer;
+      }
+
+      WLog(@"BUFFER", @"Found window/popup for id %llu, creating image...",
            buffer->window_id);
+
+      // If it's a popup, ensure we resize it to match the buffer content.
+      // This is critical for promoted subsurfaces which start as 1x1.
+      if (popup) {
+        [popup setContentSize:CGSizeMake(buffer->width, buffer->height)];
+      }
 
       if (buffer->iosurface_id != 0) {
         WLog(@"BUFFER", @"Attempting IOSurface lookup for ID %u (window %llu)",
@@ -201,25 +222,18 @@ extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
                @"IOSurface stats: %zux%zu fmt=%08x (DRM fmt=%08x) size=%zu", w,
                h, fmt, buffer->format, allocSize);
 
-          CFDictionaryRef props = IOSurfaceCopyAllValues(surf);
-          if (props) {
-            WLog(@"BRIDGE", @"IOSurface properties: %@", props);
-            CFRelease(props);
-          }
-
-          window.contentView.layer.contents = (__bridge id)surf;
+          targetLayer.contents = (__bridge id)surf;
 
           // DRM formats: XRGB8888=0x34325258, BGRX8888=0x34325842
           // If the buffer is X-variant (no alpha), force the layer to be
           // opaque.
-          window.contentView.layer.opaque =
+          targetLayer.opaque =
               (buffer->format == 0x34325258 || buffer->format == 0x34325842);
 
           CFRelease(surf); // Layer retains it
           WLog(@"BRIDGE",
                @"Set layer contents to IOSurface %u (fmt=%08x opaque=%d)",
-               buffer->iosurface_id, buffer->format,
-               window.contentView.layer.opaque);
+               buffer->iosurface_id, buffer->format, targetLayer.opaque);
         } else {
           WLog(@"BRIDGE",
                @"Error: Failed to lookup IOSurface %u in window %llu",
@@ -249,7 +263,7 @@ extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
           WLog(@"BUFFER",
                @"Image created successfully, setting layer contents");
           // Update layer contents on main thread
-          window.contentView.layer.contents = (__bridge id)image;
+          targetLayer.contents = (__bridge id)image;
 
           CGImageRelease(image);
         } else {
@@ -262,8 +276,10 @@ extern void wawona_core_set_window_activated(void *core, uint64_t window_id,
       }
     } else {
       WLog(@"BUFFER",
-           @"Warning: No window for buffer win_id=%llu (windows count=%lu)",
-           buffer->window_id, (unsigned long)[_windows count]);
+           @"Warning: No window or popup for buffer win_id=%llu (windows "
+           @"count=%lu popups=%lu)",
+           buffer->window_id, (unsigned long)[_windows count],
+           (unsigned long)[_popups count]);
       // Log available window IDs
       for (NSNumber *key in _windows) {
         WLog(@"BUFFER", @"  Available window: %@", key);
@@ -396,6 +412,12 @@ extern void wawona_core_inject_modifiers(void *core, uint32_t depressed,
                              latched:(uint32_t)latched
                               locked:(uint32_t)locked
                                group:(uint32_t)group {
+  if (_rustCore) {
+    WLog(@"BRIDGE",
+         @"Injecting modifiers: depressed=0x%x latched=0x%x locked=0x%x",
+         depressed, latched, locked);
+    wawona_core_inject_modifiers(_rustCore, depressed, latched, locked, group);
+  }
 }
 
 // MARK: - Configuration
@@ -408,6 +430,10 @@ extern void wawona_core_inject_modifiers(void *core, uint32_t depressed,
 }
 
 - (void)setForceSSD:(BOOL)enabled {
+  if (_rustCore) {
+    wawona_core_set_force_ssd(_rustCore, enabled);
+    WLog(@"BRIDGE", @"Force SSD set to: %d", enabled);
+  }
 }
 - (void)setKeyboardRepeatRate:(int32_t)rate delay:(int32_t)delay {
 }
@@ -436,11 +462,13 @@ typedef enum : uint32_t {
   CWindowEventTypeTitleChanged = 2,
   CWindowEventTypeSizeChanged = 3,
   CWindowEventTypePopupCreated = 4,
+  CWindowEventTypePopupRepositioned = 5,
 } CWindowEventType;
 
 typedef struct CWindowEvent {
   uint64_t event_type;
   uint64_t window_id;
+  uint32_t surface_id;
   char *title;
   uint32_t width;
   uint32_t height;
@@ -489,6 +517,9 @@ extern void wawona_window_info_free(CWindowInfo *info);
       break;
     case CWindowEventTypePopupCreated:
       [self handlePopupCreated:event];
+      break;
+    case CWindowEventTypePopupRepositioned:
+      [self handlePopupRepositioned:event];
       break;
     }
 
@@ -540,11 +571,18 @@ extern void wawona_window_info_free(CWindowInfo *info);
 }
 
 - (void)handleWindowDestroyed:(CWindowEvent *)event {
-  NSWindow *window = [self.windows objectForKey:@(event->window_id)];
+  NSWindow *window = [_windows objectForKey:@(event->window_id)];
   if (window) {
     [window close];
-    [self.windows removeObjectForKey:@(event->window_id)];
+    [_windows removeObjectForKey:@(event->window_id)];
     WLog(@"BRIDGE", @"Destroyed window %llu", event->window_id);
+  }
+
+  id<WawonaPopupHost> popup = [_popups objectForKey:@(event->window_id)];
+  if (popup) {
+    [popup dismiss];
+    [_popups removeObjectForKey:@(event->window_id)];
+    WLog(@"BRIDGE", @"Destroyed popup %llu", event->window_id);
   }
 }
 
@@ -566,93 +604,157 @@ extern void wawona_window_info_free(CWindowInfo *info);
 }
 
 - (void)handleWindowSizeChanged:(CWindowEvent *)event {
-  NSWindow *window = [self.windows objectForKey:@(event->window_id)];
+  WawonaWindow *window = [self.windows objectForKey:@(event->window_id)];
   if (window) {
     // Check if size actually changed to avoid loop
     if (window.contentView.bounds.size.width != event->width ||
         window.contentView.bounds.size.height != event->height) {
+
+      window.processingResize = YES;
       NSRect frame =
           [window frameRectForContentRect:NSMakeRect(0, 0, event->width,
                                                      event->height)];
       frame.origin = window.frame.origin; // Keep origin
       [window setFrame:frame display:YES];
+      window.processingResize = NO;
     }
   }
 }
 
 - (void)handlePopupCreated:(CWindowEvent *)event {
+  NSView *parentView = nil;
+  BOOL isSubmenu = NO;
   NSWindow *parentWindow = [self.windows objectForKey:@(event->parent_id)];
-  if (!parentWindow) {
-    WLog(@"BRIDGE", @"Warning: Popup created for unknown parent %llu",
-         event->parent_id);
-    // Fallback: use key window?
-    parentWindow = [NSApp keyWindow];
-  }
+
+  WLog(@"BRIDGE", @"Popup create request: surface %u, window %llu, parent %llu",
+       event->surface_id, event->window_id, event->parent_id);
 
   if (parentWindow) {
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Popup"];
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Popup Content"
-                                                  action:nil
-                                           keyEquivalent:@""];
-    [menu addItem:item];
+    WLog(@"BRIDGE", @"Found parent as Window: %p", parentWindow);
+    parentView = parentWindow.contentView;
+    isSubmenu = NO;
+  } else {
+    // Try to find if the parent is another popup (submenu case)
+    id<WawonaPopupHost> parentPopup =
+        [_popups objectForKey:@(event->parent_id)];
+    if (parentPopup) {
+      WLog(@"BRIDGE", @"Found parent as Popup: %p (submenu)", parentPopup);
+      parentView = parentPopup.contentView;
+      isSubmenu = YES;
+    } else {
+      WLog(@"BRIDGE", @"Parent %llu NOT found in windows or popups",
+           event->parent_id);
+    }
+  }
 
-    // Calculate location in screen coordinates
-    // event->x, y are relative to parent window content view usually
-    NSRect contentRect =
-        [parentWindow contentRectForFrameRect:parentWindow.frame];
-    NSPoint locationInWindow =
-        NSMakePoint(event->x, contentRect.size.height - event->y); // Flip Y?
+  if (!parentView) {
+    WLog(@"BRIDGE",
+         @"Warning: Popup created for unknown parent %llu, falling back to key "
+         @"window",
+         event->parent_id);
+    parentWindow = [NSApp keyWindow];
+    parentView = parentWindow.contentView;
+    isSubmenu = NO;
+  }
 
-    // Wawona/Wayland coords: usually top-left. AppKit: bottom-left.
-    // Converting...
+  if (parentView) {
+    WLog(@"BRIDGE",
+         @"Creating %@ for surface %u (window %llu) anchored to parent %llu at "
+         @"%d,%d (%ux%u)",
+         isSubmenu ? @"Submenu (Window)" : @"Root Popup (Popover)",
+         event->surface_id, event->window_id, event->parent_id, event->x,
+         event->y, event->width, event->height);
 
-    WLog(@"BRIDGE", @"Showing Popup Menu for window %llu at %d,%d",
-         event->parent_id, event->x, event->y);
+    id<WawonaPopupHost> popup = nil;
+    // User requested NSPopover for submenus as well.
+    // We try to nest NSPopovers (which requires careful handling).
+    popup = [[WawonaMacOSPopup alloc] initWithParentView:parentView];
 
-    // Pop up the menu
-    // Note: popUpMenuPositioningItem blocks. Doing this on main thread might
-    // block UI updates? Usually menus are modal in local loop. Using a darker
-    // view or custom view in menu item would be better.
+    [popup setContentSize:CGSizeMake(event->width, event->height)];
+    [popup setWindowId:event->window_id];
 
-    NSEvent *mouseEvent = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
-                                             location:locationInWindow
-                                        modifierFlags:0
-                                            timestamp:0
-                                         windowNumber:parentWindow.windowNumber
-                                              context:nil
-                                          eventNumber:0
-                                           clickCount:1
-                                             pressure:0];
+    [_popups setObject:popup forKey:@(event->window_id)];
 
-    [NSMenu popUpContextMenu:menu
-                   withEvent:mouseEvent
-                     forView:parentWindow.contentView];
+    // Handle dismissal
+    __unsafe_unretained typeof(self) weakSelf = self;
+    popup.onDismiss = ^{
+      [weakSelf handlePopupDismissed:event->window_id];
+    };
+
+    // Calculate anchor rect
+    // Wayland x,y is relative to parent surface top-left
+    NSRect parentBounds = parentView.bounds;
+
+    // Use Wayland Y directly because WawonaView is now isFlipped=YES
+    CGFloat y = event->y;
+
+    // We anchor to the point where the popup should appear.
+    // Note: event->x, event->y in Wawona's handle_compositor_event is the
+    // result of positioner_data.anchor_rect + positioner_data.offset.
+    CGRect rect = CGRectMake(event->x, y, 1, 1);
+
+    [popup showRelativeToRect:rect
+                       ofView:parentView
+                preferredEdge:WawonaPopupEdgeBottom];
   }
 }
 
+- (void)handlePopupDismissed:(uint64_t)windowId {
+  WLog(@"BRIDGE", @"Popup dismissed locally: %llu", windowId);
+  [_popups removeObjectForKey:@(windowId)];
+  // TODO: Notify Rust core of dismissal if needed (xdg_popup.popup_done)
+}
+
+- (void)handlePopupRepositioned:(CWindowEvent *)event {
+  id<WawonaPopupHost> popup = [_popups objectForKey:@(event->window_id)];
+  if (!popup) {
+    WLog(@"BRIDGE", @"Warning: PopupRepositioned for unknown window %llu",
+         event->window_id);
+    return;
+  }
+
+  WLog(@"BRIDGE", @"Repositioning popup %llu to %d,%d (%ux%u)",
+       event->window_id, event->x, event->y, event->width, event->height);
+
+  [popup setContentSize:CGSizeMake(event->width, event->height)];
+
+  NSView *parentView = popup.parentView;
+  if (!parentView) {
+    WLog(@"BRIDGE", @"Error: Popup %llu has no parent view", event->window_id);
+    return;
+  }
+
+  NSRect parentBounds = parentView.bounds;
+  // Use Wayland Y directly
+  CGFloat y = event->y;
+
+  // We anchor to the point where the popup should appear.
+  // event->x, event->y is the top-left of the popup surface.
+  // We provide a 1x1 rect at that location.
+  CGRect rect = CGRectMake(event->x, y, 1, 1);
+
+  [popup showRelativeToRect:rect
+                     ofView:parentView
+              preferredEdge:WawonaPopupEdgeBottom];
+}
+
 - (NSUInteger)pendingWindowCount {
-  if (!_rustCore)
+  if (!_rustCore) {
     return 0;
+  }
   return wawona_core_pending_window_count(_rustCore);
 }
 
 - (NSDictionary *)popPendingWindow {
-  // Legacy support: We might want to just return nil or implement using new API
-  // if needed. But since we are handling events internally now, we should
-  // probably return nil to stop external pollers from interfering, OR map the
-  // first Created event. For now, let's return nil and rely on our internal
-  // poller.
   return nil;
 }
 
 // MARK: - Buffer updates
 
-extern CBufferData *wawona_core_pop_pending_buffer(void *core);
-extern void wawona_buffer_data_free(CBufferData *data);
-
 - (nullable CBufferData *)popPendingBuffer {
-  if (!_rustCore)
+  if (!_rustCore) {
     return NULL;
+  }
   return wawona_core_pop_pending_buffer(_rustCore);
 }
 

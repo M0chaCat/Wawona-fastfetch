@@ -143,8 +143,22 @@ impl Dispatch<WlSubsurface, u32> for CompositorState {
             wl_subsurface::Request::SetPosition { x, y } => {
                 // Set pending position (applied on parent commit)
                 state.set_subsurface_position(surface_id, x, y);
-                crate::wlog!(crate::util::logging::COMPOSITOR, 
-                    "Subsurface set_position: surface_id={}, pos=({}, {})", surface_id, x, y);
+                
+                // If this subsurface has been promoted to a window (popup), assume it effectively updates immediately
+                // or at least we should notify the bridge to move the window.
+                if let Some(window_id) = state.surface_to_window.get(&surface_id).copied() {
+                    crate::wlog!(crate::util::logging::COMPOSITOR, "Repositioning promoted subsurface {} (window {}) to {},{}", surface_id, window_id, x, y);
+                    state.pending_compositor_events.push(crate::core::compositor::CompositorEvent::PopupRepositioned {
+                        window_id,
+                        x,
+                        y,
+                        width: 0, // Bridge ignores these for simple move
+                        height: 0,
+                    });
+                } else {
+                     crate::wlog!(crate::util::logging::COMPOSITOR, 
+                        "Subsurface set_position: surface_id={}, pos=({}, {})", surface_id, x, y);
+                }
             }
             wl_subsurface::Request::PlaceAbove { sibling } => {
                 // Reorder this subsurface to be above sibling
@@ -177,6 +191,51 @@ impl Dispatch<WlSubsurface, u32> for CompositorState {
                 // Enable desynchronized mode (subsurface state applied immediately)
                 state.set_subsurface_sync(surface_id, false);
                 crate::wlog!(crate::util::logging::COMPOSITOR, "Subsurface set_desync: {}", surface_id);
+
+                // EXPERIMENTAL: Promote desync subsurfaces to native popups to support GTK/Nautilus menus
+                // Check if already mapped
+                if state.surface_to_window.get(&surface_id).is_none() {
+                     if let Some(sub_info) = state.subsurfaces.get(&surface_id).cloned() {
+                        // Find parent window
+                        let parent_id = sub_info.parent_id;
+                        let mut parent_window_id = 0;
+                        
+                        // Try direct parent
+                        if let Some(wid) = state.surface_to_window.get(&parent_id) {
+                            parent_window_id = *wid;
+                        } else {
+                            // Try one level up (should use loop really, but keep simple)
+                            if let Some(parent_sub) = state.subsurfaces.get(&parent_id) {
+                                if let Some(wid) = state.surface_to_window.get(&parent_sub.parent_id) {
+                                    parent_window_id = *wid;
+                                }
+                            }
+                        }
+
+                        if parent_window_id > 0 {
+                            let window_id = state.next_window_id();
+                            state.surface_to_window.insert(surface_id, window_id);
+                            
+                            // Use current position (pending or committed? Desync means effectively pending is current?)
+                            let (x, y) = sub_info.position; // committed position
+                             crate::wlog!(crate::util::logging::COMPOSITOR, 
+                                "Promoting subsurface {} to visible popup Window {} at {},{} relative to Window {}", 
+                                surface_id, window_id, x, y, parent_window_id);
+
+                            state.pending_compositor_events.push(
+                                crate::core::compositor::CompositorEvent::PopupCreated {
+                                    window_id,
+                                    surface_id,
+                                    parent_id: parent_window_id,
+                                    x,
+                                    y,
+                                    width: 1, // Unknown size until commit
+                                    height: 1,
+                                }
+                            );
+                        }
+                     }
+                }
             }
             _ => {}
         }

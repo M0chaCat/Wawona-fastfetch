@@ -686,70 +686,68 @@ static void send_frame_callbacks_timer_idle(void *data) {
     CGRect windowBoundsLocal = _window.bounds;
     CGRect safeAreaFrame = windowBoundsLocal;
 
-    if (@available(iOS 11.0, *)) {
-      UILayoutGuide *safeArea = _window.safeAreaLayoutGuide;
-      safeAreaFrame = safeArea.layoutFrame;
-      if (CGRectIsEmpty(safeAreaFrame)) {
-        UIEdgeInsets insets = compositorView.safeAreaInsets;
-        if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 ||
-            insets.right != 0) {
-          safeAreaFrame = UIEdgeInsetsInsetRect(windowBoundsLocal, insets);
-        }
-      }
-    } else {
+    UILayoutGuide *safeArea = _window.safeAreaLayoutGuide;
+    safeAreaFrame = safeArea.layoutFrame;
+    if (CGRectIsEmpty(safeAreaFrame)) {
       UIEdgeInsets insets = compositorView.safeAreaInsets;
       if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 ||
           insets.right != 0) {
         safeAreaFrame = UIEdgeInsetsInsetRect(windowBoundsLocal, insets);
       }
     }
-
-    compositorView.frame = safeAreaFrame;
-    compositorView.autoresizingMask = UIViewAutoresizingNone;
-  } else {
-    compositorView.frame = _window.bounds;
-    compositorView.autoresizingMask =
-        (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+    if (insets.top != 0 || insets.left != 0 || insets.bottom != 0 ||
+        insets.right != 0) {
+      safeAreaFrame = UIEdgeInsetsInsetRect(windowBoundsLocal, insets);
+    }
   }
+
+  compositorView.frame = safeAreaFrame;
+  compositorView.autoresizingMask = UIViewAutoresizingNone;
+}
+else {
+  compositorView.frame = _window.bounds;
+  compositorView.autoresizingMask =
+      (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+}
 #endif
 
-  // Get current window size for Metal view
-  // Note: CompositorView bounds will be safe area if respecting, or full
-  // window if not
-  windowBounds = compositorView.bounds;
+// Get current window size for Metal view
+// Note: CompositorView bounds will be safe area if respecting, or full
+// window if not
+windowBounds = compositorView.bounds;
 
-  // Metal view should fill CompositorView (which is already sized to safe
-  // area if respecting)
+// Metal view should fill CompositorView (which is already sized to safe
+// area if respecting)
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  CGRect initialFrame = compositorView.bounds;
-  WLog(@"BACKEND",
-       @"Metal view initial frame (CompositorView bounds): (%.0f, %.0f) "
-       @"%.0fx%.0f (safe area: %@)",
-       initialFrame.origin.x, initialFrame.origin.y, initialFrame.size.width,
-       initialFrame.size.height, respectSafeArea ? @"YES" : @"NO");
+CGRect initialFrame = compositorView.bounds;
+WLog(@"BACKEND",
+     @"Metal view initial frame (CompositorView bounds): (%.0f, %.0f) "
+     @"%.0fx%.0f (safe area: %@)",
+     initialFrame.origin.x, initialFrame.origin.y, initialFrame.size.width,
+     initialFrame.size.height, respectSafeArea ? @"YES" : @"NO");
 #else
   CGRect initialFrame = windowBounds;
 #endif
 
-  // Create Metal view with safe area-aware frame
-  // Use a custom class that allows window dragging for proper window controls
-  Class CompositorMTKViewClass = NSClassFromString(@"CompositorMTKView");
-  MTKView *metalView = nil;
-  if (CompositorMTKViewClass) {
-    metalView = [[CompositorMTKViewClass alloc] initWithFrame:initialFrame];
-  } else {
-    // Fallback to regular MTKView if custom class not available
-    metalView = [[MTKView alloc] initWithFrame:initialFrame];
-  }
+// Create Metal view with safe area-aware frame
+// Use a custom class that allows window dragging for proper window controls
+Class CompositorMTKViewClass = NSClassFromString(@"CompositorMTKView");
+MTKView *metalView = nil;
+if (CompositorMTKViewClass) {
+  metalView = [[CompositorMTKViewClass alloc] initWithFrame:initialFrame];
+} else {
+  // Fallback to regular MTKView if custom class not available
+  metalView = [[MTKView alloc] initWithFrame:initialFrame];
+}
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  // CRITICAL: Disable autoresizing when safe area is enabled, otherwise it
-  // will override our frame
-  if (respectSafeArea) {
-    metalView.autoresizingMask = UIViewAutoresizingNone;
-  } else {
-    metalView.autoresizingMask =
-        (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
-  }
+// CRITICAL: Disable autoresizing when safe area is enabled, otherwise it
+// will override our frame
+if (respectSafeArea) {
+  metalView.autoresizingMask = UIViewAutoresizingNone;
+} else {
+  metalView.autoresizingMask =
+      (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+}
 #else
   metalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   // Ensure Metal view is opaque and properly configured
@@ -758,51 +756,51 @@ static void send_frame_callbacks_timer_idle(void *data) {
   metalView.layerContentsRedrawPolicy =
       NSViewLayerContentsRedrawDuringViewResize;
 #endif
-  metalView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-  metalView.clearColor = MTLClearColorMake(0.1, 0.1, 0.2, 1.0);
+metalView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+metalView.clearColor = MTLClearColorMake(0.1, 0.1, 0.2, 1.0);
 
-  // CRITICAL: Don't block mouse events - allow window controls to work
-  // The Metal view should not intercept mouse events meant for window
-  // controls Note: mouseDownCanMoveWindow is a method, not a property -
-  // handled in CompositorView Don't set ignoresMouseEvents - we need to
-  // receive events for Wayland clients But ensure the view doesn't block
-  // window controls
+// CRITICAL: Don't block mouse events - allow window controls to work
+// The Metal view should not intercept mouse events meant for window
+// controls Note: mouseDownCanMoveWindow is a method, not a property -
+// handled in CompositorView Don't set ignoresMouseEvents - we need to
+// receive events for Wayland clients But ensure the view doesn't block
+// window controls
 
-  // Frame is already set above based on safe area setting
-  // metalView.frame = initialFrame; // Already set in initWithFrame
+// Frame is already set above based on safe area setting
+// metalView.frame = initialFrame; // Already set in initWithFrame
 
-  WLog(@"BACKEND",
-       @"Creating Metal view with frame: %.0fx%.0f at (%.0f, %.0f) (safe area: "
-       @"%@)",
-       initialFrame.size.width, initialFrame.size.height, initialFrame.origin.x,
-       initialFrame.origin.y, respectSafeArea ? @"YES" : @"NO");
+WLog(@"BACKEND",
+     @"Creating Metal view with frame: %.0fx%.0f at (%.0f, %.0f) (safe area: "
+     @"%@)",
+     initialFrame.size.width, initialFrame.size.height, initialFrame.origin.x,
+     initialFrame.origin.y, respectSafeArea ? @"YES" : @"NO");
 
-  // Create Metal renderer
-  id<RenderingBackend> metalRenderer =
-      [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL
-                                    withView:metalView];
-  if (!metalRenderer) {
-    WLog(@"BACKEND", @"Error: Failed to create Metal renderer");
-    return;
-  }
+// Create Metal renderer
+id<RenderingBackend> metalRenderer =
+    [RenderingBackendFactory createBackend:RENDERING_BACKEND_METAL
+                                  withView:metalView];
+if (!metalRenderer) {
+  WLog(@"BACKEND", @"Error: Failed to create Metal renderer");
+  return;
+}
 
-  // Add Metal view as subview (on top of Cocoa view for rendering)
-  // The Metal view renders content but allows events to pass through to
-  // CompositorView
+// Add Metal view as subview (on top of Cocoa view for rendering)
+// The Metal view renders content but allows events to pass through to
+// CompositorView
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-  [compositorView addSubview:metalView];
-  compositorView.metalView = metalView;
+[compositorView addSubview:metalView];
+compositorView.metalView = metalView;
 
-  // CRITICAL: Update output size after Metal view is added to ensure safe
-  // area is respected This will recalculate and reposition the metalView if
-  // needed
-  [self updateOutputSize:compositorView.bounds.size];
+// CRITICAL: Update output size after Metal view is added to ensure safe
+// area is respected This will recalculate and reposition the metalView if
+// needed
+[self updateOutputSize:compositorView.bounds.size];
 
-  // iOS: Touch events are handled via UIKit gesture recognizers
-  // Re-setup input handling if needed
-  if (_inputHandler) {
-    [_inputHandler setupInputHandling];
-  }
+// iOS: Touch events are handled via UIKit gesture recognizers
+// Re-setup input handling if needed
+if (_inputHandler) {
+  [_inputHandler setupInputHandling];
+}
 #else
   [compositorView addSubview:metalView positioned:NSWindowAbove relativeTo:nil];
   compositorView.metalView = metalView;
@@ -831,19 +829,19 @@ static void send_frame_callbacks_timer_idle(void *data) {
   }
 #endif
 
-  // Switch rendering backend
-  _renderingBackend = metalRenderer;
-  _backendType = 1; // RENDERING_BACKEND_METAL
+// Switch rendering backend
+_renderingBackend = metalRenderer;
+_backendType = 1; // RENDERING_BACKEND_METAL
 
-  // Update render callback to use Metal backend
-  // The render_surface_callback will now use the Metal backend
+// Update render callback to use Metal backend
+// The render_surface_callback will now use the Metal backend
 
-  WLog(@"BACKEND", @"Switched to Metal rendering backend");
-  WLog(@"BACKEND", @"Metal view frame: %.0fx%.0f", metalView.frame.size.width,
-       metalView.frame.size.height);
-  WLog(@"BACKEND", @"Window bounds: %.0fx%.0f", windowBounds.size.width,
-       windowBounds.size.height);
-  WLog(@"BACKEND", @"Metal renderer: %@", metalRenderer);
+WLog(@"BACKEND", @"Switched to Metal rendering backend");
+WLog(@"BACKEND", @"Metal view frame: %.0fx%.0f", metalView.frame.size.width,
+     metalView.frame.size.height);
+WLog(@"BACKEND", @"Window bounds: %.0fx%.0f", windowBounds.size.width,
+     windowBounds.size.height);
+WLog(@"BACKEND", @"Metal renderer: %@", metalRenderer);
 }
 
 - (void)updateWindowTitleForClient:(struct wl_client *)client {

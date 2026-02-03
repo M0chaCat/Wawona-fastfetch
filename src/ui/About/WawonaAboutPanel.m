@@ -1,4 +1,6 @@
 #import "WawonaAboutPanel.h"
+#import "../../logging/WawonaLog.h"
+#import "../Helpers/WawonaImageLoader.h"
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 // iOS: Full implementation
@@ -26,12 +28,10 @@
   self.view = [[UIView alloc] init];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-  // Create scroll view for content
   UIScrollView *scrollView = [[UIScrollView alloc] init];
   scrollView.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:scrollView];
 
-  // Create content view
   UIStackView *contentStack = [[UIStackView alloc] init];
   contentStack.translatesAutoresizingMaskIntoConstraints = NO;
   contentStack.axis = UILayoutConstraintAxisVertical;
@@ -39,32 +39,99 @@
   contentStack.alignment = UIStackViewAlignmentCenter;
   [scrollView addSubview:contentStack];
 
-  // App name
+  // App name & version
   UILabel *titleLabel = [[UILabel alloc] init];
   titleLabel.text = @"Wawona";
   titleLabel.font = [UIFont systemFontOfSize:32 weight:UIFontWeightBold];
-  titleLabel.textAlignment = NSTextAlignmentCenter;
   [contentStack addArrangedSubview:titleLabel];
 
-  // Version
+  NSString *version = [NSString stringWithUTF8String:WAWONA_VERSION];
+  if (![version hasPrefix:@"v"])
+    version = [NSString stringWithFormat:@"v%@", version];
   UILabel *versionLabel = [[UILabel alloc] init];
-  versionLabel.text = @"Version 1.0.0";
+  versionLabel.text = [NSString stringWithFormat:@"Version %@", version];
   versionLabel.font = [UIFont systemFontOfSize:16];
   versionLabel.textColor = [UIColor secondaryLabelColor];
-  versionLabel.textAlignment = NSTextAlignmentCenter;
   [contentStack addArrangedSubview:versionLabel];
 
-  // Description
-  UILabel *descLabel = [[UILabel alloc] init];
-  descLabel.text = @"Wayland Compositor for iOS\nBuilt with Metal "
-                   @"rendering\nSupports Waypipe forwarding";
-  descLabel.font = [UIFont systemFontOfSize:14];
-  descLabel.textColor = [UIColor secondaryLabelColor];
-  descLabel.textAlignment = NSTextAlignmentCenter;
-  descLabel.numberOfLines = 0;
-  [contentStack addArrangedSubview:descLabel];
+  // Author Section
+  UIImageView *avatarView =
+      [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 80, 80)];
+  avatarView.translatesAutoresizingMaskIntoConstraints = NO;
+  avatarView.layer.cornerRadius = 40;
+  avatarView.layer.masksToBounds = YES;
+  avatarView.contentMode = UIViewContentModeScaleAspectFill;
+  avatarView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+  [contentStack addArrangedSubview:avatarView];
+  [NSLayoutConstraint activateConstraints:@[
+    [avatarView.widthAnchor constraintEqualToConstant:80],
+    [avatarView.heightAnchor constraintEqualToConstant:80]
+  ]];
+  [self loadImageURL:@"https://github.com/aspauldingcode.png?size=160"
+            intoView:avatarView];
 
-  // Layout constraints
+  UILabel *nameLabel = [[UILabel alloc] init];
+  nameLabel.text = @"Alex Spaulding";
+  nameLabel.font = [UIFont systemFontOfSize:18 weight:NSFontWeightSemibold];
+  [contentStack addArrangedSubview:nameLabel];
+
+  // Donation Buttons
+  UIStackView *donateStack = [[UIStackView alloc] init];
+  donateStack.axis = UILayoutConstraintAxisHorizontal;
+  donateStack.spacing = 10;
+  donateStack.distribution = UIStackViewDistributionFillEqually;
+  [contentStack addArrangedSubview:donateStack];
+
+  UIButton *kofiBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+  if (@available(iOS 15.0, *)) {
+    UIButtonConfiguration *config =
+        [UIButtonConfiguration plainButtonConfiguration];
+    config.title = @"Ko-fi";
+    config.imagePlacement = NSDirectionalRectEdgeLeading;
+    config.imagePadding = 8;
+    kofiBtn.configuration = config;
+  } else {
+    [kofiBtn setTitle:@" Ko-fi" forState:UIControlStateNormal];
+  }
+  [kofiBtn addTarget:self
+                action:@selector(openDonateLink:)
+      forControlEvents:UIControlEventTouchUpInside];
+  [donateStack addArrangedSubview:kofiBtn];
+
+  UIButton *sponsorBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+  if (@available(iOS 15.0, *)) {
+    UIButtonConfiguration *config =
+        [UIButtonConfiguration plainButtonConfiguration];
+    config.title = @"GitHub Sponsors";
+    config.imagePlacement = NSDirectionalRectEdgeLeading;
+    config.imagePadding = 8;
+    sponsorBtn.configuration = config;
+  } else {
+    [sponsorBtn setTitle:@" GitHub Sponsors" forState:UIControlStateNormal];
+  }
+  [sponsorBtn addTarget:self
+                 action:@selector(openSponsorLink:)
+       forControlEvents:UIControlEventTouchUpInside];
+  [donateStack addArrangedSubview:sponsorBtn];
+
+  // Social Links
+  UIStackView *socialStack = [[UIStackView alloc] init];
+  socialStack.axis = UILayoutConstraintAxisVertical;
+  socialStack.spacing = 5;
+  socialStack.alignment = UIStackViewAlignmentCenter;
+  [contentStack addArrangedSubview:socialStack];
+
+  [self addSocialButton:@"GitHub"
+                   icon:@"https://github.githubassets.com/images/modules/"
+                        @"logos_page/GitHub-Mark.png"
+                 action:@selector(openGitHubLink:)
+                toStack:socialStack];
+  [self addSocialButton:@"LinkedIn"
+                   icon:@"https://upload.wikimedia.org/wikipedia/commons/c/ca/"
+                        @"LinkedIn_logo_initials.png"
+                 action:@selector(openLinkedInLink:)
+                toStack:socialStack];
+
   [NSLayoutConstraint activateConstraints:@[
     [scrollView.topAnchor
         constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
@@ -72,43 +139,115 @@
     [scrollView.trailingAnchor
         constraintEqualToAnchor:self.view.trailingAnchor],
     [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-
     [contentStack.topAnchor constraintEqualToAnchor:scrollView.topAnchor
                                            constant:40],
-    [contentStack.leadingAnchor constraintEqualToAnchor:scrollView.leadingAnchor
-                                               constant:20],
-    [contentStack.trailingAnchor
-        constraintEqualToAnchor:scrollView.trailingAnchor
-                       constant:-20],
-    [contentStack.bottomAnchor constraintEqualToAnchor:scrollView.bottomAnchor
-                                              constant:-40],
+    [contentStack.centerXAnchor
+        constraintEqualToAnchor:scrollView.centerXAnchor],
     [contentStack.widthAnchor constraintEqualToAnchor:scrollView.widthAnchor
                                              constant:-40],
+    [contentStack.bottomAnchor constraintEqualToAnchor:scrollView.bottomAnchor
+                                              constant:-40]
   ]];
+}
+
+- (void)addSocialButton:(NSString *)title
+                   icon:(NSString *)url
+                 action:(SEL)action
+                toStack:(UIStackView *)stack {
+  UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+  [btn setTitle:[NSString stringWithFormat:@" %@", title]
+       forState:UIControlStateNormal];
+  [btn addTarget:self
+                action:action
+      forControlEvents:UIControlEventTouchUpInside];
+  [stack addArrangedSubview:btn];
+  [self loadImageURL:url intoView:btn];
+}
+
+- (void)loadImageURL:(NSString *)url intoView:(id)view {
+  [[WawonaImageLoader sharedLoader]
+      loadImageFromURL:url
+            completion:^(WImage _Nullable image) {
+              if (!image)
+                return;
+              if ([view isKindOfClass:[UIButton class]]) {
+                UIButton *btn = (UIButton *)view;
+                UIGraphicsBeginImageContextWithOptions(CGSizeMake(20, 20), NO,
+                                                       0.0);
+                [image drawInRect:CGRectMake(0, 0, 20, 20)];
+                UIImage *resized = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                UIImage *finalImage = [resized
+                    imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+                if (@available(iOS 15.0, *)) {
+                  if (btn.configuration) {
+                    UIButtonConfiguration *config = btn.configuration;
+                    config.image = finalImage;
+                    btn.configuration = config;
+                  } else {
+                    [btn setImage:finalImage forState:UIControlStateNormal];
+                  }
+                } else {
+                  [btn setImage:finalImage forState:UIControlStateNormal];
+                }
+              } else if ([view isKindOfClass:[UIImageView class]]) {
+                ((UIImageView *)view).image = image;
+              }
+            }];
+}
+
+- (void)openDonateLink:(id)sender {
+  [[UIApplication sharedApplication]
+                openURL:[NSURL
+                            URLWithString:@"https://ko-fi.com/aspauldingcode"]
+                options:@{}
+      completionHandler:nil];
+}
+- (void)openSponsorLink:(id)sender {
+  [[UIApplication sharedApplication]
+                openURL:[NSURL
+                            URLWithString:
+                                @"https://github.com/sponsors/aspauldingcode"]
+                options:@{}
+      completionHandler:nil];
+}
+- (void)openGitHubLink:(id)sender {
+  [[UIApplication sharedApplication]
+                openURL:[NSURL
+                            URLWithString:@"https://github.com/aspauldingcode"]
+                options:@{}
+      completionHandler:nil];
+}
+- (void)openLinkedInLink:(id)sender {
+  [[UIApplication sharedApplication]
+                openURL:[NSURL
+                            URLWithString:
+                                @"https://www.linkedin.com/in/aspauldingcode/"]
+                options:@{}
+      completionHandler:nil];
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-
-  // Add close button
   self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                            target:self
                            action:@selector(dismissAbout:)];
 }
-
 - (void)dismissAbout:(id)sender {
   [self dismissViewControllerAnimated:YES completion:nil];
 }
-
 - (void)showAboutPanel:(id)sender {
-  // Already a UIViewController, can be presented directly
   (void)sender;
 }
-
 @end
 
 #else // macOS implementation
+
+#ifndef WAWONA_VERSION
+#define WAWONA_VERSION "0.0.0-unknown"
+#endif
+
 @implementation WawonaAboutPanel
 
 + (instancetype)sharedAboutPanel {
@@ -122,9 +261,9 @@
 
 - (instancetype)init {
   NSWindow *window = [[NSWindow alloc]
-      initWithContentRect:NSMakeRect(0, 0, 500, 550)
-                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                           NSWindowStyleMaskFullSizeContentView)
+      initWithContentRect:NSMakeRect(0, 0, 400, 480)
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                          NSWindowStyleMaskFullSizeContentView
                   backing:NSBackingStoreBuffered
                     defer:NO];
   [window setTitle:@"About Wawona"];
@@ -132,49 +271,19 @@
   [window setLevel:NSFloatingWindowLevel];
   [window setCollectionBehavior:NSWindowCollectionBehaviorMoveToActiveSpace];
 
-  // =========================================================================
-  // TAHOE LIQUID GLASS STYLING (SDK 26)
-  // =========================================================================
-  window.titlebarAppearsTransparent = YES;
-  window.titleVisibility = NSWindowTitleHidden;
-  window.backgroundColor = [NSColor clearColor];
-  window.appearance =
-      [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
-
-  // Remove minimize and fullscreen buttons
-  [[window standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
-  [[window standardWindowButton:NSWindowZoomButton] setHidden:YES];
-
+  // Let AppKit handle window appearance with native Liquid Glass
   self = [super initWithWindow:window];
   if (self) {
-    [self setupGlassBackground];
+    [[self.window standardWindowButton:NSWindowMiniaturizeButton]
+        setHidden:YES];
+    [[self.window standardWindowButton:NSWindowZoomButton] setHidden:YES];
     [self setupAboutView];
   }
   return self;
 }
 
 // Setup Tahoe glass background effect
-- (void)setupGlassBackground {
-  NSVisualEffectView *glassView =
-      [[NSVisualEffectView alloc] initWithFrame:self.window.contentView.bounds];
-  glassView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  
-  if (@available(macOS 15.0, *)) {
-    // macOS Tahoe: Use ContentBackground material for Liquid Glass effect
-    glassView.material = NSVisualEffectMaterialContentBackground;
-  } else {
-    // Fallback for older macOS: use HUD window material
-    glassView.material = NSVisualEffectMaterialHUDWindow;
-  }
-  
-  glassView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-  glassView.state = NSVisualEffectStateActive;
-  glassView.wantsLayer = YES;
-
-  [self.window.contentView addSubview:glassView
-                           positioned:NSWindowBelow
-                           relativeTo:nil];
-}
+// Removed: managed by configureWindowAppearance now
 
 - (void)setupAboutView {
   NSView *contentView = self.window.contentView;
@@ -188,20 +297,20 @@
   [contentView addSubview:stack];
 
   [NSLayoutConstraint activateConstraints:@[
-    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:20],
+    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:50],
     [stack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor
                                         constant:40],
     [stack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor
                                          constant:-40],
     [stack.bottomAnchor
         constraintLessThanOrEqualToAnchor:contentView.bottomAnchor
-                                 constant:-20]
+                                 constant:-30]
   ]];
 
   // App Name
   NSTextField *title = [[NSTextField alloc] init];
   title.stringValue = @"Wawona";
-  title.font = [NSFont systemFontOfSize:36 weight:NSFontWeightBold];
+  title.font = [NSFont systemFontOfSize:42 weight:NSFontWeightBold];
   title.alignment = NSTextAlignmentCenter;
   title.bezeled = NO;
   title.drawsBackground = NO;
@@ -209,10 +318,11 @@
   title.selectable = NO;
   [stack addArrangedSubview:title];
 
-  // Subtitle
+  // Subtitle (Platform)
   NSTextField *subtitle = [[NSTextField alloc] init];
-  subtitle.stringValue = @"A native macOS Wayland Compositor";
-  subtitle.font = [NSFont systemFontOfSize:16];
+  subtitle.stringValue = @"Native macOS Wayland Compositor";
+  subtitle.font = [NSFont systemFontOfSize:16 weight:NSFontWeightMedium];
+  subtitle.textColor = [NSColor secondaryLabelColor];
   subtitle.alignment = NSTextAlignmentCenter;
   subtitle.bezeled = NO;
   subtitle.drawsBackground = NO;
@@ -220,174 +330,230 @@
   subtitle.selectable = NO;
   [stack addArrangedSubview:subtitle];
 
-  // Version (try to read from Info.plist, fallback to defaults)
-  NSString *version = @"1.0.0";
-  NSString *build = @"0";
-  NSString *copyright = @"Copyright © 2025 Alex Spaulding";
+  // Version Section (Vertically Centered Stack)
+  NSStackView *versionStack = [[NSStackView alloc] init];
+  versionStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  versionStack.spacing = 8;
+  versionStack.alignment = NSLayoutAttributeCenterY;
+  [stack addArrangedSubview:versionStack];
 
-  // Try to read from bundle Info.plist
-  NSDictionary *infoDict = [[NSBundle mainBundle] infoDictionary];
-  if (infoDict) {
-    if (infoDict[@"CFBundleShortVersionString"]) {
-      version = infoDict[@"CFBundleShortVersionString"];
-    }
-    if (infoDict[@"CFBundleVersion"]) {
-      build = infoDict[@"CFBundleVersion"];
-    }
-    if (infoDict[@"NSHumanReadableCopyright"]) {
-      copyright = infoDict[@"NSHumanReadableCopyright"];
-    }
+  NSString *version = [NSString stringWithUTF8String:WAWONA_VERSION];
+  if (![version hasPrefix:@"v"]) {
+    version = [NSString stringWithFormat:@"v%@", version];
   }
 
-  // Version string (format: Version MAJOR.MINOR.PATCH (BUILD))
-  NSString *versionString =
-      [NSString stringWithFormat:@"Version %@ (%@)", version, build];
-  NSTextField *versionField = [[NSTextField alloc] init];
-  versionField.stringValue = versionString;
-  versionField.font = [NSFont systemFontOfSize:12];
-  versionField.textColor = [NSColor secondaryLabelColor];
-  versionField.alignment = NSTextAlignmentCenter;
-  versionField.bezeled = NO;
-  versionField.drawsBackground = NO;
-  versionField.editable = NO;
-  versionField.selectable = NO;
-  [stack addArrangedSubview:versionField];
+  NSTextField *versionLabel = [[NSTextField alloc] init];
+  versionLabel.stringValue = [NSString stringWithFormat:@"Version %@", version];
+  versionLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+  versionLabel.textColor = [NSColor tertiaryLabelColor];
+  versionLabel.alignment = NSTextAlignmentCenter;
+  versionLabel.bezeled = NO;
+  versionLabel.drawsBackground = NO;
+  versionLabel.editable = NO;
+  versionLabel.selectable = NO;
+  [versionStack addArrangedSubview:versionLabel];
 
-  NSTextField *copyrightField = [[NSTextField alloc] init];
-  copyrightField.stringValue = copyright;
-  copyrightField.font = [NSFont systemFontOfSize:10];
-  copyrightField.textColor = [NSColor secondaryLabelColor];
-  copyrightField.alignment = NSTextAlignmentCenter;
-  copyrightField.bezeled = NO;
-  copyrightField.drawsBackground = NO;
-  copyrightField.editable = NO;
-  copyrightField.selectable = NO;
-  [stack addArrangedSubview:copyrightField];
+  [stack setCustomSpacing:30 afterView:versionStack];
 
-  // View Source Code button (in About Wawona section)
-  NSButton *githubButton = [[NSButton alloc] init];
-  [githubButton setTitle:@"View Source Code"];
-  [githubButton setButtonType:NSButtonTypeMomentaryPushIn];
-  [githubButton setBezelStyle:NSBezelStyleRounded];
-  [githubButton setTarget:self];
-  [githubButton setAction:@selector(openGitHubLink:)];
-  [stack addArrangedSubview:githubButton];
-
+  // Separator
   [stack addArrangedSubview:[self createSeparator]];
 
-  // Credits Section
-  NSTextField *creditsTitle = [[NSTextField alloc] init];
-  creditsTitle.stringValue = @"Credits";
-  creditsTitle.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
-  creditsTitle.alignment = NSTextAlignmentCenter;
-  creditsTitle.bezeled = NO;
-  creditsTitle.drawsBackground = NO;
-  creditsTitle.editable = NO;
-  creditsTitle.selectable = NO;
-  [stack addArrangedSubview:creditsTitle];
+  // Credits Header
+  NSTextField *creditsHeader = [[NSTextField alloc] init];
+  creditsHeader.stringValue = @"Author";
+  creditsHeader.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+  creditsHeader.textColor = [NSColor secondaryLabelColor];
+  creditsHeader.alignment = NSTextAlignmentCenter;
+  creditsHeader.bezeled = NO;
+  creditsHeader.drawsBackground = NO;
+  creditsHeader.editable = NO;
+  creditsHeader.selectable = NO;
+  [stack addArrangedSubview:creditsHeader];
 
-  // Horizontal container for photo and text
-  NSView *photoTextContainer = [[NSView alloc] init];
-  photoTextContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  [stack addArrangedSubview:photoTextContainer];
+  // Author Info Container (Vertically centered)
+  NSStackView *authorStack = [[NSStackView alloc] init];
+  authorStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  authorStack.spacing = 20;
+  authorStack.alignment = NSLayoutAttributeCenterY;
+  [stack addArrangedSubview:authorStack];
 
-  // GitHub Profile Photo (left side)
+  // Avatar
   NSImageView *avatarView = [[NSImageView alloc] init];
   avatarView.imageScaling = NSImageScaleProportionallyUpOrDown;
   avatarView.translatesAutoresizingMaskIntoConstraints = NO;
-  avatarView.image = [NSImage imageNamed:NSImageNameUser]; // Placeholder
-  [photoTextContainer addSubview:avatarView];
+  avatarView.image = [NSImage imageNamed:NSImageNameUser];
 
-  // Load GitHub avatar asynchronously
+  // Setup layer for a perfect circle
+  avatarView.wantsLayer = YES;
+  avatarView.layer.masksToBounds = YES;
+  avatarView.layer.cornerRadius = 32.0;
+  avatarView.layer.contentsGravity = kCAGravityResizeAspect;
+  avatarView.layer.borderWidth = 0.0; // Ensure no default border interference
+
+  [authorStack addArrangedSubview:avatarView];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [avatarView.widthAnchor constraintEqualToConstant:64],
+    [avatarView.heightAnchor constraintEqualToConstant:64]
+  ]];
   [self loadGitHubAvatar:avatarView];
 
-  // Vertical stack for name, bio, and portfolio link (right side)
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.spacing = 8;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  [photoTextContainer addSubview:textStack];
+  // Author details
+  NSStackView *detailsStack = [[NSStackView alloc] init];
+  detailsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  detailsStack.spacing = 4;
+  detailsStack.alignment = NSLayoutAttributeLeading;
+  [authorStack addArrangedSubview:detailsStack];
 
-  // Name
-  NSTextField *aboutMeTitle = [[NSTextField alloc] init];
-  aboutMeTitle.stringValue = @"Alex Spaulding";
-  aboutMeTitle.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
-  aboutMeTitle.alignment = NSTextAlignmentLeft;
-  aboutMeTitle.bezeled = NO;
-  aboutMeTitle.drawsBackground = NO;
-  aboutMeTitle.editable = NO;
-  aboutMeTitle.selectable = NO;
-  [textStack addArrangedSubview:aboutMeTitle];
+  NSTextField *nameLabel = [[NSTextField alloc] init];
+  nameLabel.stringValue = @"Alex Spaulding";
+  nameLabel.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
+  nameLabel.bezeled = NO;
+  nameLabel.drawsBackground = NO;
+  nameLabel.editable = NO;
+  nameLabel.selectable = YES;
+  [detailsStack addArrangedSubview:nameLabel];
 
-  // Bio text (left-aligned)
-  NSTextField *aboutMeText = [[NSTextField alloc] init];
-  aboutMeText.stringValue =
-      @"CS student at Eastern Washington University\nPursuing a Math "
-      @"minor\nCertified Front-End Developer";
-  aboutMeText.font = [NSFont systemFontOfSize:11];
-  aboutMeText.textColor = [NSColor secondaryLabelColor];
-  aboutMeText.alignment = NSTextAlignmentLeft;
-  aboutMeText.bezeled = NO;
-  aboutMeText.drawsBackground = NO;
-  aboutMeText.editable = NO;
-  aboutMeText.selectable = NO;
-  aboutMeText.preferredMaxLayoutWidth = 300;
-  [textStack addArrangedSubview:aboutMeText];
+  NSTextField *handleLabel = [[NSTextField alloc] init];
+  handleLabel.stringValue = @"github@aspauldingcode";
+  handleLabel.font = [NSFont systemFontOfSize:12];
+  handleLabel.textColor = [NSColor linkColor];
+  handleLabel.bezeled = NO;
+  handleLabel.drawsBackground = NO;
+  handleLabel.editable = NO;
+  handleLabel.selectable = YES;
+  [detailsStack addArrangedSubview:handleLabel];
 
-  // Portfolio link (left-aligned)
-  NSButton *portfolioButton = [[NSButton alloc] init];
-  [portfolioButton setTitle:@"Portfolio: aspauldingcode.com"];
-  [portfolioButton setButtonType:NSButtonTypeMomentaryPushIn];
-  [portfolioButton setBezelStyle:NSBezelStyleInline];
-  [portfolioButton setTarget:self];
-  [portfolioButton setAction:@selector(openPortfolioLink:)];
-  [portfolioButton
-      setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                 forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [textStack addArrangedSubview:portfolioButton];
+  [stack setCustomSpacing:40 afterView:authorStack];
 
-  // Layout constraints for photo and text container
+  // =========================================================================
+  // DONATION EMPHASIS
+  // =========================================================================
+  [stack addArrangedSubview:[self createSeparator]];
+
+  NSTextField *supportLabel = [[NSTextField alloc] init];
+  supportLabel.stringValue = @"Love Wawona? ❤️ Support development!";
+  supportLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+  supportLabel.textColor = [NSColor labelColor];
+  supportLabel.alignment = NSTextAlignmentCenter;
+  supportLabel.bezeled = NO;
+  supportLabel.drawsBackground = NO;
+  supportLabel.editable = NO;
+  supportLabel.selectable = NO;
+  [stack addArrangedSubview:supportLabel];
+
+  NSStackView *donateStack = [[NSStackView alloc] init];
+  donateStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  donateStack.spacing = 15;
+  donateStack.distribution = NSStackViewDistributionFillEqually;
+  [stack addArrangedSubview:donateStack];
+
+  NSButton *kofiButton = [[NSButton alloc] init];
+  kofiButton.title = @"Ko-fi";
+  kofiButton.imagePosition = NSImageLeft;
+  kofiButton.bezelStyle = NSBezelStyleRounded;
+  kofiButton.target = self;
+  kofiButton.action = @selector(openDonateLink:);
+  kofiButton.controlSize = NSControlSizeLarge;
+  [donateStack addArrangedSubview:kofiButton];
+
+  NSButton *sponsorButton = [[NSButton alloc] init];
+  sponsorButton.title = @"GitHub Sponsors";
+  sponsorButton.imagePosition = NSImageLeft;
+  sponsorButton.bezelStyle = NSBezelStyleRounded;
+  sponsorButton.target = self;
+  sponsorButton.action = @selector(openSponsorLink:);
+  sponsorButton.controlSize = NSControlSizeLarge;
+  [donateStack addArrangedSubview:sponsorButton];
+
   [NSLayoutConstraint activateConstraints:@[
-    // Photo constraints
-    [avatarView.leadingAnchor
-        constraintEqualToAnchor:photoTextContainer.leadingAnchor],
-    [avatarView.topAnchor constraintEqualToAnchor:photoTextContainer.topAnchor],
-    [avatarView.widthAnchor constraintEqualToConstant:80],
-    [avatarView.heightAnchor constraintEqualToConstant:80],
-    [avatarView.bottomAnchor
-        constraintLessThanOrEqualToAnchor:photoTextContainer.bottomAnchor],
-
-    // Text stack constraints
-    [textStack.leadingAnchor constraintEqualToAnchor:avatarView.trailingAnchor
-                                            constant:15],
-    [textStack.trailingAnchor
-        constraintEqualToAnchor:photoTextContainer.trailingAnchor],
-    [textStack.topAnchor constraintEqualToAnchor:photoTextContainer.topAnchor],
-    [textStack.bottomAnchor
-        constraintLessThanOrEqualToAnchor:photoTextContainer.bottomAnchor],
-
-    // Container height
-    [photoTextContainer.heightAnchor constraintGreaterThanOrEqualToConstant:80]
+    [donateStack.widthAnchor constraintEqualToConstant:320],
+    [kofiButton.heightAnchor constraintEqualToConstant:40],
+    [sponsorButton.heightAnchor constraintEqualToConstant:40]
   ]];
 
-  // Horizontal stack for buttons
-  NSStackView *buttonStack = [[NSStackView alloc] init];
-  buttonStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  buttonStack.spacing = 15;
-  buttonStack.alignment = NSLayoutAttributeCenterY;
-  buttonStack.distribution = NSStackViewDistributionFillEqually;
-  buttonStack.translatesAutoresizingMaskIntoConstraints = NO;
-  [stack addArrangedSubview:buttonStack];
+  [stack setCustomSpacing:30 afterView:donateStack];
 
-  // Donate button
-  NSButton *donateButton = [[NSButton alloc] init];
-  [donateButton setTitle:@"Donate to Alex Spaulding"];
-  [donateButton setButtonType:NSButtonTypeMomentaryPushIn];
-  [donateButton setBezelStyle:NSBezelStyleRounded];
-  [donateButton setTarget:self];
-  [donateButton setAction:@selector(openDonateLink:)];
-  [buttonStack addArrangedSubview:donateButton];
+  // Footer / Buttons
+  NSStackView *footerStack = [[NSStackView alloc] init];
+  footerStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  footerStack.spacing = 15;
+  footerStack.distribution = NSStackViewDistributionFillEqually;
+  [stack addArrangedSubview:footerStack];
+
+  NSButton *repoButton =
+      [self premiumButtonWithTitle:@"GitHub" action:@selector(openGitHubLink:)];
+  [footerStack addArrangedSubview:repoButton];
+
+  NSButton *xButton =
+      [self premiumButtonWithTitle:@"X" action:@selector(openXLink:)];
+  [footerStack addArrangedSubview:xButton];
+
+  NSButton *linkedinButton =
+      [self premiumButtonWithTitle:@"LinkedIn"
+                            action:@selector(openLinkedInLink:)];
+  [footerStack addArrangedSubview:linkedinButton];
+
+  NSButton *webButton =
+      [self premiumButtonWithTitle:@"Portfolio"
+                            action:@selector(openPortfolioLink:)];
+  [footerStack addArrangedSubview:webButton];
+
+  // Configure icons
+  [self loadImageURL:@"https://ko-fi.com/android-icon-192x192.png"
+            intoView:kofiButton];
+  [self loadImageURL:@"https://encrypted-tbn0.gstatic.com/images?q=tbn:"
+                     @"ANd9GcRp_gdQoe-SxKGw3IvS-1G_JPsMY70HkqxAPg&s"
+            intoView:sponsorButton];
+  [self loadImageURL:@"https://github.githubassets.com/images/modules/logos_"
+                     @"page/GitHub-Mark.png"
+            intoView:repoButton];
+  [self loadImageURL:@"https://x.com/favicon.ico" intoView:xButton];
+  [self loadImageURL:@"https://upload.wikimedia.org/wikipedia/commons/c/ca/"
+                     @"LinkedIn_logo_initials.png"
+            intoView:linkedinButton];
+  [self loadImageURL:@"https://aspauldingcode.com/favicon.ico"
+            intoView:webButton];
+
+  // Copyright
+  NSTextField *copyright = [[NSTextField alloc] init];
+  copyright.stringValue = @"© 2026 Alex Spaulding. All rights reserved.";
+  copyright.font = [NSFont systemFontOfSize:11];
+  copyright.textColor = [NSColor tertiaryLabelColor];
+  copyright.alignment = NSTextAlignmentCenter;
+  copyright.bezeled = NO;
+  copyright.drawsBackground = NO;
+  copyright.editable = NO;
+  copyright.selectable = NO;
+  [stack addArrangedSubview:copyright];
+}
+
+- (NSButton *)premiumButtonWithTitle:(NSString *)title action:(SEL)action {
+  NSButton *btn = [[NSButton alloc] init];
+  btn.title = title;
+  btn.target = self;
+  btn.action = action;
+  btn.bezelStyle = NSBezelStyleRounded;
+  btn.imagePosition = NSImageLeft; // Position image to the left of text
+  return btn;
+}
+
+- (void)loadImageURL:(NSString *)url intoView:(id)view {
+  [[WawonaImageLoader sharedLoader]
+      loadImageFromURL:url
+            completion:^(WImage _Nullable image) {
+              if (!image) {
+                return;
+              }
+              if ([view isKindOfClass:[NSButton class]]) {
+                NSButton *btn = (NSButton *)view;
+                [image setSize:NSMakeSize(16, 16)];
+                btn.image = image;
+              } else if ([view isKindOfClass:[NSImageView class]]) {
+                NSImageView *iv = (NSImageView *)view;
+                iv.image = image;
+              }
+            }];
 }
 
 - (NSBox *)createSeparator {
@@ -421,42 +587,25 @@
       openURL:[NSURL URLWithString:@"https://aspauldingcode.com"]];
 }
 
+- (void)openXLink:(NSButton *)sender {
+  [[NSWorkspace sharedWorkspace]
+      openURL:[NSURL URLWithString:@"https://x.com/aspauldingcode"]];
+}
+
+- (void)openLinkedInLink:(NSButton *)sender {
+  [[NSWorkspace sharedWorkspace]
+      openURL:
+          [NSURL URLWithString:@"https://www.linkedin.com/in/aspauldingcode/"]];
+}
+
+- (void)openSponsorLink:(NSButton *)sender {
+  [[NSWorkspace sharedWorkspace]
+      openURL:[NSURL
+                  URLWithString:@"https://github.com/sponsors/aspauldingcode"]];
+}
 - (void)loadGitHubAvatar:(NSImageView *)imageView {
-  // GitHub API endpoint for user avatar
-  // Using a larger size (128x128) for better quality
   NSString *avatarURLString = @"https://github.com/aspauldingcode.png?size=128";
-  NSURL *avatarURL = [NSURL URLWithString:avatarURLString];
-
-  if (!avatarURL) {
-    return;
-  }
-
-  // Load avatar asynchronously
-  NSURLSession *session = [NSURLSession sharedSession];
-  NSURLSessionDataTask *task =
-      [session dataTaskWithURL:avatarURL
-             completionHandler:^(NSData *data, NSURLResponse *response,
-                                 NSError *error) {
-               (void)response; // Unused parameter
-               if (error || !data) {
-                 NSLog(@"[ABOUT] Failed to load GitHub avatar: %@",
-                       error.localizedDescription);
-                 return;
-               }
-
-               NSImage *avatarImage = [[NSImage alloc] initWithData:data];
-               if (avatarImage) {
-                 dispatch_async(dispatch_get_main_queue(), ^{
-                   imageView.image = avatarImage;
-                   // Make it circular
-                   imageView.wantsLayer = YES;
-                   imageView.layer.cornerRadius = 40.0;
-                   imageView.layer.masksToBounds = YES;
-                 });
-               }
-             }];
-
-  [task resume];
+  [self loadImageURL:avatarURLString intoView:imageView];
 }
 
 @end

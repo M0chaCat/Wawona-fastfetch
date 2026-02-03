@@ -262,7 +262,7 @@ Implement window management in Rust.
 - [ ] **Window Lifecycle**
   - [ ] Creation from xdg_toplevel
   - [ ] State changes (maximize, fullscreen, minimize)
-  - [ ] CSD/SSD mode switching
+  - [x] CSD/SSD mode switching (Implemented Force SSD logic)
   - [ ] Interactive move/resize
 
 **Migrate from:**

@@ -16,7 +16,25 @@ fn main() -> Result<()> {
     // Check for version argument
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && (args[1] == "--version" || args[1] == "-v") {
-        println!("wawona {}", include_str!("../VERSION").trim());
+        let version = include_str!("../VERSION").trim();
+        println!("Wawona v{}", version);
+        
+        // Get OS version if on macOS
+        #[cfg(target_os = "macos")]
+        {
+            let os_ver = std::process::Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            println!("macOS v{}", os_ver);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            println!("{}", std::env::consts::OS);
+        }
+        
+        println!("{}", std::env::consts::ARCH);
         return Ok(());
     }
 

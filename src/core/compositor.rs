@@ -147,6 +147,8 @@ pub enum CompositorEvent {
     WindowCreated { window_id: u32, surface_id: u32, title: String, width: u32, height: u32 },
     /// A new popup was created
     PopupCreated { window_id: u32, surface_id: u32, parent_id: u32, x: i32, y: i32, width: u32, height: u32 },
+    /// A popup was repositioned
+    PopupRepositioned { window_id: u32, x: i32, y: i32, width: u32, height: u32 },
     /// A window was destroyed
     WindowDestroyed { window_id: u32 },
     /// Window title changed

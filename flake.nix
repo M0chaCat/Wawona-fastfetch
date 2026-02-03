@@ -113,7 +113,7 @@
 
     macosWrapper = pkgs: wawona: pkgs.writeShellScriptBin "wawona" ''
       ${macosEnv}
-      exec "${wawona}/bin/wawona-macos" "$@"
+      exec "${wawona}/bin/Wawona" "$@"
     '';
 
     waypipeWrapper = pkgs: waypipe: pkgs.writeShellScriptBin "waypipe" ''
@@ -160,14 +160,18 @@ EOF
     '';
 
 
+    # Calculate wawonaVersion once at the top level
+    # Use a default system to get lib and src for version calculation
+    defaultSystem = "x86_64-linux";
+    defaultPkgs = pkgsFor defaultSystem;
+    globalSrc = srcFor defaultPkgs;
+    wawonaVersion = defaultPkgs.lib.removeSuffix "\n" (defaultPkgs.lib.fileContents (globalSrc + "/VERSION"));
 
   in
   {
     packages = builtins.listToAttrs (map (system: let
       pkgs = pkgsFor system;
       src  = srcFor pkgs;
-
-      wawonaVersion = pkgs.lib.removeSuffix "\n" (pkgs.lib.fileContents (src + "/VERSION"));
 
       # Rust compositor
       compositor = pkgs.rustPlatform.buildRustPackage {
@@ -176,6 +180,11 @@ EOF
 
         inherit src;
         cargoLock.lockFile = ./Cargo.lock;
+
+        prePatch = ''
+          echo "Patching Cargo.toml version to ${wawonaVersion}..."
+          sed -i 's/^version = .*/version = "${wawonaVersion}"/' Cargo.toml
+        '';
         
         # Disable tests - they require XDG_RUNTIME_DIR which isn't available in Nix sandbox
         doCheck = false;
@@ -273,9 +282,13 @@ EOF
         # We use the cross-compiler from crossPkgs
         CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER = "${crossPkgs.stdenv.cc.targetPrefix}cc";
         
+        prePatch = ''
+          echo "Patching Cargo.toml version to ${wawonaVersion}..."
+          sed -i 's/^version = .*/version = "${wawonaVersion}"/' Cargo.toml
+        '';
+
         # Patch dependencies that don't support iOS out of the box
         postPatch = ''
-          # Patch wayland-backend to support iOS (kqueue and socket flags)
           # We search for it in the vendor directory
           find . -name common_poll.rs -exec sed -i 's/"macos"/"macos", target_os = "ios"/g' {} +
           find . -name handle.rs -exec sed -i 's/"macos"/"macos", target_os = "ios"/g' {} +
@@ -306,6 +319,14 @@ EOF
         compositor = compositor;
         wawonaVersion = wawonaVersion;
         weston = weston;
+        waylandVersion = pkgs.wayland.version;
+        xkbcommonVersion = pkgs.libxkbcommon.version;
+        lz4Version = pkgs.lz4.version;
+        zstdVersion = pkgs.zstd.version;
+        libffiVersion = pkgs.libffi.version;
+        sshpassVersion = pkgs.sshpass.version;
+        waypipeVersion = pkgs.waypipe.version;
+        waypipe = buildModule.macos.waypipe;
       };
 
       weston = pkgs.callPackage ./dependencies/applications/weston/macos.nix { };
@@ -368,6 +389,7 @@ EOF
       packagesForSystem = {
         default = mainPackage;
         wawona = mainPackage;
+        wawona-macos = wawona-macos;
         
         # Mobile targets
         wawona-android = wawona-android;
@@ -397,7 +419,7 @@ EOF
     apps = builtins.listToAttrs (map (system: let
       pkgs = pkgsFor system;
       src = srcFor pkgs;
-      wv = pkgs.lib.removeSuffix "\n" (pkgs.lib.fileContents (src + "/VERSION"));
+      wv = wawonaVersion; # Use centralization
       
 
     in {

@@ -140,11 +140,20 @@ impl WawonaCore {
         };
         
         // Create and start the compositor
-        let mut compositor = Compositor::new(config)
+        let mut compositor = Compositor::new(config.clone())
             .map_err(|e| CompositorError::initialization_failed(e.to_string()))?;
         
         // Synchronize output configuration into state
-        self.state.write().unwrap().update_primary_output(width, height, scale);
+        let mut state = self.state.write().unwrap();
+        state.update_primary_output(width, height, scale);
+        
+        // Synchronize Force SSD policy
+        state.decoration_policy = if config.force_ssd {
+            crate::core::state::DecorationPolicy::ForceServer
+        } else {
+            crate::core::state::DecorationPolicy::PreferClient
+        };
+        drop(state);
         
         compositor.start()
             .map_err(|e| CompositorError::initialization_failed(e.to_string()))?;
@@ -153,6 +162,91 @@ impl WawonaCore {
         
         crate::wlog!(crate::util::logging::FFI, "Compositor started successfully");
         Ok(())
+    }
+    
+    /// Set whether server-side decorations (SSD) should be forced
+    pub fn set_force_ssd(&self, enabled: bool) {
+        let mut state = self.state.write().unwrap();
+        
+        crate::wlog!(crate::util::logging::FFI, "FFI: set_force_ssd({})", enabled);
+        
+        // 1. Update policy
+        state.decoration_policy = if enabled {
+            crate::core::state::DecorationPolicy::ForceServer
+        } else {
+            crate::core::state::DecorationPolicy::PreferClient
+        };
+        
+        // 2. Update cached state
+        *self.force_ssd.write().unwrap() = enabled;
+        
+        // 3. Notify existing decorations if protocol is active
+        use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        
+        let target_mode = if enabled {
+            Mode::ServerSide
+        } else {
+            Mode::ClientSide
+        };
+        
+        // Collect existing decorations to trigger updates
+        let mut decorations_to_configure = Vec::new();
+        for decoration in state.decorations.values() {
+            if let Some(res) = &decoration.resource {
+                decorations_to_configure.push((res.clone(), decoration.window_id));
+            }
+        }
+        
+        crate::wlog!(crate::util::logging::FFI, "Updating {} active decorations to {:?}", decorations_to_configure.len(), target_mode);
+        
+        for (res, window_id) in decorations_to_configure {
+            // Send the decoration mode configure
+            res.configure(target_mode);
+            
+            // Update window decoration mode state
+            if let Some(window) = state.get_window(window_id) {
+                let mut window = window.write().unwrap();
+                window.decoration_mode = if enabled {
+                    crate::core::window::DecorationMode::ServerSide
+                } else {
+                    crate::core::window::DecorationMode::ClientSide
+                };
+            }
+            
+            // CRITICAL: Trigger a full configure sequence (toplevel + surface)
+            // for the mode to take effect and for the client to resize!
+            
+            let mut surface_res = None;
+            let mut toplevel_res = None;
+            let mut internal_surface_id = 0;
+            
+            // Find toplevel and surface resources for this window
+            for tl in state.xdg_toplevels.values() {
+                if tl.window_id == window_id {
+                    internal_surface_id = tl.surface_id;
+                    toplevel_res = tl.resource.clone();
+                    break;
+                }
+            }
+            
+            if internal_surface_id != 0 {
+                if let Some(surf) = state.xdg_surfaces.get(&internal_surface_id) {
+                    surface_res = surf.resource.clone();
+                }
+            }
+            
+            if let Some(tl) = toplevel_res {
+                // Send current size or 0,0 to request re-layout
+                // In Wawona, 0,0 usually tells client to decide
+                tl.configure(0, 0, vec![]);
+                
+                if let Some(surf) = surface_res {
+                    let serial = state.next_serial();
+                    surf.configure(serial);
+                    crate::wlog!(crate::util::logging::FFI, "Sent configure serial {} to window {} for SSD change", serial, window_id);
+                }
+            }
+        }
     }
     
     /// Stop the compositor
@@ -479,6 +573,16 @@ impl WawonaCore {
                     }
                 );
             }
+            CompositorEvent::PopupRepositioned { window_id, x, y, width, height } => {
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::PopupRepositioned { 
+                        window_id: WindowId { id: window_id as u64 }, 
+                        x, y,
+                        width,
+                        height
+                    }
+                );
+            }
             CompositorEvent::WindowDestroyed { window_id } => {
                 self.ffi_windows.write().unwrap().remove(&(window_id as u64));
                 self.pending_window_events.write().unwrap().push(
@@ -649,9 +753,34 @@ impl WawonaCore {
                 };
                 
                 if let Some(data) = buffer_data {
+                    let mut target_window_id = state.surface_to_window.get(&surface_id).copied();
+                    
+                    // If no direct window mapping, check if it's a subsurface
+                    if target_window_id.is_none() {
+                        if let Some(subsurface) = state.get_subsurface(surface_id) {
+                            let mut parent_id = subsurface.parent_id;
+                            let mut path = format!("{}->{}", surface_id, parent_id);
+                            
+                            for _ in 0..10 { // Max depth
+                                if let Some(wid) = state.surface_to_window.get(&parent_id) {
+                                    crate::wlog!(crate::util::logging::FFI, "Resolved subsurface path: {} -> Window {}", path, wid);
+                                    target_window_id = Some(*wid);
+                                    break;
+                                }
+                                if let Some(parent_sub) = state.get_subsurface(parent_id) {
+                                    parent_id = parent_sub.parent_id;
+                                    path.push_str(&format!("->{}", parent_id));
+                                } else {
+                                    crate::wlog!(crate::util::logging::FFI, "Subsurface path dead end: {} (parent {} has no window)", path, parent_id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     // Notify redraw if associated with a window
-                    if let Some(window_id) = state.surface_to_window.get(&surface_id) {
-                        let win_id = types::WindowId { id: *window_id as u64 };
+                    if let Some(window_id) = target_window_id {
+                        let win_id = types::WindowId { id: window_id as u64 };
                         crate::wlog!(crate::util::logging::FFI, "FFI: Queuing buffer for window {}", win_id.id);
                         
                         let mut pending = self.pending_buffers.write().unwrap();
@@ -665,10 +794,17 @@ impl WawonaCore {
                         };
                         
                         if let Some(old_buffer) = pending.insert(win_id, new_buffer) {
-                            // Release superseded buffer resource so client can reuse it
-                            state.release_buffer(old_buffer.buffer.id.id as u32);
-                            crate::wlog!(crate::util::logging::FFI, "Released superseded buffer {} for window {}", 
-                                old_buffer.buffer.id.id, win_id.id);
+                            // Only release if it's actually a DIFFERENT buffer
+                            // This prevents premature release if the same buffer is committed multiple times
+                            // before the UI thread has displayed it.
+                            if old_buffer.buffer.id.id != buffer_id as u64 {
+                                crate::wlog!(crate::util::logging::FFI, "Released superseded buffer {} for window {}", 
+                                    old_buffer.buffer.id.id, win_id.id);
+                                state.release_buffer(old_buffer.buffer.id.id as u32);
+                            } else {
+                                crate::wlog!(crate::util::logging::FFI, "Keeping reused buffer {} for window {}", 
+                                    buffer_id, win_id.id);
+                            }
                         }
                         
                         self.pending_redraws.write().unwrap().push(win_id);
@@ -1390,22 +1526,6 @@ impl WawonaCore {
         // TODO: Register output with Wayland display
     }
     
-    /// Set force server-side decorations
-    pub fn set_force_ssd(&self, enabled: bool) {
-        crate::wlog!(crate::util::logging::FFI, "Force SSD: {}", enabled);
-        *self.force_ssd.write().unwrap() = enabled;
-        
-        // Update decoration policy
-        {
-            let mut state = self.state.write().unwrap();
-            state.decoration_policy = if enabled {
-                crate::core::state::DecorationPolicy::ForceServer
-            } else {
-                crate::core::state::DecorationPolicy::PreferClient
-            };
-        }
-        // TODO: Reconfigure existing windows
-    }
     
     /// Set keyboard repeat rate
     pub fn set_keyboard_repeat(&self, rate: i32, delay: i32) {

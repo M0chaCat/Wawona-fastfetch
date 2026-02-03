@@ -7,6 +7,7 @@ typedef void (^WaypipeOutputHandler)(NSString *output);
 - (void)runnerDidReceiveSSHPasswordPrompt:(NSString *)prompt;
 - (void)runnerDidReceiveSSHError:(NSString *)error;
 - (void)runnerDidReadData:(NSData *)data;
+- (void)runnerDidReceiveOutput:(NSString *)output isError:(BOOL)isError;
 - (void)runnerDidFinishWithExitCode:(int)exitCode;
 @end
 

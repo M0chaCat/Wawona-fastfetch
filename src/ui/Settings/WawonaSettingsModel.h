@@ -15,9 +15,13 @@
 @property(nonatomic, strong) id defaultValue;
 @property(nonatomic, strong) NSArray *options;
 @property(nonatomic, copy) void (^actionBlock)(void);
-@property(nonatomic, copy) NSString *urlString;    // For WSettingLink type
-@property(nonatomic, copy) NSString *imageURL;     // For WSettingHeader type (remote image)
-@property(nonatomic, copy) NSString *imageName;    // For WSettingHeader type (local asset)
+@property(nonatomic, copy) NSString *urlString; // For WSettingLink type
+@property(nonatomic, copy)
+    NSString *imageURL; // For WSettingHeader type (remote image)
+@property(nonatomic, copy)
+    NSString *imageName; // For WSettingHeader type (local asset)
+@property(nonatomic, copy)
+    NSString *iconURL; // For WSettingLink type (small icon)
 
 + (instancetype)itemWithTitle:(NSString *)title
                           key:(NSString *)key

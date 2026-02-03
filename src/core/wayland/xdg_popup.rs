@@ -27,9 +27,13 @@ impl Dispatch<xdg_popup::XdgPopup, u32> for CompositorState {
             xdg_popup::Request::Destroy => {
                 tracing::debug!("xdg_popup destroyed: {}", popup_id);
                 if let Some(data) = state.xdg_popups.remove(&popup_id) {
-                    // Start destruction of the underlying surface role object if needed
-                    // For now, removing from map is enough
-                    let _ = data;
+                    // Clean up surface_to_window mapping
+                    state.surface_to_window.remove(&data.surface_id);
+                    
+                    // CRITICAL: Emit event for FFI layer cleanup
+                    state.pending_compositor_events.push(crate::core::compositor::CompositorEvent::WindowDestroyed {
+                        window_id: data.window_id,
+                    });
                 }
             }
             xdg_popup::Request::Grab { seat, serial } => {
@@ -64,6 +68,15 @@ impl Dispatch<xdg_popup::XdgPopup, u32> for CompositorState {
                     data.anchor_rect = positioner_data.anchor_rect;
                     data.repositioned_token = Some(token);
                     
+                    // CRITICAL: Emit event for FFI layer to reposition the platform window
+                    state.pending_compositor_events.push(crate::core::compositor::CompositorEvent::PopupRepositioned {
+                        window_id: data.window_id,
+                        x: data.geometry.0,
+                        y: data.geometry.1,
+                        width: data.geometry.2 as u32,
+                        height: data.geometry.3 as u32,
+                    });
+
                     // Send repositioned event
                     resource.repositioned(token);
                     

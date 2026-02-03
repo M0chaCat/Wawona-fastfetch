@@ -1,9 +1,9 @@
-// WawonaClientManager.m - Client connection/disconnection and title management implementation
-// Extracted from WawonaCompositor.m for better organization
+// WawonaClientManager.m - Client connection/disconnection and title management
+// implementation Extracted from WawonaCompositor.m for better organization
 
 #import "WawonaClientManager.h"
-#import "WawonaCompositor.h"
 #include "../logging/logging.h"
+#import "WawonaCompositor.h"
 
 extern WawonaCompositor *g_wl_compositor_instance;
 
@@ -82,9 +82,7 @@ void macos_compositor_handle_client_disconnect(void) {
                         // iOS: Hide window instead of closing
                         window.hidden = YES;
 #else
-                        if (@available(macOS 10.12, *)) {
-                            [window performClose:nil];
-                        }
+                        [window performClose:nil];
 #endif
                     }
                     compositor.fullscreenExitTimer = nil;
@@ -156,4 +154,3 @@ void macos_compositor_update_title_no_clients(void) {
              "Updated titlebar title to: Wawona (no clients connected)\n");
 #endif
 }
-

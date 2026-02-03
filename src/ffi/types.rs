@@ -550,6 +550,13 @@ pub enum WindowEvent {
         width: u32,
         height: u32
     },
+    PopupRepositioned {
+        window_id: WindowId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
 
     // Minimize/close requests
     MinimizeRequested { window_id: WindowId },

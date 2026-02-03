@@ -6,6 +6,14 @@
   wawonaVersion ? null,
   compositor,
   weston,
+  waylandVersion ? "unknown",
+  xkbcommonVersion ? "unknown",
+  lz4Version ? "unknown",
+  zstdVersion ? "unknown",
+  libffiVersion ? "unknown",
+  sshpassVersion ? "unknown",
+  waypipeVersion ? "unknown",
+  waypipe,
 }:
 
 let
@@ -18,7 +26,14 @@ let
         XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
         if [ -n "$XCODE_APP" ]; then
           export XCODE_APP
+          export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
           export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+          export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk"
+          echo "Checked SDK at $SDKROOT"
+          if [ ! -d "$SDKROOT" ]; then
+             echo "Warning: SDK 26.0 not found at $SDKROOT, trying default MacOSX.sdk"
+             export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+          fi
         fi
       fi
     '';
@@ -55,6 +70,8 @@ let
     let parts = lib.splitString "." projectVersion;
     in if parts == [] then "1" else lib.last parts;
 
+  currentYear = lib.substring 0 4 (builtins.readFile (pkgs.runCommand "get-year" { } "date +%Y > $out"));
+
   macosDeps = common.commonDeps ++ [
     "kosmickrisp"
     "epoll-shim"
@@ -89,116 +106,38 @@ let
       "src/rendering/renderer_macos_helpers.m"
       "src/platform/macos/WawonaWindow.m"
       "src/platform/macos/WawonaWindow.h"
+      "src/platform/macos/WawonaMacOSPopup.m"
+      "src/platform/macos/WawonaMacOSPopup.h"
+      "src/platform/macos/WawonaMacOSWindowPopup.m"
+      "src/platform/macos/WawonaMacOSWindowPopup.h"
+      "src/platform/macos/WawonaPopupHost.h"
     ];
 
   macosSourcesFiltered = common.filterSources macosSources;
 
   generateIcons = platform: ''
-        # Locate source icon
-        ICON_SOURCE="$src/src/resources/Wawona.icon/Assets/wayland.png"
-        if [ ! -f "$ICON_SOURCE" ]; then
-          ICON_SOURCE="$src/src/resources/wayland.png"
-        fi
+        # Locate source icon bundle
+        ICON_BUNDLE="$src/src/resources/Wawona.icon"
         
-        if [ ! -f "$ICON_SOURCE" ]; then
-          echo "Error: Source icon not found!"
-        else
-          echo "Generating icons for ${platform}..."
-          
-          # Prepare directory structure
-          TMP_ASSETS="TempAssets.xcassets"
-          ICONSET_DIR="$TMP_ASSETS/AppIcon.appiconset"
-          mkdir -p "$ICONSET_DIR"
-          
-          # Determine sizes and contents based on platform
-          # Generate macOS icon sizes
-          sips -z 16 16 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16.png" 2>/dev/null || true
-          sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16@2x.png" 2>/dev/null || true
-          sips -z 32 32 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32.png" 2>/dev/null || true
-          sips -z 64 64 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32@2x.png" 2>/dev/null || true
-          sips -z 128 128 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128.png" 2>/dev/null || true
-          sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128@2x.png" 2>/dev/null || true
-          sips -z 256 256 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256.png" 2>/dev/null || true
-          sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" 2>/dev/null || true
-          sips -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" 2>/dev/null || true
-          sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" 2>/dev/null || true
-          
-          # Write Contents.json for macOS
-          cat > "$ICONSET_DIR/Contents.json" <<EOF
-  {
-    "images" : [
-      { "size" : "16x16", "idiom" : "mac", "filename" : "icon_16x16.png", "scale" : "1x" },
-      { "size" : "16x16", "idiom" : "mac", "filename" : "icon_16x16@2x.png", "scale" : "2x" },
-      { "size" : "32x32", "idiom" : "mac", "filename" : "icon_32x32.png", "scale" : "1x" },
-      { "size" : "32x32", "idiom" : "mac", "filename" : "icon_32x32@2x.png", "scale" : "2x" },
-      { "size" : "128x128", "idiom" : "mac", "filename" : "icon_128x128.png", "scale" : "1x" },
-      { "size" : "128x128", "idiom" : "mac", "filename" : "icon_128x128@2x.png", "scale" : "2x" },
-      { "size" : "256x256", "idiom" : "mac", "filename" : "icon_256x256.png", "scale" : "1x" },
-      { "size" : "256x256", "idiom" : "mac", "filename" : "icon_256x256@2x.png", "scale" : "2x" },
-      { "size" : "512x512", "idiom" : "mac", "filename" : "icon_512x512.png", "scale" : "1x" },
-      { "size" : "512x512", "idiom" : "mac", "filename" : "icon_512x512@2x.png", "scale" : "2x" }
-    ],
-    "info" : { "version" : 1, "author" : "xcode" }
-  }
-  EOF
-          
-          # Compile with actool
-          ACTOOL_CMD=""
-          if command -v actool >/dev/null 2>&1; then
-            ACTOOL_CMD="actool"
-          elif command -v xcrun >/dev/null 2>&1; then
-            ACTOOL_CMD="xcrun actool"
-          fi
-          
-          if [ -n "$ACTOOL_CMD" ]; then
-            echo "Compiling Assets.car for macOS using $ACTOOL_CMD..."
-            mkdir -p "$out/Applications/Wawona.app/Contents/Resources"
-            
-            # Run actool with verbose output and capture errors
-            set +e
-            $ACTOOL_CMD "$TMP_ASSETS" --compile "$out/Applications/Wawona.app/Contents/Resources" --platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon --output-partial-info-plist "$TMP_ASSETS/partial.plist" 2>&1 | tee actool_output.log
-            ACTOOL_EXIT=$?
-            set -e
-            
-            if [ $ACTOOL_EXIT -ne 0 ]; then
-              echo "actool failed with exit code $ACTOOL_EXIT"
-              cat actool_output.log
-              echo "Warning: Assets.car generation failed, but continuing build..."
-            elif [ ! -f "$out/Applications/Wawona.app/Contents/Resources/Assets.car" ]; then
-              echo "Warning: Assets.car was not created at expected location"
-              echo "Checking for Assets.car in other locations..."
-              find "$out" -name "Assets.car" -type f || echo "Assets.car not found anywhere"
-              echo "actool output:"
-              cat actool_output.log || true
-              echo "Warning: Continuing build without Assets.car (app may work without it)"
-            else
-              echo "Successfully created Assets.car"
+        if [ ! -d "$ICON_BUNDLE" ]; then
+          echo "Warning: Wawona.icon bundle not found at $ICON_BUNDLE"
+          # Fallback to legacy PNG if bundle is missing for some reason
+          ICON_SOURCE="$src/src/resources/wayland.png"
+          if [ -f "$ICON_SOURCE" ]; then
+            echo "Using legacy PNG fallback for icons..."
+            mkdir -p "$out/Applications/Wawona.app/Contents/Resources/AppIcon.iconset"
+            sips -z 1024 1024 "$ICON_SOURCE" --out "$out/Applications/Wawona.app/Contents/Resources/AppIcon.iconset/icon_512x512@2x.png" 2>/dev/null || true
+            if command -v iconutil >/dev/null 2>&1; then
+               iconutil -c icns "$out/Applications/Wawona.app/Contents/Resources/AppIcon.iconset" -o "$out/Applications/Wawona.app/Contents/Resources/AppIcon.icns" 2>/dev/null || true
             fi
-            rm -f actool_output.log
-          else
-            echo "Warning: actool not found, skipping Assets.car generation"
+            rm -rf "$out/Applications/Wawona.app/Contents/Resources/AppIcon.iconset"
           fi
-          
-          # Also generate .icns for fallback
-          if command -v iconutil >/dev/null 2>&1; then
-             mkdir -p "$TMP_ASSETS/AppIcon.iconset"
-             cp "$ICONSET_DIR/icon_16x16.png" "$TMP_ASSETS/AppIcon.iconset/icon_16x16.png"
-             cp "$ICONSET_DIR/icon_16x16@2x.png" "$TMP_ASSETS/AppIcon.iconset/icon_16x16@2x.png"
-             cp "$ICONSET_DIR/icon_32x32.png" "$TMP_ASSETS/AppIcon.iconset/icon_32x32.png"
-             cp "$ICONSET_DIR/icon_32x32@2x.png" "$TMP_ASSETS/AppIcon.iconset/icon_32x32@2x.png"
-             cp "$ICONSET_DIR/icon_128x128.png" "$TMP_ASSETS/AppIcon.iconset/icon_128x128.png"
-             cp "$ICONSET_DIR/icon_128x128@2x.png" "$TMP_ASSETS/AppIcon.iconset/icon_128x128@2x.png"
-             cp "$ICONSET_DIR/icon_256x256.png" "$TMP_ASSETS/AppIcon.iconset/icon_256x256.png"
-             cp "$ICONSET_DIR/icon_256x256@2x.png" "$TMP_ASSETS/AppIcon.iconset/icon_256x256@2x.png"
-             cp "$ICONSET_DIR/icon_512x512.png" "$TMP_ASSETS/AppIcon.iconset/icon_512x512.png"
-             cp "$ICONSET_DIR/icon_512x512@2x.png" "$TMP_ASSETS/AppIcon.iconset/icon_512x512@2x.png"
-             
-             iconutil -c icns "$TMP_ASSETS/AppIcon.iconset" -o "$out/Applications/Wawona.app/Contents/Resources/AppIcon.icns" 2>/dev/null || true
-          fi
-
-
-      rm -rf "$TMP_ASSETS"
-    fi
+        else
+          echo "Installing native Tahoe icon bundle for ${platform}..."
+          mkdir -p "$out/Applications/Wawona.app/Contents/Resources"
+          cp -R "$ICON_BUNDLE" "$out/Applications/Wawona.app/Contents/Resources/"
+          echo "Successfully installed Wawona.icon"
+        fi
   '';
 
 in
@@ -222,6 +161,7 @@ in
       pkgs.libxkbcommon
       compositor
       weston
+      waypipe
     ];
 
     # Fix gbm-wrapper.c include path and egl_buffer_handler.h for macOS
@@ -389,6 +329,7 @@ GEN_HEADER
           if [[ "$src_file" == *.m ]]; then
             $CC -c "$src_file" \
                -Isrc -Isrc/platform/macos -Isrc/rendering -Isrc/input -Isrc/ui \
+               -Isrc/ui/Helpers \
                -Isrc/logging -Isrc/stubs -Isrc/launcher -Isrc/platform/macos \
                -Isrc/compositor_implementations -Isrc/protocols \
                -Imacos-dependencies/include \
@@ -399,10 +340,19 @@ GEN_HEADER
                ${lib.concatStringsSep " " common.commonObjCFlags} \
                ${lib.concatStringsSep " " common.releaseObjCFlags} \
                -DUSE_RUST_CORE=1 \
-               -o "$obj_file"
+                -DWAWONA_VERSION=\"${projectVersion}\" \
+                -DWAWONA_WAYLAND_VERSION=\"${waylandVersion}\" \
+                -DWAWONA_XKBCOMMON_VERSION=\"${xkbcommonVersion}\" \
+                -DWAWONA_LZ4_VERSION=\"${lz4Version}\" \
+                -DWAWONA_ZSTD_VERSION=\"${zstdVersion}\" \
+                -DWAWONA_LIBFFI_VERSION=\"${libffiVersion}\" \
+                -DWAWONA_SSHPASS_VERSION=\"${sshpassVersion}\" \
+                -DWAWONA_WAYPIPE_VERSION=\"${waypipeVersion}\" \
+                -o "$obj_file"
           else
             $CC -c "$src_file" \
                -Isrc -Isrc/platform/macos -Isrc/rendering -Isrc/input -Isrc/ui \
+               -Isrc/ui/Helpers \
                -Isrc/logging -Isrc/stubs -Isrc/launcher -Isrc/platform/macos \
                -Isrc/compositor_implementations -Isrc/protocols \
                -Imacos-dependencies/include \
@@ -412,6 +362,13 @@ GEN_HEADER
                ${lib.concatStringsSep " " common.commonCFlags} \
                ${lib.concatStringsSep " " common.releaseCFlags} \
                -DUSE_RUST_CORE=1 \
+               -DWAWONA_VERSION=\"${projectVersion}\" \
+               -DWAWONA_WAYLAND_VERSION=\"${waylandVersion}\" \
+               -DWAWONA_XKBCOMMON_VERSION=\"${xkbcommonVersion}\" \
+               -DWAWONA_LZ4_VERSION=\"${lz4Version}\" \
+               -DWAWONA_ZSTD_VERSION=\"${zstdVersion}\" \
+               -DWAWONA_LIBFFI_VERSION=\"${libffiVersion}\" \
+               -DWAWONA_SSHPASS_VERSION=\"${sshpassVersion}\" \
                -o "$obj_file"
           fi
           OBJ_FILES="$OBJ_FILES $obj_file"
@@ -459,6 +416,11 @@ GEN_HEADER
             mkdir -p $out/Applications/Wawona.app/Contents/Resources
             
             cp Wawona $out/Applications/Wawona.app/Contents/MacOS/
+            
+            if command -v codesign >/dev/null 2>&1; then
+              echo "Signing Wawona main binary..."
+              codesign --force --sign - --timestamp=none "$out/Applications/Wawona.app/Contents/MacOS/Wawona" || echo "Warning: Failed to sign Wawona main binary"
+            fi
             
             if [ -f metal_shaders.metallib ]; then
               cp metal_shaders.metallib $out/Applications/Wawona.app/Contents/MacOS/
@@ -549,7 +511,7 @@ GEN_HEADER
           <key>CFBundleVersion</key>
           <string>${projectVersionPatch}</string>
           <key>NSHumanReadableCopyright</key>
-          <string>Copyright © 2026 Alex Spaulding. All rights reserved.</string>
+          <string>Copyright © 2025-${currentYear} Alex Spaulding. All rights reserved.</string>
         <key>LSMinimumSystemVersion</key>
         <string>26.0</string>
           <key>NSHighResolutionCapable</key>
@@ -559,11 +521,13 @@ GEN_HEADER
               <key>CFBundlePrimaryIcon</key>
               <dict>
                   <key>CFBundleIconName</key>
-                  <string>AppIcon</string>
+                  <string>Wawona</string>
               </dict>
           </dict>
+          <key>CFBundleIconName</key>
+          <string>Wawona</string>
           <key>CFBundleIconFile</key>
-          <string>AppIcon.icns</string>
+          <string></string>
           <key>NSLocalNetworkUsageDescription</key>
           <string>Wawona needs access to your local network to connect to SSH hosts.</string>
           <key>NSAppTransportSecurity</key>

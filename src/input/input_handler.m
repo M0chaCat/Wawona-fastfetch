@@ -1249,6 +1249,13 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     _seat->mods_depressed = new_mods_depressed;
     // Send modifiers update
     uint32_t serial = wl_seat_get_serial(_seat);
+
+    WLog(@"INPUT",
+         @"Sending modifiers update: serial=%u, depressed=0x%x (was 0x%x), "
+         @"latched=0x%x, locked=0x%x",
+         serial, new_mods_depressed, old_mods_depressed, _seat->mods_latched,
+         _seat->mods_locked);
+
     // Defensive check: ensure keyboard resource is still valid
     if (_seat->keyboard_resource &&
         wl_resource_get_client(_seat->keyboard_resource)) {
@@ -1274,6 +1281,52 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
   case NSEventTypeKeyUp:
     state = WL_KEYBOARD_KEY_STATE_RELEASED;
     break;
+  case NSEventTypeFlagsChanged: {
+    // macOS sends FlagsChanged for modifiers. We need to determine if it's a
+    // press or release.
+    // We can check if the new modifiers state includes the bit corresponding to
+    // this key code.
+    // However, since we already calculated new_mods_depressed, we can check if
+    // the semantic modifier bit for this key is set.
+    // BUT, detecting which specific modifier key (Left vs Right Shift) was
+    // pressed/released based just on flags is tricky.
+    // A simpler heuristic: if the flag is SET in new flags but was NOT in old
+    // flags (which we don't have easily here without tracking), it's a press?
+    // Actually, we can check if the flag corresponding to this specific keycode
+    // is set in the current event flags.
+
+    BOOL isPressed = NO;
+    switch (macKeyCode) {
+    case 56: // Left Shift
+    case 60: // Right Shift
+      isPressed = (modifierFlags & NSEventModifierFlagShift) != 0;
+      break;
+    case 55: // Left Cmd
+    case 54: // Right Cmd
+      isPressed = (modifierFlags & NSEventModifierFlagCommand) != 0;
+      break;
+    case 58: // Left Alt
+    case 61: // Right Alt
+      isPressed = (modifierFlags & NSEventModifierFlagOption) != 0;
+      break;
+    case 59: // Left Ctrl
+    case 62: // Right Ctrl
+      isPressed = (modifierFlags & NSEventModifierFlagControl) != 0;
+      break;
+    case 57: // Caps Lock
+      isPressed = (modifierFlags & NSEventModifierFlagCapsLock) != 0;
+      break;
+    default:
+      // Fallback: Check if ANY modifier changed state?
+      // If we can't map it, assume released if flags are empty? No, dangerous.
+      // For now, assume based on new_mods_depressed diff IF we knew which bit.
+      // Let's rely on the explicit key code checks above.
+      break;
+    }
+    state = isPressed ? WL_KEYBOARD_KEY_STATE_PRESSED
+                      : WL_KEYBOARD_KEY_STATE_RELEASED;
+    break;
+  }
   default:
     return;
   }

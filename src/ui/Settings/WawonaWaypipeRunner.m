@@ -31,76 +31,56 @@ volatile pid_t g_active_waypipe_pgid = 0;
 }
 
 - (NSString *)findWaypipeBinary {
-  NSArray *searchPaths = @[
-    @"/usr/local/bin/waypipe", @"/opt/homebrew/bin/waypipe",
-    @"/usr/bin/waypipe", @"~/.local/bin/waypipe",
-    @"/run/current-system/sw/bin/waypipe"
-  ];
+  // Resolve symlinks because Nix often launches via a symlink in bin/
+  NSString *realExecPath =
+      [[NSBundle mainBundle].executablePath stringByResolvingSymlinksInPath];
+  NSString *execDir = [realExecPath stringByDeletingLastPathComponent];
+  NSString *path = [execDir stringByAppendingPathComponent:@"waypipe"];
 
-  for (NSString *path in searchPaths) {
-    NSString *expandedPath = [path stringByExpandingTildeInPath];
-    if ([[NSFileManager defaultManager] isExecutableFileAtPath:expandedPath]) {
-      return expandedPath;
-    }
+  if ([[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+    return path;
   }
 
-  // Check main bundle (for iOS/bundled app) - with permission check
-  NSFileManager *fm = [NSFileManager defaultManager];
-  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-
-  // Build candidates array, filtering out nil values
-  NSMutableArray *bundleCandidates = [NSMutableArray array];
-  NSString *candidate1 =
-      [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:nil];
-  if (candidate1)
-    [bundleCandidates addObject:candidate1];
-  NSString *candidate2 =
-      [[NSBundle mainBundle] pathForResource:@"waypipe" ofType:@"bin"];
-  if (candidate2)
-    [bundleCandidates addObject:candidate2];
-  [bundleCandidates
-      addObject:[bundlePath stringByAppendingPathComponent:@"waypipe"]];
-  [bundleCandidates
-      addObject:[bundlePath stringByAppendingPathComponent:@"waypipe-bin"]];
-  [bundleCandidates
-      addObject:[bundlePath stringByAppendingPathComponent:@"bin/waypipe"]];
-
-  for (NSString *candidate in bundleCandidates) {
-    if (!candidate || candidate.length == 0)
-      continue;
-
-    if ([fm fileExistsAtPath:candidate]) {
-      // Check if executable
-      if (![fm isExecutableFileAtPath:candidate]) {
-        // Try to fix permissions
-        NSDictionary *attrs = @{NSFilePosixPermissions : @0755};
-        NSError *error = nil;
-        if (![fm setAttributes:attrs ofItemAtPath:candidate error:&error]) {
-          NSLog(
-              @"[Runner] Warning: Could not set execute permissions on %@: %@",
-              candidate, error);
-          continue;
-        }
-      }
-
-      if ([fm isExecutableFileAtPath:candidate]) {
-        WLog(@"WAYPIPE", @"Found waypipe binary at: %@", candidate);
-        return candidate;
-      }
-    }
+  // Also check Resources/bin/waypipe as user requested resource-based bundling
+  NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"waypipe"
+                                                           ofType:nil
+                                                      inDirectory:@"bin"];
+  if (resourcePath &&
+      [[NSFileManager defaultManager] isExecutableFileAtPath:resourcePath]) {
+    return resourcePath;
   }
 
-  // Check PATH environment variable
-  NSString *pathEnv = [[NSProcessInfo processInfo] environment][@"PATH"];
-  if (pathEnv) {
-    for (NSString *component in [pathEnv componentsSeparatedByString:@":"]) {
-      NSString *fullPath =
-          [component stringByAppendingPathComponent:@"waypipe"];
-      if ([[NSFileManager defaultManager] isExecutableFileAtPath:fullPath]) {
-        return fullPath;
-      }
-    }
+#if TARGET_OS_IPHONE
+  // On iOS check bundle root
+  NSString *bundlePath =
+      [[NSBundle mainBundle].bundlePath stringByResolvingSymlinksInPath];
+  path = [bundlePath stringByAppendingPathComponent:@"waypipe"];
+  if ([[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+    return path;
   }
+#endif
+
+  return nil;
+}
+
+- (NSString *)findSshpassBinary {
+  NSString *realExecPath =
+      [[NSBundle mainBundle].executablePath stringByResolvingSymlinksInPath];
+  NSString *execDir = [realExecPath stringByDeletingLastPathComponent];
+  NSString *path = [execDir stringByAppendingPathComponent:@"sshpass"];
+
+  if ([[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+    return path;
+  }
+
+#if TARGET_OS_IPHONE
+  NSString *bundlePath =
+      [[NSBundle mainBundle].bundlePath stringByResolvingSymlinksInPath];
+  path = [bundlePath stringByAppendingPathComponent:@"sshpass"];
+  if ([[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+    return path;
+  }
+#endif
 
   return nil;
 }
@@ -109,31 +89,47 @@ volatile pid_t g_active_waypipe_pgid = 0;
     (WawonaPreferencesManager *)prefs {
   NSMutableArray *args = [NSMutableArray array];
 
-  // SSH Setup
-  [args addObject:@"ssh"];
-
-  NSString *sshTarget = nil;
-  if (prefs.waypipeSSHEnabled) {
-    if (prefs.waypipeSSHUser.length > 0 && prefs.waypipeSSHHost.length > 0) {
-      sshTarget = [NSString stringWithFormat:@"%@@%@", prefs.waypipeSSHUser,
-                                             prefs.waypipeSSHHost];
-    } else if (prefs.waypipeSSHHost.length > 0) {
-      sshTarget = prefs.waypipeSSHHost;
-    }
+  // 1. Waypipe Global Options (MUST come before 'ssh')
+  if (prefs.waypipeCompress &&
+      ![prefs.waypipeCompress isEqualToString:@"none"]) {
+    [args addObject:@"--compress"];
+    [args addObject:prefs.waypipeCompress];
   }
-  if (sshTarget && sshTarget.length > 0) {
+
+  if (prefs.waypipeDebug) {
+    [args addObject:@"--debug"];
+  }
+
+  // SSH Destination
+  NSString *sshTarget = nil;
+  NSString *targetHost =
+      prefs.waypipeSSHHost.length > 0 ? prefs.waypipeSSHHost : prefs.sshHost;
+  NSString *targetUser =
+      prefs.waypipeSSHUser.length > 0 ? prefs.waypipeSSHUser : prefs.sshUser;
+
+  if (prefs.waypipeSSHEnabled && targetHost.length > 0) {
+    // 2. SSH Subcommand (Only if we have a target)
+    [args addObject:@"ssh"];
+
+    // SSH Safety options
+    [args addObject:@"-o"];
+    [args addObject:@"StrictHostKeyChecking=accept-new"];
+    [args addObject:@"-o"];
+    [args addObject:@"BatchMode=no"];
+
+    if (targetUser.length > 0) {
+      sshTarget = [NSString stringWithFormat:@"%@@%@", targetUser, targetHost];
+    } else {
+      sshTarget = targetHost;
+    }
     [args addObject:sshTarget];
   }
 
-  // Remote Command
+  // 3. Remote Command
   if (prefs.waypipeRemoteCommand.length > 0) {
     [args addObject:prefs.waypipeRemoteCommand];
-  }
-
-  // Compression (example)
-  if (prefs.waypipeCompress) {
-    [args addObject:@"--compress"];
-    [args addObject:prefs.waypipeCompress];
+  } else {
+    [args addObject:@"weston-terminal"]; // Default remote command
   }
 
   return args;
@@ -142,20 +138,44 @@ volatile pid_t g_active_waypipe_pgid = 0;
 - (NSString *)generateWaypipePreviewString:(WawonaPreferencesManager *)prefs {
   NSString *bin = [self findWaypipeBinary] ?: @"waypipe";
   NSArray *args = [self buildWaypipeArguments:prefs];
-  return [NSString
+
+  NSString *cmd = [NSString
       stringWithFormat:@"%@ %@", bin, [args componentsJoinedByString:@" "]];
+
+  NSString *targetPass = prefs.waypipeSSHPassword.length > 0
+                             ? prefs.waypipeSSHPassword
+                             : prefs.sshPassword;
+
+  if (prefs.waypipeSSHAuthMethod == 0 && targetPass.length > 0) {
+    NSString *sshpass = [self findSshpassBinary];
+    if (sshpass) {
+      cmd = [NSString stringWithFormat:@"SSHPASS=**** %@ -e %@",
+                                       [sshpass lastPathComponent], cmd];
+    }
+  }
+
+  return cmd;
 }
 
 - (void)launchWaypipe:(WawonaPreferencesManager *)prefs {
   NSString *waypipePath = [self findWaypipeBinary];
   if (!waypipePath) {
-    // Logic for not found?
     if ([self.delegate
             respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
-      [self.delegate runnerDidReceiveSSHError:@"Waypipe binary not found."];
+      [self.delegate
+          runnerDidReceiveSSHError:
+              @"Waypipe binary not found. Please ensure it is installed."];
+    }
+    if ([self.delegate
+            respondsToSelector:@selector(runnerDidReceiveOutput:isError:)]) {
+      [self.delegate
+          runnerDidReceiveOutput:@"Error: Waypipe binary not found.\n"
+                         isError:YES];
     }
     return;
   }
+
+  WLog(@"WAYPIPE", @"Using waypipe binary at: %@", waypipePath);
 
 #if TARGET_OS_IPHONE && TARGET_OS_SIMULATOR
   // NOTE: iOS Simulator networking limitations
@@ -190,12 +210,6 @@ volatile pid_t g_active_waypipe_pgid = 0;
   // iOS posix_spawn implementation
 
   // Convert args to C strings
-  // argv[0] should be the binary path strictly speaking, but here we construct
-  // full args Actually, argv[0] is waypipe path. The 'args' array above likely
-  // starts with 'ssh' based on logic? Wait, buildWaypipeArguments starts with
-  // 'ssh'. We need to prepend waypipePath to argv? Or is waypipePath passed as
-  // argv[0] and then the args follow?
-
   NSMutableArray *fullArgs = [NSMutableArray arrayWithObject:waypipePath];
   [fullArgs addObjectsFromArray:args];
 
@@ -215,61 +229,71 @@ volatile pid_t g_active_waypipe_pgid = 0;
         addObject:[NSString stringWithFormat:@"%@=%@", key, currentEnv[key]]];
   }
 
-  // Enforce specific vars for iOS
+  // Enforce specific vars for iOS/macOS
+  NSString *socketDir = prefs.waylandSocketDir;
+  if (socketDir.length == 0) {
+    socketDir = @"/tmp";
+  }
+  NSString *display = prefs.waypipeDisplay;
+  if (display.length == 0) {
+    display = @"wayland-0";
+  }
+
   [envList
-      addObject:[NSString stringWithFormat:@"XDG_RUNTIME_DIR=%@",
-                                           prefs.waylandSocketDir ?: @"/tmp"]];
-  [envList addObject:[NSString stringWithFormat:@"WAYLAND_DISPLAY=%@",
-                                                prefs.waypipeDisplay
-                                                    ?: @"wayland-0"]];
+      addObject:[NSString stringWithFormat:@"XDG_RUNTIME_DIR=%@", socketDir]];
+  [envList
+      addObject:[NSString stringWithFormat:@"WAYLAND_DISPLAY=%@", display]];
 
   // USER mock (critical for the "No user" fix, though we patched the binary
   // too)
-  if (!currentEnv[@"USER"])
+  if (!currentEnv[@"USER"]) {
     [envList addObject:@"USER=mobile"];
-  if (!currentEnv[@"LOGNAME"])
+  }
+  if (!currentEnv[@"LOGNAME"]) {
     [envList addObject:@"LOGNAME=mobile"];
-  if (!currentEnv[@"HOME"])
+  }
+  if (!currentEnv[@"HOME"]) {
     [envList addObject:@"HOME=/var/mobile"]; // or sandboxed home
+  }
 
   // Ensure /usr/bin is in PATH for ssh
   NSString *currentPath = currentEnv[@"PATH"];
-  if (!currentPath)
+  if (!currentPath) {
     currentPath = @"/usr/bin:/bin:/usr/sbin:/sbin";
+  }
   if (![currentPath containsString:@"/usr/bin"]) {
-    // Note: simplistic check, but matches previous logic
     currentPath = [@"/usr/bin:" stringByAppendingString:currentPath];
   }
-  // Add envList updated or new PATH entry... complexity here.
-  // Simpler: Just override PATH in our list.
-  // Remove existing PATH from list if we just added it?
-  // Using a Dictionary first is better.
-  NSMutableDictionary *envDict = [currentEnv mutableCopy];
-  envDict[@"XDG_RUNTIME_DIR"] = prefs.waylandSocketDir ?: @"/tmp";
-  envDict[@"WAYLAND_DISPLAY"] = prefs.waypipeDisplay ?: @"wayland-0";
-  if (!envDict[@"USER"])
-    envDict[@"USER"] = @"mobile";
-  if (!envDict[@"LOGNAME"])
-    envDict[@"LOGNAME"] = @"mobile";
-  if (!envDict[@"HOME"])
-    envDict[@"HOME"] = NSHomeDirectory();
-  envDict[@"PATH"] = currentPath;
 
-  char **envp = (char **)malloc(sizeof(char *) * (envDict.count + 1));
-  int i = 0;
-  for (NSString *key in envDict) {
-    NSString *val = envDict[key];
-    NSString *entry = [NSString stringWithFormat:@"%@=%@", key, val];
-    envp[i++] = strdup([entry UTF8String]);
+  // Create environment bridge dictionary for robust handling
+  NSMutableDictionary *finalEnv = [currentEnv mutableCopy];
+  finalEnv[@"XDG_RUNTIME_DIR"] = socketDir;
+  finalEnv[@"WAYLAND_DISPLAY"] = display;
+  finalEnv[@"PATH"] = currentPath;
+  if (!finalEnv[@"USER"]) {
+    finalEnv[@"USER"] = @"mobile";
   }
-  envp[i] = NULL;
+  if (!finalEnv[@"LOGNAME"]) {
+    finalEnv[@"LOGNAME"] = @"mobile";
+  }
+  if (!finalEnv[@"HOME"]) {
+    finalEnv[@"HOME"] = NSHomeDirectory();
+  }
+
+  char **envp = (char **)malloc(sizeof(char *) * (finalEnv.count + 1));
+  int j = 0;
+  for (NSString *key in finalEnv) {
+    NSString *val = finalEnv[key];
+    NSString *entry = [NSString stringWithFormat:@"%@=%@", key, val];
+    envp[j++] = strdup([entry UTF8String]);
+  }
+  envp[j] = NULL;
 
   // Pipes
   int stdoutPipe[2], stderrPipe[2];
   if (pipe(stdoutPipe) != 0 || pipe(stderrPipe) != 0) {
-    // Fail
     free(argv);
-    free(envp); // leak strings but we are failing
+    free(envp);
     return;
   }
 
@@ -282,7 +306,6 @@ volatile pid_t g_active_waypipe_pgid = 0;
 
   posix_spawnattr_t attr;
   posix_spawnattr_init(&attr);
-  // Put child in its own process group so we can kill all sub-processes later
   posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
   posix_spawnattr_setpgroup(&attr, 0);
 
@@ -291,52 +314,20 @@ volatile pid_t g_active_waypipe_pgid = 0;
                            argv, (char *const *)envp);
 
   posix_spawnattr_destroy(&attr);
-
   posix_spawn_file_actions_destroy(&fileActions);
   close(stdoutPipe[1]);
   close(stderrPipe[1]);
-
-  // Free C strings
-  // ... (omitted for brevity in this snippet, but acceptable for now)
 
   if (status == 0) {
     self.currentPid = pid;
     g_active_waypipe_pgid = pid;
     WLog(@"WAYPIPE", @"Waypipe launched PID: %d", pid);
-
-    // Monitor output
     [self monitorDescriptor:stdoutPipe[0] isError:NO];
     [self monitorDescriptor:stderrPipe[0] isError:YES];
   } else {
-    // Error 13 = EACCES (Permission denied)
-    // This could mean: wrong architecture, code signing issue, or iOS Simulator
-    // restrictions
-    NSString *errorMsg = @"Unknown error";
-    if (status == EACCES) {
-      errorMsg =
-          @"Permission denied (EACCES) - binary may be wrong architecture, not "
-          @"code-signed, or iOS Simulator restrictions";
-    } else if (status == ENOENT) {
-      errorMsg = @"File not found (ENOENT)";
-    } else if (status == ENOEXEC) {
-      errorMsg = @"Exec format error (ENOEXEC) - binary format not recognized";
-    } else {
-      errorMsg = [NSString
-          stringWithFormat:@"Error code %d: %s", status, strerror(status)];
-    }
-
+    NSString *errorMsg = [NSString
+        stringWithFormat:@"Error code %d: %s", status, strerror(status)];
     WLog(@"WAYPIPE", @"Spawn failed: %d (%@)", status, errorMsg);
-    WLog(@"WAYPIPE", @"Binary path: %@", waypipePath);
-
-    // Check file attributes
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSDictionary *attrs = [fm attributesOfItemAtPath:waypipePath error:nil];
-    if (attrs) {
-      NSLog(@"[Runner] File permissions: %@", attrs[NSFilePosixPermissions]);
-      NSLog(@"[Runner] File size: %@ bytes", attrs[NSFileSize]);
-    }
-
-    // Notify delegate
     if ([self.delegate
             respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
       [self.delegate
@@ -349,14 +340,78 @@ volatile pid_t g_active_waypipe_pgid = 0;
 #else
   // macOS NSTask Implementation
   NSTask *task = [[NSTask alloc] init];
-  task.executableURL = [NSURL fileURLWithPath:waypipePath];
-  task.arguments = args;
+
+  NSString *targetPass = prefs.waypipeSSHPassword.length > 0
+                             ? prefs.waypipeSSHPassword
+                             : prefs.sshPassword;
+  BOOL useSshpass = (prefs.waypipeSSHAuthMethod == 0 && targetPass.length > 0);
+  NSString *sshpassPath = useSshpass ? [self findSshpassBinary] : nil;
+
+  if (sshpassPath) {
+    task.executableURL = [NSURL fileURLWithPath:sshpassPath];
+    NSMutableArray *sshpassArgs = [NSMutableArray arrayWithObject:@"-e"];
+    [sshpassArgs addObject:waypipePath];
+    [sshpassArgs addObjectsFromArray:args];
+    task.arguments = sshpassArgs;
+  } else {
+    task.executableURL = [NSURL fileURLWithPath:waypipePath];
+    task.arguments = args;
+  }
 
   // Env
   NSMutableDictionary *env =
       [[[NSProcessInfo processInfo] environment] mutableCopy];
-  env[@"WAYLAND_DISPLAY"] = [NSString
-      stringWithFormat:@"%@/%@", prefs.waylandSocketDir, prefs.waypipeDisplay];
+
+  // Waypipe needs to know where the socket IS, and it needs to be an absolute
+  // path. We prioritize the environment because main.m sets it correctly.
+  const char *envRuntime = getenv("XDG_RUNTIME_DIR");
+  NSString *socketDirTask =
+      (envRuntime) ? [NSString stringWithUTF8String:envRuntime] : nil;
+
+  if (!socketDirTask || socketDirTask.length == 0) {
+    socketDirTask = prefs.waylandSocketDir;
+  }
+
+  if (!socketDirTask || socketDirTask.length == 0) {
+    socketDirTask = @"/tmp/wawona-503"; // Match what the compositor uses
+    WLog(@"WAYPIPE", @"waylandSocketDir was empty, using default: %@",
+         socketDirTask);
+  }
+
+  const char *envDisplay = getenv("WAYLAND_DISPLAY");
+  NSString *displayNameTask =
+      (envDisplay) ? [NSString stringWithUTF8String:envDisplay] : nil;
+
+  if (!displayNameTask || displayNameTask.length == 0) {
+    displayNameTask = prefs.waypipeDisplay;
+  }
+
+  if (!displayNameTask || displayNameTask.length == 0) {
+    displayNameTask = @"wayland-0";
+    WLog(@"WAYPIPE", @"waypipeDisplay was empty, using default: %@",
+         displayNameTask);
+  }
+
+  WLog(@"WAYPIPE",
+       @"Setting environment: XDG_RUNTIME_DIR=%@, WAYLAND_DISPLAY=%@, "
+       @"XDG_CURRENT_DESKTOP=Wawona",
+       socketDirTask, displayNameTask);
+
+  env[@"XDG_RUNTIME_DIR"] = socketDirTask;
+  env[@"WAYLAND_DISPLAY"] = displayNameTask;
+  env[@"XDG_CURRENT_DESKTOP"] = @"Wawona";
+
+  // Sanitize PATH to ensure /usr/bin is available for ssh
+  NSString *currentPath = env[@"PATH"] ?: @"/usr/bin:/bin:/usr/sbin:/sbin";
+  if (![currentPath containsString:@"/usr/bin"]) {
+    currentPath = [@"/usr/bin:" stringByAppendingString:currentPath];
+  }
+  env[@"PATH"] = currentPath;
+
+  if (useSshpass) {
+    env[@"SSHPASS"] = targetPass;
+  }
+
   task.environment = env;
 
   NSPipe *outPipe = [NSPipe pipe];
@@ -383,12 +438,20 @@ volatile pid_t g_active_waypipe_pgid = 0;
 
   NSError *err;
   if ([task launchAndReturnError:&err]) {
-    self.currentTask = task;
     self.currentPid = task.processIdentifier;
+    self.currentTask = task;
     g_active_waypipe_pgid = self.currentPid;
     WLog(@"WAYPIPE", @"Waypipe launched via NSTask PID: %d", self.currentPid);
   } else {
     WLog(@"WAYPIPE", @"Launch failed: %@", err);
+    if ([self.delegate
+            respondsToSelector:@selector(runnerDidReceiveOutput:isError:)]) {
+      [self.delegate
+          runnerDidReceiveOutput:
+              [NSString stringWithFormat:@"Failed to launch waypipe: %@\n",
+                                         err.localizedDescription]
+                         isError:YES];
+    }
   }
 #endif
 }
@@ -412,7 +475,11 @@ volatile pid_t g_active_waypipe_pgid = 0;
 - (void)parseOutput:(NSString *)text isError:(BOOL)isError {
   WLog(@"WAYPIPE", @"[Waypipe %@] %@", isError ? @"stderr" : @"stdout", text);
 
-  // Check for SSH prompts/errors
+  if ([self.delegate
+          respondsToSelector:@selector(runnerDidReceiveOutput:isError:)]) {
+    [self.delegate runnerDidReceiveOutput:text isError:isError];
+  }
+
   if ([text containsString:@"password:"] ||
       [text containsString:@"Password:"]) {
     if ([self.delegate
@@ -431,30 +498,28 @@ volatile pid_t g_active_waypipe_pgid = 0;
 #if TARGET_OS_IPHONE
 - (void)launchWaypipeWithSSHClient:(WawonaPreferencesManager *)prefs
                        waypipePath:(NSString *)waypipePath {
-  // On iOS, we can't use waypipe's SSH mode because it tries to spawn 'ssh'.
-  // Instead, we use WawonaSSHClient to establish the SSH connection and execute
-  // the remote command directly.
+  NSString *host =
+      prefs.waypipeSSHHost.length > 0 ? prefs.waypipeSSHHost : prefs.sshHost;
+  NSString *user =
+      prefs.waypipeSSHUser.length > 0 ? prefs.waypipeSSHUser : prefs.sshUser;
+  if (user.length == 0)
+    user = @"root";
+  NSInteger port = 22;
 
-  NSString *host = prefs.waypipeSSHHost;
-  NSString *user = prefs.waypipeSSHUser ?: @"root";
-  NSInteger port = 22; // TODO: Add port preference
-
-  // Create SSH client
   WawonaSSHClient *sshClient =
       [[WawonaSSHClient alloc] initWithHost:host username:user port:port];
   sshClient.delegate = self;
   sshClient.authMethod = (WawonaSSHAuthMethod)prefs.waypipeSSHAuthMethod;
 
   if (sshClient.authMethod == WawonaSSHAuthMethodPassword) {
-    // Use password from preferences (stored in Keychain)
-    NSString *password = prefs.waypipeSSHPassword;
-    if (!password || password.length == 0) {
-      // Password not set, prompt user
+    NSString *password = prefs.waypipeSSHPassword.length > 0
+                             ? prefs.waypipeSSHPassword
+                             : prefs.sshPassword;
+    if (password.length == 0) {
       if ([self.delegate respondsToSelector:@selector
                          (runnerDidReceiveSSHPasswordPrompt:)]) {
-        [self.delegate runnerDidReceiveSSHPasswordPrompt:
-                           @"SSH password required. Please enter your password "
-                           @"in Settings."];
+        [self.delegate
+            runnerDidReceiveSSHPasswordPrompt:@"SSH password required."];
       }
       return;
     }
@@ -466,7 +531,6 @@ volatile pid_t g_active_waypipe_pgid = 0;
 
   self.sshClient = sshClient;
 
-  // Connect and authenticate
   NSError *error = nil;
   if (![sshClient connect:&error]) {
     if ([self.delegate
@@ -480,67 +544,25 @@ volatile pid_t g_active_waypipe_pgid = 0;
   }
 
   if (![sshClient authenticate:&error]) {
-    // Check if it's a password authentication failure and password might be
-    // missing/wrong
-    if (sshClient.authMethod == WawonaSSHAuthMethodPassword) {
-      NSString *errorMsg = error.localizedDescription;
-      if ([errorMsg containsString:@"Password not provided"] ||
-          [errorMsg containsString:@"Password authentication failed"]) {
-        // Prompt user for password
-        if ([self.delegate respondsToSelector:@selector
-                           (runnerDidReceiveSSHPasswordPrompt:)]) {
-          [self.delegate
-              runnerDidReceiveSSHPasswordPrompt:
-                  @"SSH password authentication failed. Please check your "
-                  @"password in Settings or enter a new one."];
-        }
-      } else {
-        if ([self.delegate
-                respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
-          [self.delegate
-              runnerDidReceiveSSHError:
-                  [NSString stringWithFormat:@"SSH authentication failed: %@",
-                                             error.localizedDescription]];
-        }
-      }
-    } else {
-      if ([self.delegate
-              respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
-        [self.delegate
-            runnerDidReceiveSSHError:
-                [NSString stringWithFormat:@"SSH authentication failed: %@",
-                                           error.localizedDescription]];
-      }
+    if ([self.delegate
+            respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
+      [self.delegate
+          runnerDidReceiveSSHError:
+              [NSString stringWithFormat:@"SSH authentication failed: %@",
+                                         error.localizedDescription]];
     }
     [sshClient disconnect];
     return;
   }
 
-  // Keep SSH connection alive - don't disconnect!
-  // Waypipe needs a persistent connection to communicate over.
-
-  // The issue: Waypipe normally spawns 'ssh' itself and communicates over
-  // stdin/stdout. On iOS, we can't spawn ssh, so we need to provide the
-  // connection ourselves.
-  //
-  // The solution: Execute the remote waypipe server command via SSH, then
-  // launch the local waypipe client to connect through the SSH tunnel.
-  //
-  // However, waypipe expects to spawn ssh itself, so we need to work around
-  // this. One approach: Launch waypipe with a command that uses our SSH
-  // connection. But waypipe's architecture assumes it can spawn ssh, so this is
-  // complex.
-  //
-  // For now, let's execute the remote command (which should start waypipe
-  // server) and then try to launch the local waypipe client.
-
-  NSString *userCommand = prefs.waypipeRemoteCommand ?: @"weston-terminal";
+  NSString *userCommand = prefs.waypipeRemoteCommand.length > 0
+                              ? prefs.waypipeRemoteCommand
+                              : @"weston-terminal";
   NSString *remoteCommand = [NSString
-      stringWithFormat:@"waypipe server --control /tmp/waypipe-server.sock "
+      stringWithFormat:@"waypipe server --control /tmp/waypipe-server-%d.sock "
                        @"--display wayland-0 -- %@",
-                       userCommand];
+                       (int)getpid(), userCommand];
 
-  // Start tunnel
   int tunnelFd = -1;
   NSError *tunnelError = nil;
   if (![sshClient startTunnelForCommand:remoteCommand
@@ -557,111 +579,72 @@ volatile pid_t g_active_waypipe_pgid = 0;
     return;
   }
 
-  WLog(@"WAYPIPE", @"SSH tunnel established for command: %@", remoteCommand);
-
-  // Launch local waypipe client
-  // We need to spawn 'waypipe client' with stdin/stdout connected to tunnelFd
-
-  // Args
-  NSMutableArray *args = [NSMutableArray array];
-  [args addObject:@"client"];
-  // Add compression if needed
+  NSMutableArray *args = [NSMutableArray arrayWithObject:@"client"];
   if (prefs.waypipeCompress) {
     [args addObject:@"--compress"];
     [args addObject:prefs.waypipeCompress];
   }
 
-  // Convert args to C strings
   NSMutableArray *fullArgs = [NSMutableArray arrayWithObject:waypipePath];
   [fullArgs addObjectsFromArray:args];
-
   char **argv = (char **)malloc(sizeof(char *) * (fullArgs.count + 1));
   for (NSUInteger i = 0; i < fullArgs.count; i++) {
     argv[i] = strdup([fullArgs[i] UTF8String]);
   }
   argv[fullArgs.count] = NULL;
 
-  // Environment
   NSMutableArray *envList = [NSMutableArray array];
   NSDictionary *currentEnv = [[NSProcessInfo processInfo] environment];
-
-  // Keep existing env
   for (NSString *key in currentEnv) {
     [envList
         addObject:[NSString stringWithFormat:@"%@=%@", key, currentEnv[key]]];
   }
 
-  // Set Wayland vars
-  [envList
-      addObject:[NSString stringWithFormat:@"XDG_RUNTIME_DIR=%@",
-                                           prefs.waylandSocketDir ?: @"/tmp"]];
-  [envList addObject:[NSString stringWithFormat:@"WAYLAND_DISPLAY=%@",
-                                                prefs.waypipeDisplay
-                                                    ?: @"wayland-0"]];
+  NSString *socketDirSsh = prefs.waylandSocketDir;
+  if (socketDirSsh.length == 0)
+    socketDirSsh = @"/tmp";
+  NSString *displaySsh = prefs.waypipeDisplay;
+  if (displaySsh.length == 0)
+    displaySsh = @"wayland-0";
 
-  // Convert env to C strings
+  [envList addObject:[NSString
+                         stringWithFormat:@"XDG_RUNTIME_DIR=%@", socketDirSsh]];
+  [envList
+      addObject:[NSString stringWithFormat:@"WAYLAND_DISPLAY=%@", displaySsh]];
+
   char **envp = (char **)malloc(sizeof(char *) * (envList.count + 1));
   for (NSUInteger i = 0; i < envList.count; i++) {
     envp[i] = strdup([envList[i] UTF8String]);
   }
   envp[envList.count] = NULL;
 
-  // File actions for redirection
   posix_spawn_file_actions_t fileActions;
   posix_spawn_file_actions_init(&fileActions);
-
-  // Stdin/Stdout -> Tunnel
   posix_spawn_file_actions_adddup2(&fileActions, tunnelFd, STDIN_FILENO);
   posix_spawn_file_actions_adddup2(&fileActions, tunnelFd, STDOUT_FILENO);
 
-  // Stderr -> Pipe (for logging)
   int stderrPipe[2] = {-1, -1};
-  if (pipe(stderrPipe) != 0) {
-    WLog(@"WAYPIPE", @"Failed to create stderr pipe");
-  } else {
+  if (pipe(stderrPipe) == 0) {
     posix_spawn_file_actions_adddup2(&fileActions, stderrPipe[1],
                                      STDERR_FILENO);
     posix_spawn_file_actions_addclose(&fileActions, stderrPipe[0]);
   }
-
-  posix_spawn_file_actions_addclose(&fileActions, tunnelFd);
 
   pid_t pid;
   int status = posix_spawn(&pid, [waypipePath UTF8String], &fileActions, NULL,
                            argv, (char *const *)envp);
 
   posix_spawn_file_actions_destroy(&fileActions);
-  // Close our copy of tunnelFd (child has it now, and we don't need it)
-  // Wait, we also don't need it open in parent?
-  // The tunnel forwarding thread holds the OTHER end of the socket pair.
-  // We hold tunnelFd (the local end). We pass it to child.
-  // We should close it in parent after spawn.
   close(tunnelFd);
-
-  if (stderrPipe[1] != -1) {
-    // Close write end in parent
+  if (stderrPipe[1] != -1)
     close(stderrPipe[1]);
-  }
-
-  // Free strings
-  for (NSUInteger i = 0; i < fullArgs.count; i++)
-    free(argv[i]);
-  free(argv);
-  for (NSUInteger i = 0; i < envList.count; i++)
-    free(envp[i]);
-  free(envp);
 
   if (status == 0) {
     self.currentPid = pid;
     g_active_waypipe_pgid = pid;
-    WLog(@"WAYPIPE", @"Waypipe client launched PID: %d", pid);
-
-    // Monitor stderr
-    if (stderrPipe[0] != -1) {
+    if (stderrPipe[0] != -1)
       [self monitorDescriptor:stderrPipe[0] isError:YES];
-    }
   } else {
-    WLog(@"WAYPIPE", @"Failed to spawn waypipe client: %d", status);
     if ([self.delegate
             respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
       [self.delegate
@@ -674,53 +657,20 @@ volatile pid_t g_active_waypipe_pgid = 0;
 }
 #endif
 
-#pragma mark - WawonaSSHClientDelegate
-
-- (void)sshClient:(WawonaSSHClient *)client
-    didReceivePasswordPrompt:(NSString *)prompt {
-  if ([self.delegate
-          respondsToSelector:@selector(runnerDidReceiveSSHPasswordPrompt:)]) {
-    [self.delegate runnerDidReceiveSSHPasswordPrompt:prompt];
-  }
-}
-
-- (void)sshClient:(WawonaSSHClient *)client didReceiveError:(NSError *)error {
-  if ([self.delegate respondsToSelector:@selector(runnerDidReceiveSSHError:)]) {
-    [self.delegate runnerDidReceiveSSHError:error.localizedDescription];
-  }
-}
-
-- (void)sshClientDidConnect:(WawonaSSHClient *)client {
-  WLog(@"WAYPIPE", @"SSH client connected");
-}
-
-- (void)sshClientDidDisconnect:(WawonaSSHClient *)client {
-  WLog(@"WAYPIPE", @"SSH client disconnected");
-}
-
 - (void)stopWaypipe {
 #if !TARGET_OS_IPHONE
   if (self.currentTask) {
-    WLog(@"WAYPIPE", @"Terminating waypipe task (PID %d)...", self.currentPid);
     [self.currentTask terminate];
     self.currentTask = nil;
   }
 #endif
 
   if (self.currentPid > 0) {
-    WLog(@"WAYPIPE", @"Sending SIGTERM to waypipe process group %d...",
-         self.currentPid);
-    // kill(-pid) sends signal to the whole process group
-    // We used POSIX_SPAWN_SETPGROUP earlier
     kill(-self.currentPid, SIGTERM);
-
-    // Give it a moment then force kill if needed
     pid_t pidToKill = self.currentPid;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
-          // Double check if it's still running (this is a bit simplistic but
-          // works for cleanup)
           kill(-pidToKill, SIGKILL);
         });
     self.currentPid = 0;
@@ -728,7 +678,6 @@ volatile pid_t g_active_waypipe_pgid = 0;
   }
 
   if (self.sshClient) {
-    WLog(@"WAYPIPE", @"Disconnecting SSH client...");
     [self.sshClient disconnect];
     self.sshClient = nil;
   }

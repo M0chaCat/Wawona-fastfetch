@@ -317,18 +317,22 @@ impl XdgOutputData {
     }
 }
 
+use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1;
+
 /// Data stored with each toplevel decoration
 #[derive(Debug, Clone)]
 pub struct ToplevelDecorationData {
     pub window_id: u32,
     pub mode: wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    pub resource: Option<ZxdgToplevelDecorationV1>,
 }
 
 impl ToplevelDecorationData {
-    pub fn new(window_id: u32) -> Self {
+    pub fn new(window_id: u32, resource: Option<ZxdgToplevelDecorationV1>) -> Self {
         Self {
             window_id,
             mode: wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide,
+            resource,
         }
     }
 }
@@ -421,6 +425,7 @@ unsafe impl Sync for XdgToplevelData {}
 #[derive(Debug, Clone)]
 pub struct XdgPopupData {
     pub surface_id: u32,
+    pub window_id: u32,
     pub parent_id: Option<u32>,
     pub geometry: (i32, i32, i32, i32), // x, y, width, height
     pub anchor_rect: (i32, i32, i32, i32),
@@ -1712,6 +1717,11 @@ impl CompositorState {
             }
             
             tracing::info!("Destroyed window {}", window_id);
+            
+            // CRITICAL: Emit event for FFI layer cleanup
+            self.pending_compositor_events.push(crate::core::compositor::CompositorEvent::WindowDestroyed {
+                window_id,
+            });
         }
     }
     

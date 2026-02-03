@@ -120,6 +120,7 @@ impl Dispatch<xdg_surface::XdgSurface, u32> for CompositorState {
                     let window_id = state.next_window_id();
                     let popup_data = XdgPopupData {
                         surface_id,
+                        window_id,
                         parent_id: parent.as_ref().map(|p| p.id().protocol_id()),
                         geometry: (
                             positioner_data.anchor_rect.0 + positioner_data.offset.0,
@@ -136,6 +137,14 @@ impl Dispatch<xdg_surface::XdgSurface, u32> for CompositorState {
                     let popup = data_init.init(id, window_id);
                     
                     state.xdg_popups.insert(popup.id().protocol_id(), popup_data);
+                    
+                    // CRITICAL: Register in surface_to_window for buffer routing
+                    state.surface_to_window.insert(surface_id, window_id);
+                    
+                    // Update surface data with window_id
+                    if let Some(surface_data) = state.xdg_surfaces.get_mut(&surface_id) {
+                        surface_data.window_id = Some(window_id);
+                    }
                     
                     tracing::debug!("Created xdg_popup for surface {}, window_id={}", surface_id, window_id);
                     
@@ -162,7 +171,10 @@ impl Dispatch<xdg_surface::XdgSurface, u32> for CompositorState {
 
                     if let Some(surface_res) = surface_res {
                         for output in state.output_resources.values() {
-                            surface_res.enter(output);
+                            // Only send enter event if output belongs to the same client
+                            if surface_res.client() == output.client() {
+                                surface_res.enter(output);
+                            }
                         }
                     }
 

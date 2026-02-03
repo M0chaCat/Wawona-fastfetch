@@ -139,8 +139,10 @@ const CGFloat kResizeCornerSize = 20.0;
     self.window.titlebarAppearsTransparent = YES;
     self.window.titleVisibility = NSWindowTitleHidden;
   } else {
-    self.window.backgroundColor = [NSColor windowBackgroundColor];
-    self.window.opaque = YES;
+    // SSD: Use glass background if Tahoe is available
+    // SSD: Use glass background (Native macOS 26+)
+    self.window.backgroundColor = [NSColor clearColor];
+    self.window.opaque = NO;
     self.window.hasShadow = YES;
   }
 
@@ -211,6 +213,11 @@ const CGFloat kResizeCornerSize = 20.0;
   // Ensure layer backed
   if (!self.contentView.wantsLayer) {
     self.contentView.wantsLayer = YES;
+  }
+
+  // RE-APPLY Liquid Glass if available on the new content view
+  if ([self.window respondsToSelector:@selector(setupLiquidGlass)]) {
+    [self.window performSelector:@selector(setupLiquidGlass)];
   }
 }
 #endif
