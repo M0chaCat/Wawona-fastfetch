@@ -173,6 +173,10 @@ private fun AdvancedSection(prefs: SharedPreferences) {
         "Show built-in application launcher", Icons.Filled.Apps, default = false)
     SettingsSwitchItem(prefs, "westonSimpleSHMEnabled", "Enable Weston Simple SHM",
         "Start weston-simple-shm on launch", Icons.Filled.PlayArrow, default = false)
+    SettingsSwitchItem(prefs, "westonEnabled", "Enable Native Weston",
+        "Start native weston compositor", Icons.Filled.Monitor, default = false)
+    SettingsSwitchItem(prefs, "westonTerminalEnabled", "Enable Weston Terminal",
+        "Start native weston-terminal client", Icons.Filled.Terminal, default = false)
 }
 
 @Composable

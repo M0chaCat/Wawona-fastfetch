@@ -150,6 +150,48 @@ fun WawonaApp(
         }
     }
 
+    val nativeWestonEnabled = prefs.getBoolean("westonEnabled", false)
+    var nativeWestonProcess by remember { mutableStateOf<java.lang.Process?>(null) }
+    LaunchedEffect(nativeWestonEnabled) {
+        if (nativeWestonEnabled && nativeWestonProcess == null) {
+            try {
+                val libDir = context.applicationInfo.nativeLibraryDir
+                val proc = ProcessBuilder("$libDir/libweston_bin.so")
+                    .redirectErrorStream(true)
+                    .start()
+                nativeWestonProcess = proc
+                WLog.i("WESTON", "Native Weston launched")
+            } catch (e: Exception) {
+                WLog.e("WESTON", "Failed to launch Native Weston: ${e.message}")
+            }
+        } else if (!nativeWestonEnabled && nativeWestonProcess != null) {
+            nativeWestonProcess?.destroy()
+            nativeWestonProcess = null
+            WLog.i("WESTON", "Native Weston stopped")
+        }
+    }
+
+    val nativeWestonTerminalEnabled = prefs.getBoolean("westonTerminalEnabled", false)
+    var nativeWestonTerminalProcess by remember { mutableStateOf<java.lang.Process?>(null) }
+    LaunchedEffect(nativeWestonTerminalEnabled) {
+        if (nativeWestonTerminalEnabled && nativeWestonTerminalProcess == null) {
+            try {
+                val libDir = context.applicationInfo.nativeLibraryDir
+                val proc = ProcessBuilder("$libDir/libweston-terminal_bin.so")
+                    .redirectErrorStream(true)
+                    .start()
+                nativeWestonTerminalProcess = proc
+                WLog.i("WESTON", "Native Weston Terminal launched")
+            } catch (e: Exception) {
+                WLog.e("WESTON", "Failed to launch Native Weston Terminal: ${e.message}")
+            }
+        } else if (!nativeWestonTerminalEnabled && nativeWestonTerminalProcess != null) {
+            nativeWestonTerminalProcess?.destroy()
+            nativeWestonTerminalProcess = null
+            WLog.i("WESTON", "Native Weston Terminal stopped")
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             try {
