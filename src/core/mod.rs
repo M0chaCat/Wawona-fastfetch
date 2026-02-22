@@ -1,5 +1,7 @@
 pub mod errors;
+pub mod traits;
 pub mod state;
+
 pub mod compositor;
 pub mod runtime;
 pub mod socket_manager;

@@ -19,9 +19,16 @@ pub use ffi::types::*;
 pub use ffi::errors::*;
 pub use ffi::api::{WawonaCore, version, build_info};
 
+// When the waypipe feature is enabled (iOS/Android), force the linker to
+// include waypipe's objects in the staticlib so waypipe_main is available
+// to the native app layer. Without this extern crate, rustc strips the
+// unreferenced dependency from the archive.
+#[cfg(feature = "waypipe")]
+extern crate waypipe;
+
 // Generate UniFFI scaffolding
 // This must be in lib.rs for the generated code to work correctly
 uniffi::include_scaffolding!("wawona");
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;

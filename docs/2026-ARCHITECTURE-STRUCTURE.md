@@ -1,4 +1,4 @@
-# **Wawona Compositor — Architecture & Project Structure (Mermaid Version)**
+# **Wawona Compositor — Architecture & Project Structure**
 
 > **Rust backend + Native frontend architecture**
 > All compositor logic (Wayland protocol, surfaces, windows, input, IPC, frame timing, etc.) lives in Rust.
@@ -7,194 +7,169 @@
 
 ---
 
+## **1. Annotated Project Layout**
 
-
-# **Wawona Compositor — Annotated Project Layout**
+### Current Layout (as-built)
 
 ```
 src/
-├── lib.rs
-│   └─ Top-level crate root; re-exports modules; contains no platform code
-├── prelude.rs
-│   └─ Common imports, traits, error helpers for core & platform code
-├── version.rs
-│   └─ Protocol and build versioning
-
+├── lib.rs                      # Crate root; re-exports modules; UniFFI scaffolding
+├── main.rs                     # CLI entry point (StubPlatform)
+│
 ├── core/                       # 🚀 Platform-agnostic compositor logic
-│   ├── mod.rs                  # Re-exports submodules
-│   ├── compositor.rs           # Central compositor object & lifecycle
-│   ├── runtime.rs              # Event loop, task scheduling, frame loop
-│   ├── state.rs                # Global compositor state graph
-│   ├── errors.rs               # Core error types
-│
-│   ├── wayland/                # Wayland protocol & protocol handling
-│   │   ├── mod.rs
-│   │   ├── display.rs           # Display object & client registry
-│   │   ├── registry.rs          # Global registry & binding
-│   │   ├── compositor.rs        # wl_compositor, wl_shm implementation
-│   │   ├── xdg_shell.rs         # xdg_wm_base, xdg_surface, xdg_toplevel
-│   │   ├── seat.rs              # wl_seat, pointer, keyboard, touch
-│   │   ├── output.rs            # wl_output implementation
-│   │   ├── decoration.rs        # xdg_decoration implementation
-│   │   ├── protocol/            # Unified protocol re-exports (client & server)
-│   │   │   ├── mod.rs           # Unified client/server re-exports
-│   │   │   ├── server/          # Server-side protocol bindings (67+ protocols)
-│   │   │   │   ├── wayland_core # Core wayland (wl_compositor, wl_surface, etc.)
-│   │   │   │   ├── wp           # Wayland platform protocols (viewporter, dmabuf, etc.)
-│   │   │   │   ├── xdg          # XDG shell protocols (xdg_shell, decoration, etc.)
-│   │   │   │   ├── ext          # Extended protocols (session_lock, idle_notify, etc.)
-│   │   │   │   ├── xwayland     # XWayland protocols
-│   │   │   │   └── wlroots      # wlroots protocols (layer_shell, screencopy, etc.)
-│   │   │   ├── client/          # Client-side protocol bindings (for testing)
-│   │   │   │   ├── wayland_core # Core wayland (client-side)
-│   │   │   │   ├── wp           # Wayland platform protocols
-│   │   │   │   ├── xdg          # XDG shell protocols
-│   │   │   │   ├── ext          # Extended protocols
-│   │   │   │   ├── xwayland     # XWayland protocols
-│   │   │   │   └── wlroots      # wlroots protocols (client-side)
-│   │   │   └── wlroots/         # wlroots protocol details submodule
-│   │   │       └── mod.rs       # Re-exports from wayland-protocols-wlr crate
-│   │   └── validation.rs       # Wayland protocol correctness checks
-│
-│   ├── surface/                # Surface and buffer lifecycle
-│   │   ├── mod.rs
-│   │   ├── surface.rs           # Surface object + state
-│   │   ├── buffer.rs            # GPU-ready buffers (RGBA8, textures)
-│   │   ├── role.rs              # Surface roles (top-level, popup, etc.)
-│   │   ├── commit.rs            # Apply surface state changes atomically
-│   │   └── damage.rs            # Track dirty regions for rendering
-│
-│   ├── window/                 # Window management & policy
-│   │   ├── mod.rs
-│   │   ├── window.rs            # Window object + state
-│   │   ├── tree.rs              # Window tree / hierarchy
-│   │   ├── focus.rs             # Focus policy & active window
-│   │   ├── resize.rs            # Resize behavior & constraints
-│   │   └── fullscreen.rs        # Fullscreen / maximize logic
-│
-│   ├── input/                  # OS-independent input abstraction
-│   │   ├── mod.rs
-│   │   ├── seat.rs              # Seat abstraction (keyboard, pointer, touch)
-│   │   ├── keyboard.rs
-│   │   ├── pointer.rs
-│   │   ├── touch.rs
-│   │   └── gestures.rs          # Multi-touch / gesture handling
-│
-│   ├── render/                 # Abstract rendering model / scene graph
-│   │   ├── mod.rs
-│   │   ├── scene.rs             # Scene graph root
-│   │   ├── node.rs              # Nodes in scene graph
-│   │   ├── transform.rs         # Position, rotation, scale
-│   │   └── damage.rs            # Track dirty regions for efficient redraw
-│
-│   ├── ipc/                    # External control / debug
-│   │   ├── mod.rs
-│   │   └── commands.rs          # IPC command definitions
-│
-│   └── time/                   # Frame timing and scheduler
-│       ├── mod.rs
-│       └── frame_clock.rs       # Frame clock and scheduler for compositor
-
-├── platform/                   # 🧩 Platform-specific native frontends
-│   ├── mod.rs                  # Platform trait definitions (Rust)
-│   ├── api.rs                  # Platform interface (Rust)
+│   ├── mod.rs                  # Re-exports: Compositor, Runtime, CompositorState
+│   ├── compositor.rs           # Compositor lifecycle, Wayland display, client connections (624 lines)
+│   ├── runtime.rs              # Event loop, frame timing, task scheduling (424 lines)
+│   ├── state.rs                # ⚠️ MONOLITH: All compositor state (2312 lines, 50+ HashMaps)
+│   ├── input.rs                # Minimal input event types (43 lines)
 │   │
-│   ├── macos/                  # macOS Native Frontend (Objective-C + Metal)
-│   │   ├── main.m              # macOS entry point
-│   │   ├── WawonaCompositor.m  # Main compositor lifecycle
-│   │   ├── WawonaCompositorView_macos.m  # CAMetalLayer view
-│   │   ├── WawonaWindowManager.m   # NSWindow management
-│   │   ├── WawonaRenderManager.m   # Metal rendering
-│   │   ├── metal_dmabuf.m      # DMA-BUF → Metal texture
-│   │   ├── metal_waypipe.m     # Waypipe Metal integration
-│   │   ├── WawonaEventLoopManager.m  # CVDisplayLink
-│   │   ├── WawonaFrameCallbackManager.m  # Frame timing
-│   │   ├── ... (23 .m files total)  # Full macOS frontend
-│   │   └── (AppKit integration, Metal rendering, event loop)
+│   ├── surface/                # Surface & buffer lifecycle
+│   │   ├── mod.rs
+│   │   ├── surface.rs          # Surface object + pending/committed state
+│   │   ├── buffer.rs           # Buffer types (SHM, Native/IOSurface, DmaBuf)
+│   │   ├── commit.rs           # Double-buffered commit logic
+│   │   └── damage.rs           # Damage region tracking
 │   │
-│   ├── ios/                    # iOS Native Frontend (Objective-C/Swift + Metal)
-│   │   ├── WawonaCompositorView_ios.m  # CAMetalLayer UIView
-│   │   └── (⚠️ Work in progress - currently shares files with macOS)
-│   │       (UIKit integration, Metal rendering, touch input)
+│   ├── window/                 # Window management
+│   │   ├── mod.rs
+│   │   ├── window.rs           # Window object + decoration mode
+│   │   ├── tree.rs             # Z-order window tree
+│   │   └── focus.rs            # Focus manager with history
 │   │
-│   └── android/                # Android Native Frontend (Kotlin)
-│       ├── AndroidManifest.xml
-│       ├── java/               # Kotlin/Java source
-│       ├── res/                # Android resources
-│       └── (Jetpack Compose, UniFFI bindings)
-
-├── ffi/                        # 🔗 Stable FFI boundary
+│   └── wayland/                # Wayland protocol implementations
+│       ├── mod.rs              # Root: re-exports wayland, xdg, wlr, plasma, ext
+│       ├── protocol/           # Centralized protocol crate re-exports
+│       │   ├── mod.rs          # Unified client/server re-exports
+│       │   ├── server/         # Server-side bindings (67+ protocols)
+│       │   └── client/         # Client-side bindings (for testing)
+│       │
+│       ├── wayland/            # Core protocols (6 globals)
+│       │   ├── mod.rs          # register_wayland_globals()
+│       │   ├── compositor.rs   # wl_compositor — surface creation
+│       │   ├── shm.rs          # wl_shm — shared memory buffer pools
+│       │   ├── seat.rs         # wl_seat — keyboard/pointer/touch + XKB keymap
+│       │   ├── output.rs       # wl_output — display info
+│       │   ├── subcompositor.rs # wl_subcompositor — subsurface management
+│       │   ├── data_device.rs  # wl_data_device — clipboard/DnD
+│       │   └── registry.rs     # (stub)
+│       │
+│       ├── xdg/                # XDG Shell protocols (9 globals)
+│       │   ├── mod.rs          # register_xdg_globals()
+│       │   ├── xdg_shell.rs    # xdg_wm_base, xdg_surface, xdg_toplevel, xdg_popup
+│       │   ├── decoration.rs   # zxdg_decoration — CSD/SSD negotiation
+│       │   ├── xdg_output.rs   # zxdg_output — extended output info
+│       │   ├── activation.rs   # xdg_activation — focus stealing prevention
+│       │   ├── dialog.rs       # xdg_wm_dialog — dialog hints
+│       │   ├── toplevel_drag.rs # xdg_toplevel_drag — window dragging
+│       │   ├── toplevel_icon.rs # xdg_toplevel_icon — window icons
+│       │   ├── exporter.rs     # zxdg_exporter/importer — cross-client embedding
+│       │   └── ...
+│       │
+│       ├── wlr/                # wlroots protocols (10 globals)
+│       │   ├── mod.rs          # register_wlr_globals()
+│       │   ├── layer_shell.rs  # zwlr_layer_shell — panels, overlays
+│       │   ├── output_management.rs # zwlr_output_manager — display config
+│       │   ├── screencopy.rs   # zwlr_screencopy — screen capture
+│       │   ├── foreign_toplevel.rs # zwlr_foreign_toplevel — taskbars
+│       │   ├── data_control.rs # zwlr_data_control — clipboard managers
+│       │   ├── gamma_control.rs # zwlr_gamma_control — night light
+│       │   ├── virtual_pointer.rs # zwlr_virtual_pointer
+│       │   ├── virtual_keyboard.rs # zwp_virtual_keyboard
+│       │   └── ...
+│       │
+│       ├── ext/                 # Extension protocols (42+ files)
+│       │   ├── mod.rs           # register_ext_globals()
+│       │   ├── linux_dmabuf.rs  # zwp_linux_dmabuf — GPU buffer sharing
+│       │   ├── text_input.rs    # zwp_text_input — IME
+│       │   ├── pointer_constraints.rs
+│       │   ├── presentation_time.rs
+│       │   ├── fractional_scale.rs
+│       │   ├── viewporter.rs
+│       │   ├── cursor_shape.rs
+│       │   ├── idle_inhibit.rs
+│       │   ├── session_lock.rs
+│       │   └── ... (30+ more protocol files)
+│       │
+│       └── plasma/              # KDE/Plasma protocols (7 globals)
+│           ├── mod.rs           # register_plasma_globals()
+│           └── ...
+│
+├── ffi/                         # 🔗 Stable FFI boundary (UniFFI)
 │   ├── mod.rs
-│   ├── api.rs                   # UniFFI-exposed Rust API
-│   ├── types.rs                 # FFI-safe structs/enums
+│   ├── api.rs                   # WawonaCore — main FFI object (1816 lines)
+│   ├── types.rs                 # FFI-safe structs/enums (24KB)
 │   ├── errors.rs                # FFI error mapping
 │   ├── callbacks.rs             # Platform callback traits
-│   └── uniffi.toml              # UniFFI interface definition
-
-├── ui/                         # 🪟 Platform-independent UI models
+│   └── c_api.rs                 # C-compatible API wrappers
+│
+├── platform/                    # 🧩 Platform trait definitions (Rust side)
 │   ├── mod.rs
-│   ├── state.rs                 # Observable UI state
-│   ├── events.rs                # UI → compositor intents
-│   └── bindings.rs              # UniFFI-friendly observers
-
-├── config/                     # User/system configuration
+│   └── api.rs                   # Platform trait + StubPlatform
+│
+├── compat/                      # Native platform code
+│   ├── macos/stubs/             # 67 Objective-C stub files (AppKit/Metal)
+│   ├── ios/                     # iOS headers, sys bindings
+│   └── android/                 # JNI bridge + Kotlin frontend (see §11)
+│
+├── config/                      # Configuration
+│   └── mod.rs
+│
+├── util/                        # Shared utilities
 │   ├── mod.rs
-│   ├── defaults.rs
-│   └── parse.rs                 # Config parser
-
-├── util/                       # Shared utilities
-│   ├── mod.rs
-│   ├── geometry.rs
-│   ├── arena.rs                 # Memory arena helpers
-│   ├── id.rs                    # Unique identifiers
-│   └── tracing.rs               # Logging / tracing utilities
-
-└── tests/                      # Core logic tests (no platform deps)
-    ├── mod.rs
-    ├── wayland.rs
-    ├── surface.rs
-    └── window.rs
+│   └── logging.rs               # wlog! macro, log categories
+│
+└── tests/                       # ⚠️ ALL STUBS — no actual tests
+    ├── mod.rs                   # Declares wayland, surface, window modules
+    ├── wayland.rs               # "// Stub for wayland tests"
+    ├── surface.rs               # "// Stub for surface tests"
+    └── window.rs                # "// Stub for window tests"
 ```
 
+### Target Layout (planned revision)
+
+The revision follows Smithay's proven modular pattern, where each protocol subsystem owns its own state and handler logic, rather than dumping everything into a single monolithic `state.rs`.
+
+```
+src/core/
+├── state.rs                     # DECOMPOSED: Core state + domain-specific sub-states
+│   └── Contains: surfaces, windows, focus, seat, outputs, serial counter
+│       All protocol-specific state MOVED to respective protocol modules
+│
+├── input/                       # EXPANDED from 43-line stub
+│   ├── mod.rs                   # Re-exports
+│   ├── seat.rs                  # Full seat abstraction (capabilities, resources)
+│   ├── keyboard.rs              # XKB context/keymap/state machine, key repeat
+│   ├── pointer.rs               # Pointer state, focus tracking, cursor management
+│   ├── touch.rs                 # Multi-touch state, touch point tracking
+│   └── xkb.rs                   # xkbcommon integration, keymap generation/bundling
+│
+├── wayland/
+│   ├── ext/
+│   │   ├── <protocol>.rs        # Each file: handler + OWN state struct (not in state.rs)
+│   │   └── ...
+│   └── ...
+│
+└── render/                      # NEW: Scene graph for platform rendering
+    ├── scene.rs
+    ├── node.rs
+    └── damage.rs
+```
+
+> [!IMPORTANT]
+> **Key structural change**: Protocol-specific state (e.g., `locked_pointers`, `activation_tokens`, `viewports`) currently stored as 50+ HashMaps in `state.rs` will migrate into their respective protocol modules. Each protocol handler owns and manages its own state.
+
 ---
-
-### ✅ Notes on This Layout
-
-* **`core/`**: All shared compositor logic, OS-independent, fully testable. Includes Wayland protocols, surfaces, windows, input routing, scene graph, IPC, timing.
-* **`platform/`**: Trait definitions only. **Actual frontends are native code** (Objective-C, Swift, Kotlin).
-* **`ffi/`**: Stable FFI boundary using UniFFI. This is how native frontends call into Rust.
-* **`ui/`**: Platform-independent UI state; drives declarative rendering.
-* **`util/`**: Helpers shared across core modules.
-* **`tests/`**: Unit tests for Rust core logic.
-
-### 🔑 Native Frontend Architecture
-
-Native frontends (macOS, iOS, Android) are written in their native languages, **not Rust**:
-
-| Platform | Language | GUI Framework | Rendering | Location |
-|----------|----------|---------------|-----------|----------|
-| macOS | Objective-C | AppKit | Metal | `src/platform/macos/` (23 .m files) |
-| iOS | Objective-C/Swift | UIKit | Metal | `src/platform/ios/` |
-| Android | Kotlin | Jetpack Compose | Vulkan/Canvas | `src/platform/android/` |
-
-**Why native frontends?**
-- Full access to platform APIs (AppKit, UIKit, Compose)
-- Better IDE support and debugging
-- No limitations from Rust FFI wrappers (cacao, objc2)
-- Platform specialists can maintain frontend code
-
---- 
 
 ## **2. Native Frontend → FFI → Rust Backend Flow**
 
 ```mermaid
 flowchart TD
-    OS[Native OS Events\n(NSEvent / UIEvent / MotionEvent)]
-    Frontend[Native Frontend\n(Objective-C / Swift / Kotlin)]
-    FFI[FFI Layer\n(src/ffi/*)\nUniFFI-generated bindings]
-    Core[Rust Core Compositor\n(src/core/*)\nWayland, Surfaces, Windows,\nInput, Scene Graph, IPC]
-    Scene[RenderScene\n(from get_render_scene)]
-    Renderer[Native Renderer\n(Metal / Vulkan / Canvas)]
+    OS[Native OS Events\n'NSEvent / UIEvent / MotionEvent']
+    Frontend[Native Frontend\n'Objective-C / Swift / Kotlin']
+    FFI[FFI Layer\n'src/ffi/*'\nUniFFI-generated bindings]
+    Core[Rust Core Compositor\n'src/core/*'\nWayland, Surfaces, Windows,\nInput, Scene Graph]
+    Scene[RenderScene\n'from get_render_scene']
+    Renderer[Native Renderer\n'Metal / Vulkan / Canvas']
     Display[Display Output]
 
     OS --> Frontend
@@ -222,24 +197,9 @@ flowchart TD
 
 ---
 
-## **4. Draw / Redraw Cycle**
+## **4. Threading & Safety**
 
 ```mermaid
-flowchart TD
-    Input[Input Event] --> Platform[Platform Adapter]
-    Platform --> Core[Rust Core: Update State]
-    Core --> SceneGraph[Scene Graph Update]
-    SceneGraph --> Renderer[Platform Renderer Update]
-    Renderer --> Screen[Screen Output]
-```
-
----
-
-## **5. Threading & Safety Notes (Mermaid Swimlane)**
-
-```mermaid
-%% Mermaid Gantt-like swimlane for threads / roles
-%% Using graph TD for clarity
 flowchart TB
     subgraph Input Thread
         A1[Receive OS Input Events]
@@ -264,47 +224,23 @@ flowchart TB
 
 ---
 
-## ✅ Key Design Principles (Mermaid Summary)
+## **5. Key Design Principles**
 
-```mermaid
-flowchart TD
-    Core[Rust Core (sacred)]
-    Platform[Platform Adapter (thin)]
-    FFI[FFI Layer (stable)]
-    UI[UI Observers / ViewModels]
-    Output[Native Rendering / Screen]
-
-    Core -->|State| UI
-    UI -->|Observe / Draw| Platform
-    Core -->|Expose APIs| FFI
-    FFI -->|Calls| Core
-    Core -->|Scene Graph| Platform
-    Platform --> Output
-```
-
-* **Core**: All shared logic; OS-agnostic; testable
-* **Platform**: Thin adapter; translates events, renders buffers
-* **FFI**: UniFFI boundary; safe memory & threading
-* **UI**: Rust-driven, declarative
-* **Output**: Native GPU/Canvas rendering
+* **Core**: All shared logic; OS-agnostic; fully testable in isolation
+* **Platform**: Thin adapter; translates native events, renders buffers via Metal/Vulkan
+* **FFI**: UniFFI boundary; safe memory & threading; no Wayland types leak across
+* **Protocol modules**: Each protocol owns its state + handler logic (Smithay pattern)
+* **Output**: Native GPU/Canvas rendering consuming `RenderScene` from Rust
 
 ---
 
 ## **6. Wayland Protocol Support**
 
-Wawona supports standard Wayland protocols via **crate re-exports** from the Rust ecosystem.
-
 ### Protocol Architecture
 
-All protocols are accessible from a **single unified location**: `src/core/wayland/protocol/`
+All protocols are accessible from a single unified location: `src/core/wayland/protocol/`
 
 This module provides both server-side (compositor implementation) and client-side (testing/nested compositor) protocol bindings through organized submodules.
-
-**Key Design Principles:**
-- **Single source of truth**: All protocols in `src/core/wayland/protocol/`
-- **Crate re-exports**: No custom code generation, use established Rust crates
-- **Client/Server separation**: Clear organization for different use cases
-- **67+ protocols**: Full ecosystem compatibility
 
 | Crate | Version | Contents |
 |-------|---------|----------|
@@ -313,260 +249,276 @@ This module provides both server-side (compositor implementation) and client-sid
 | `wayland-protocols-wlr` | 0.3+ | wlroots extensions (layer_shell, screencopy, etc.) |
 | `wayland-protocols-misc` | 0.3+ | Misc protocols (virtual_keyboard, gtk_primary_selection) |
 
-### Protocol Module Structure
+### Protocol Implementation Status — Honest Assessment
 
-```
-src/core/wayland/protocol/
-├── mod.rs                    # Main protocol module
-├── server/                   # Server-side bindings (compositor implementation)
-│   ├── wayland_core          # Core protocol (wl_compositor, wl_surface, etc.)
-│   ├── wp                    # Platform protocols (viewporter, dmabuf, fractional_scale, etc.)
-│   ├── xdg                   # XDG shell (xdg_shell, xdg_decoration, xdg_activation, etc.)
-│   ├── ext                   # Extended protocols (session_lock, idle_notify, foreign_toplevel, etc.)
-│   ├── xwayland              # XWayland protocols
-│   └── wlroots               # wlroots protocols (layer_shell, screencopy, gamma_control, etc.)
-├── client/                   # Client-side bindings (testing/nested compositor)
-│   ├── wayland_core          # Core protocol (client-side)
-│   ├── wp                    # Platform protocols
-│   ├── xdg                   # XDG shell
-│   ├── ext                   # Extended protocols
-│   ├── xwayland              # XWayland protocols
-│   └── wlroots               # wlroots protocols (client-side)
-└── wlroots/                  # wlroots protocol details submodule
-    └── mod.rs                # Re-exports from wayland-protocols-wlr crate
-```
+> [!CAUTION]
+> Previous documentation marked all 67 protocols as "✅ Complete." A thorough code audit reveals that most protocols are **registered** (global created, `Dispatch` trait implemented) but contain **stub-only request handlers** — they log incoming requests via `tracing::debug!()` but do **not** implement protocol semantics (state mutations, response events, error handling).
 
-### Usage Examples
+| Status | Meaning | Count |
+|--------|---------|-------|
+| 🟢 **Functional** | Handles requests, mutates state, sends proper events | ~10 |
+| 🟡 **Partial** | Global registered, some requests handled, incomplete semantics | ~8 |
+| 🔴 **Stub** | Global registered, all request handlers are `debug!()` only | ~49 |
 
-```rust
-// Server-side: implementing xdg-shell
-use crate::core::wayland::protocol::server::xdg::shell;
+#### Category Breakdown
 
-// Server-side: implementing wlr-layer-shell
-use crate::core::wayland::protocol::server::wlroots;
+| Category | Protocol | Implementation | Notes |
+|----------|----------|---------------|-------|
+| **Core** | `wl_compositor` | 🟢 Functional | Surface creation, commit, frame callbacks |
+| **Core** | `wl_shm` | 🟢 Functional | Pool creation, buffer creation, mmap |
+| **Core** | `wl_seat` | 🟡 Partial | Keyboard/pointer/touch resource binding works; **XKB uses hardcoded minimal keymap fallback** — no proper `xkbcommon` state machine |
+| **Core** | `wl_output` | 🟢 Functional | Mode, geometry, scale, done events |
+| **Core** | `wl_subcompositor` | 🟡 Partial | Subsurface creation tracked; z-order and sync/desync partially implemented |
+| **Core** | `wl_data_device_manager` | 🟡 Partial | Data source/device creation; selection and DnD logic incomplete |
+| **XDG** | `xdg_wm_base` | 🟢 Functional | Surface/toplevel/popup lifecycle, configure/ack, ping/pong |
+| **XDG** | `xdg_decoration` | 🟢 Functional | CSD/SSD negotiation, mode switching; WindowCreated carries decoration_mode/fullscreen_shell; DecorationModeChanged C event; fullscreen shell → no host chrome |
+| **XDG** | `xdg_output` | 🟡 Partial | Logical position/size sent; updates on output change incomplete |
+| **XDG** | All others (activation, dialog, drag, icon, exporter/importer) | 🔴 Stub | Globals registered, requests logged only |
+| **wlr** | `layer_shell` | 🟡 Partial | Layer surface creation tracked; anchor/margin/exclusive zone stored |
+| **wlr** | All others (output_mgmt, screencopy, foreign_toplevel, etc.) | 🔴 Stub | Globals registered, requests logged only |
+| **Buffer** | `linux_dmabuf_v1` | 🟡 Partial | Params creation tracked; IOSurface path for macOS exists; feedback objects stubbed |
+| **Buffer** | All others (explicit_sync, drm_syncobj, drm_lease, single_pixel) | 🔴 Stub | Globals registered, requests logged only |
+| **Input** | All (pointer_constraints, gestures, relative_pointer, text_input, etc.) | 🔴 Stub | Globals registered, requests logged only |
+| **Timing** | `presentation_time` | 🟡 Partial | Feedback collection exists; presentation events incomplete |
+| **Timing** | All others (fractional_scale, fifo, tearing, commit_timing, etc.) | 🔴 Stub | |
+| **Session** | All (idle_inhibit, session_lock, idle_notify, security_context, etc.) | 🔴 Stub | |
+| **Desktop** | All (alpha_modifier, foreign_toplevel_list, workspace, etc.) | 🔴 Stub | |
+| **Capture** | All (image_capture_source, image_copy_capture, xwayland_*, etc.) | 🔴 Stub | |
+| **Plasma** | All (kde_decoration, blur, contrast, shadow, dpms, etc.) | 🔴 Stub | |
 
-// Client-side (for testing)
-use crate::core::wayland::protocol::client::xdg::shell;
-```
+### 68 Registered Globals (unchanged)
 
-### Protocol Implementation Status
+All 68 protocol globals are registered correctly at compositor startup. The issue is not registration — it's that **request handlers need semantic implementation**.
 
-| Category | Protocol | Status |
-|----------|----------|--------|
-| **Core** | wl_compositor, wl_shm | ✅ Complete |
-| **Core** | wl_seat (pointer, keyboard, touch) | ✅ Complete |
-| **Core** | wl_output | ✅ Complete |
-| **Core** | wl_subcompositor | ✅ Complete |
-| **Core** | wl_data_device_manager | ✅ Complete |
-| **XDG** | xdg_shell (wm_base, surface, toplevel, popup) | ✅ Complete |
-| **XDG** | xdg_decoration | ✅ Complete |
-| **XDG** | xdg_output | ✅ Complete |
-| **Buffer** | linux_dmabuf_v1 | ✅ Complete |
-| **Buffer** | linux_explicit_synchronization | ✅ Complete |
-| **Timing** | presentation_time | ✅ Complete |
-| **Input** | pointer_constraints | ✅ Complete |
-| **Input** | pointer_gestures | ✅ Complete |
-| **Input** | relative_pointer | ✅ Complete |
-| **Input** | text_input_v3 | ✅ Complete |
-| **Input** | keyboard_shortcuts_inhibit | ✅ Complete |
-| **Window** | viewporter | ✅ Complete |
-| **Session** | idle_inhibit | ✅ Complete |
-| **Tablet** | tablet_v2 | ✅ Complete |
-| **Cursor** | cursor_shape_v1, primary_selection | ✅ Complete |
-| **Timing** | fractional_scale, fifo_v1, tearing_control_v1, commit_timing_v1, content_type | ✅ Complete |
-| **Window Ext** | xdg_activation, xdg_dialog, xdg_toplevel_drag, xdg_toplevel_icon | ✅ Complete |
-| **Session Ext** | ext_session_lock, ext_idle_notify | ✅ Complete |
-| **Advanced** | single_pixel_buffer, alpha_modifier | ✅ Complete |
+**Core (6):** wl_compositor v6, wl_shm v1, wl_subcompositor v1, wl_data_device_manager v3, wl_output v3, wl_seat v8
 
-### Registered Wayland Globals (67 protocols)
+**XDG (9):** xdg_wm_base v5, zxdg_decoration_manager_v1, zxdg_output_manager_v1, zxdg_exporter_v2, zxdg_importer_v2, xdg_activation_v1, xdg_wm_dialog_v1, xdg_toplevel_drag_manager_v1, xdg_toplevel_icon_manager_v1
 
-All protocols are registered in `src/core/compositor.rs::register_globals()`:
+**KDE/Plasma (7):** org_kde_kwin_server_decoration_manager, blur_manager, contrast_manager, shadow_manager, dpms_manager, idle_timeout, slide_manager
 
-**Core Protocols (6):**
-- `wl_compositor` v6 - Surface creation and management
-- `wl_shm` v1 - Shared memory buffers
-- `wl_subcompositor` v1 - Subsurface support
-- `wl_data_device_manager` v3 - Clipboard and drag-and-drop
-- `wl_output` v4 - Display output information
-- `wl_seat` v8 - Input devices (pointer, keyboard, touch)
+**Buffer & Sync (5):** zwp_linux_dmabuf_v1 v4, zwp_linux_explicit_synchronization_v1, wp_single_pixel_buffer_manager_v1, wp_linux_drm_syncobj_manager_v1, wp_drm_lease_device_v1
 
-**XDG Shell & Extensions (10):**
-- `xdg_wm_base` v5 - Window management
-- `zxdg_decoration_manager_v1` v1 - Window decorations (CSD/SSD)
-- `zxdg_output_manager_v1` v3 - Extended output info
-- `zxdg_exporter_v2` v2 - Export toplevels for embedding
-- `zxdg_importer_v2` v2 - Import toplevels for embedding
-- `xdg_activation_v1` v1 - Focus stealing prevention
-- `xdg_wm_dialog_v1` v1 - Dialog window hints
-- `xdg_toplevel_drag_manager_v1` v1 - Drag entire windows
-- `xdg_toplevel_icon_manager_v1` v1 - Window icons
-- `xdg_toplevel_tag_manager_v1` v1 - Session restore tagging
-- `xdg_system_bell_v1` v1 - Notification sounds
+**Input & Interaction (10):** zwp_relative_pointer_manager_v1, zwp_pointer_constraints_v1, zwp_pointer_gestures_v1, zwp_tablet_manager_v2, zwp_text_input_manager_v3, zwp_keyboard_shortcuts_inhibit_manager_v1, wp_cursor_shape_manager_v1, zwp_primary_selection_device_manager_v1, zwp_input_timestamps_manager_v1, wp_pointer_warp_v1
 
-**Buffer & Synchronization (5):**
-- `zwp_linux_dmabuf_v1` v4 - DMA-BUF GPU buffer sharing
-- `zwp_linux_explicit_synchronization_v1` v1 - Explicit buffer sync
-- `wp_single_pixel_buffer_manager_v1` v1 - Solid color surfaces
-- `wp_linux_drm_syncobj_manager_v1` v1 - DRM explicit sync
-- `wp_drm_lease_device_v1` v1 - VR/AR display leasing
+**Presentation & Timing (8):** wp_presentation, wp_viewporter, wp_fractional_scale_manager_v1, wp_fifo_manager_v1, wp_tearing_control_manager_v1, wp_commit_timing_manager_v1, wp_content_type_manager_v1, wp_color_representation_manager_v1
 
-**Input & Interaction (11):**
-- `zwp_relative_pointer_manager_v1` v1 - Relative pointer motion
-- `zwp_pointer_constraints_v1` v1 - Pointer lock/confine
-- `zwp_pointer_gestures_v1` v1 - Swipe/pinch gestures
-- `zwp_tablet_manager_v2` v1 - Graphics tablet support
-- `zwp_text_input_manager_v3` v1 - IME text input
-- `zwp_keyboard_shortcuts_inhibit_manager_v1` v1 - Disable compositor shortcuts
-- `wp_cursor_shape_manager_v1` v1 - Predefined cursor shapes
-- `zwp_primary_selection_device_manager_v1` v1 - Middle-click paste
-- `zwp_input_panel_v1` v1 - Input panel for IME
-- `zwp_input_timestamps_manager_v1` v1 - High-resolution input timing
-- `wp_pointer_warp_v1` v1 - Pointer teleportation
+**Session & Security (5):** zwp_idle_inhibit_manager_v1, ext_session_lock_manager_v1, ext_idle_notifier_v1, wp_security_context_manager_v1, ext_transient_seat_manager_v1
 
-**Presentation & Timing (9):**
-- `wp_presentation` v1 - Frame timing feedback
-- `wp_viewporter` v1 - Surface cropping/scaling
-- `wp_fractional_scale_manager_v1` v1 - HiDPI scaling
-- `wp_fifo_manager_v1` v1 - Presentation ordering
-- `wp_tearing_control_manager_v1` v1 - Vsync hints
-- `wp_commit_timing_manager_v1` v1 - Frame timing hints
-- `wp_content_type_manager_v1` v1 - Content type hints
-- `wp_color_manager_v1` v1 - HDR and color space support
-- `wp_color_representation_manager_v1` v1 - Color format hints
+**Desktop Integration (4):** wp_alpha_modifier_v1, ext_foreign_toplevel_list_v1, ext_workspace_manager_v1, ext_background_effect_manager_v1
 
-**Session & Security (5):**
-- `zwp_idle_inhibit_manager_v1` v1 - Prevent system idle
-- `ext_session_lock_manager_v1` v1 - Screen locking
-- `ext_idle_notifier_v1` v1 - User idle notifications
-- `wp_security_context_manager_v1` v1 - Sandboxed connections
-- `ext_transient_seat_manager_v1` v1 - Remote desktop seats
+**Screen Capture & XWayland (4):** ext_output_image_capture_source_manager_v1, ext_image_copy_capture_manager_v1, zwp_xwayland_keyboard_grab_manager_v1, xwayland_shell_v1
 
-**Desktop Integration (6):**
-- `wp_alpha_modifier_v1` v1 - Alpha blending
-- `zwp_fullscreen_shell_v1` v1 - Kiosk mode shell
-- `ext_foreign_toplevel_list_v1` v1 - Task bar support
-- `ext_data_control_manager_v1` v1 - Clipboard managers
-- `ext_workspace_manager_v1` v1 - Virtual desktop management
-- `ext_background_effect_manager_v1` v1 - Blur effects
-
-**Screen Capture & XWayland (4):**
-- `ext_output_image_capture_source_manager_v1` v1 - Capture sources
-- `ext_image_copy_capture_manager_v1` v1 - Screen capture
-- `zwp_xwayland_keyboard_grab_manager_v1` v1 - XWayland input
-- `xwayland_shell_v1` v1 - XWayland surface integration
-
-**wlroots (10):**
-- `zwlr_layer_shell_v1` - Panels, overlays (CRITICAL)
-- `zwlr_output_management_v1` - Display configuration
-- `zwlr_foreign_toplevel_management_v1` - Task bars
-- `zwlr_screencopy_manager_v1` - Screen capture
-- `zwlr_gamma_control_manager_v1` - Night light
-- `zwlr_data_control_manager_v1` - Clipboard managers
-- `zwlr_export_dmabuf_manager_v1` - GPU buffer export
-- `zwlr_virtual_pointer_manager_v1` - Virtual pointers
-- `zwp_virtual_keyboard_v1` - Virtual keyboards
-- `zwlr_input_inhibitor_v1` - Input inhibitor
-
-**Total: 67 wayland-protocols registered and functional**
-
-Using **wayland-protocols 0.32.10**, **wlr 0.3.10**, **misc 0.3.10**.
+**wlroots (10):** zwlr_layer_shell_v1, zwlr_output_management_v1, zwlr_output_power_management_v1, zwlr_foreign_toplevel_management_v1, zwlr_screencopy_manager_v1, zwlr_gamma_control_manager_v1, zwlr_data_control_manager_v1, zwlr_export_dmabuf_manager_v1, zwlr_virtual_pointer_manager_v1, zwp_virtual_keyboard_v1
 
 ---
 
-### wlroots Protocol Support
+## **7. xkbcommon Integration Plan**
 
-For ecosystem compatibility with Sway, Hyprland, and other wlroots-based tools, we use the `wayland-protocols-wlr` crate.
+### Current State
 
-All 10 wlroots protocols are re-exported in `src/core/wayland/protocol/wlroots/` and have their globals registered.
+The `seat.rs` `send_keymap()` function:
+1. Calls `generate_xkb_keymap()` which tries to create an `xkb_context` + `xkb_keymap` via `xkbcommon` crate
+2. If that fails (e.g., on iOS — missing XKB data files), falls back to `minimal_xkb_keymap()` — a hardcoded US QWERTY layout
+3. Creates an fd (via `memfd_create` on Linux, temp file on macOS/iOS) and sends it to the client
 
-**Current Status:**
-- All 67 protocols fully available via crate re-exports.
-- No local file generation required.
-- Dispatch traits implemented in `src/core/wayland/`.
+**What's missing:**
+- No `xkb_state` machine — modifier tracking is done manually via raw u32 bitmasks
+- No scancode → keysym → UTF-8 pipeline on the compositor side
+- No keymap update on layout change
+- No key repeat management driven by XKB
 
+### Target Architecture
+
+```mermaid
+flowchart TD
+    Platform[Platform Layer\nmacOS/iOS keycode] --> FFI[FFI inject_key\nscancode + modifiers]
+    FFI --> XKB[XKB State Machine\nxkb_state_key_get_one_sym\nxkb_state_key_get_utf8]
+    XKB --> |keymap fd| Client[wl_keyboard.keymap]
+    XKB --> |key event| Client2[wl_keyboard.key]
+    XKB --> |modifier mask| Client3[wl_keyboard.modifiers]
+    
+    subgraph New: src/core/input/xkb.rs
+        Context[xkb_context]
+        Keymap[xkb_keymap\nfrom bundled or system data]
+        State[xkb_state\nprocesses scancodes + mods]
+    end
+```
+
+**Key steps:**
+1. Create `src/core/input/xkb.rs` with proper `xkb_context` → `xkb_keymap` → `xkb_state` lifecycle
+2. Bundle XKB keymap data for platforms without system-installed XKB data (iOS, Android)
+3. Use `xkb_state_update_mask()` for modifier events
+4. Use `xkb_state_key_get_one_sym()` / `xkb_state_key_get_utf8()` for key processing
 
 ---
 
-## **7. macOS GPU Acceleration (DMABUF via IOSurface)**
+## **8. macOS GPU Acceleration (DMABUF via IOSurface)**
 
-To support hardware-accelerated clients (like `weston-terminal`, browsers, MPV) on macOS, Wawona implements a custom zero-copy path for Wayland `linux-dmabuf` buffers.
-
-### Problem
-macOS does not support Linux DMA-BUFs natively. `waypipe` or standard Wayland clients expect `dmabuf` file descriptors for GPU buffer sharing.
-
-### Solution: IOSurface Tunneling
-Wawona intercepts DMABUF requests and maps them to macOS `IOSurface` handles.
+To support hardware-accelerated clients on macOS, Wawona implements a custom zero-copy path.
 
 ```mermaid
 flowchart LR
-    Client[Wayland Client\n(Weston/GL)] -->|Allocates\nIOSurface| Allocator[Mesa/Waypipe]
+    Client[Wayland Client\n'Weston/GL'] -->|Allocates\nIOSurface| Allocator[Mesa/Waypipe]
     Allocator -->|zwp_linux_dmabuf_v1\ncreate_immed| Core[Rust Core]
     
     subgraph Wawona ["Wawona Compositor"]
-        Core -->|Extract ID| Buffer[Buffer::Native(ID)]
-        Buffer .->|FFI\nBufferData::Iosurface| Bridge[ObjC Bridge]
-        Bridge -->|IOSurfaceLookup(ID)| Layer[CAMetalLayer\n.contents = surface]
+        Core -->|Extract ID| Buffer[Buffer::Native ID]
+        Buffer -.->|FFI\nBufferData::Iosurface| Bridge[ObjC Bridge]
+        Bridge -->|IOSurfaceLookup ID| Layer[CAMetalLayer\n.contents = surface]
     end
-    
-    Allocator -.->|ID in Modifier| Core
 ```
 
-1. **Allocation**: `waypipe` (patched) or a custom allocator allocates an `IOSurface` and sends its global ID in the **modifier** field of the `zwp_linux_dmabuf_v1` request.
-2. **Intercept**: Wawona Core detects the custom modifier (`0x80...`), extracts the ID, and creates a `BufferType::Native`.
-3. **Scanout**: When attached to a surface, the ID is passed to the macOS frontend via FFI.
-4. **Zero-Copy**: The Objective-C bridge performs an `IOSurfaceLookup` and assigns the surface directly to the `CAMetalLayer`'s contents.
-
-This allows full GPU performance without expensive CPU copies.
+1. **Allocation**: `waypipe` (patched) or custom allocator allocates an `IOSurface`, sends its global ID in the modifier field
+2. **Intercept**: Wawona Core detects the custom modifier, extracts the ID, creates `BufferType::Native`
+3. **Scanout**: ID passed to macOS frontend via FFI
+4. **Zero-Copy**: Objective-C bridge performs `IOSurfaceLookup` and assigns directly to `CAMetalLayer`
 
 ---
 
-## **8. Declarative Build System (Nix)**
+## **9. Declarative Build System (Nix)**
 
-Wawona uses **Nix** as the single source of truth for the build environment, dependencies, and toolchain versions across all platforms (macOS, iOS, Android).
+Wawona uses **Nix** as the single source of truth for all builds.
 
-> **Goal**: A fully declarative repo where `nix` defines:
-> * **Environment Variables**: Injected via `devShells` and wrappers.
-> * **Toolchains**: Rust, Clang, Android SDK, Xcode environment (via paths).
-> * **Applications**: Run targets like `wawona-macos`, `wawona-ios`, `wawona-android`.
-> * **Project Generation**: `xcodegen` (iOS/macOS) and `gradlegen` (Android) config via Nix.
-
-### Platform Build Strategies
-- **macOS**: Pure Nix build (`nix build`). Dependencies linked via Nix store.
-- **iOS**: Hybrid Nix + XcodeGen. Nix provides dependencies & tools; XcodeGen generates `.xcodeproj` for signing/simulator.
-- **Android**: Hybrid Nix + GradleGen. Nix provides Android SDK/NDK; GradleGen generates build files.
-
-### iOS Workflow (`nix run .#wawona-ios`)
- 
- Running `nix run .#wawona-ios` fully automates the development cycle:
- 
- 1. **Environment Setup**: Checks for `TEAM_ID` (required for signing).
- 2. **Project Generation**: Runs `xcodegen` to generate `Wawona.xcodeproj`.
- 3. **Simulator Management**: 
-    - Checks for a simulator named "Wawona iOS".
-    - Creates it (iPhone 14) if missing.
-    - Boots the simulator.
- 4. **Build & Run**:
-    - Builds the app using `xcodebuild` for the simulator.
-    - Installs and launches the app automatically.
-    - Does **NOT** open Xcode GUI (uses headless build).
- 
- ### Xcode Project Generation (`nix run .#xcodegen`)
- 
- If you want to edit code in Xcode:
- 1. Run `nix run .#xcodegen`.
- 2. This generates the project and **opens Xcode** for you.
- 3. You can then build/run manually from the IDE.
+| Platform | Strategy | Command |
+|----------|----------|---------|
+| macOS | Pure Nix build | `nix build .#wawona-macos` |
+| iOS | Hybrid Nix + XcodeGen | `nix run .#wawona-ios` |
+| Android | Hybrid Nix + GradleGen | `nix run .#wawona-android` |
+| Linux | DRM/KMS fullscreen | `nix build .#wawona-linux` |
 
 ### Key Nix Modules
-*   **`flake.nix`**: Defines the `wawona-ios`, `wawona-macos`, `wawona-android` packages and apps.
-*   **`dependencies/wawona-ios.nix`**: The Nix derivation for iOS dependencies and build environment.
-*   **`dependencies/wawona-macos.nix`**: The Nix derivation for the macOS native frontend + Rust backend build.
-*   **`dependencies/wawona-android.nix`**: The Nix derivation for the Android build (APK + native libs).
-*   **`dependencies/wawona-common.nix`**: Shared sources, dependencies, and flags used by all platform modules.
-*   **`dependencies/xcodegen-wawona.nix`**: The XcodeGen configuration, translated to Nix. It defines the project structure, targets, and file references.
+- `flake.nix` — Defines all packages and apps
+- `dependencies/wawona/ios.nix` — iOS build (XcodeGen + Xcode)
+- `dependencies/wawona/macos.nix` — macOS native frontend + Rust backend
+- `dependencies/wawona/android.nix` — Android build (APK + native libs + Rust backend)
+- `dependencies/wawona/common.nix` — Shared sources, dependencies, flags
+- `dependencies/wawona/rust-backend-ios.nix` — Rust core cross-compilation for iOS
+- `dependencies/wawona/rust-backend-macos.nix` — Rust core for macOS
+- `dependencies/wawona/rust-backend-android.nix` — Rust core + waypipe for Android (aarch64-linux-android)
+- `dependencies/generators/xcodegen.nix` — XcodeGen project generation
+- `dependencies/generators/gradlegen.nix` — Gradle build file generation
 
-### Environment Variables
-The Nix devshell injects necessary environment variables for the build:
-*   `SDKROOT`: Path to the iOS SDK.
-*   `DEVELOPER_DIR`: Path to Xcode Developer directory.
-*   `wawonaVersion`: Project version.
+---
+
+## **10. Waypipe Integration**
+
+Waypipe enables remote Wayland application display over SSH.
+
+| Platform | Transport | Buffer Path | Status |
+|----------|-----------|-------------|--------|
+| macOS | openssh process spawn | IOSurface → Metal | Working |
+| iOS | libssh2 in-process | IOSurface → Metal | Built, needs integration |
+| Android | **Dropbear SSH** (fork/exec) | SHM → Vulkan | **Working** (waypipe_main called from JNI, SSH binaries bundled) |
+
+**Android Implementation:**
+- Uses **Dropbear SSH** (lightweight SSH client) bundled as static ARM64 executable
+- SSH binaries (`libssh_bin.so`, `libsshpass_bin.so`) extracted from APK at runtime
+- Waypipe Rust backend exposes `waypipe_main()` C entry point for JNI integration
+- SSH bridge thread forks/execs Dropbear with `SSHPASS` env var for password auth
+
+See [2026-waypipe-ios-full-plan.md](./2026-waypipe-ios-full-plan.md) for iOS-specific details.
+
+---
+
+## **11. Android Architecture**
+
+### Platform Frontend (Kotlin + JNI)
+
+```
+src/platform/android/
+├── android_jni.c               # C JNI bridge — Vulkan init, render thread, input dispatch, waypipe thread, SSH binary resolution
+├── AndroidManifest.xml          # extractNativeLibs=true (required for SSH binary exec)
+├── java/com/aspauldingcode/wawona/
+│   ├── MainActivity.kt         # Jetpack Compose host — EdgeToEdge, safe area, waypipe status banner
+│   ├── WawonaSurfaceView.kt    # SurfaceView — touch/key event capture, IME InputConnection
+│   ├── WawonaNative.kt         # JNI external declarations (lifecycle, input, waypipe, text input, SSH test)
+│   ├── FabMenu.kt              # M3 Expressive FAB — Settings, Run/Stop Waypipe actions
+│   ├── SettingsScreen.kt       # SSH host/user/command configuration (SharedPreferences)
+│   ├── WaypipeStatusBanner.kt  # Persistent waypipe connection indicator
+│   └── Theme.kt                # Material 3 Expressive theming
+```
+
+### Data Flow
+
+```
+MotionEvent/KeyEvent → WawonaSurfaceView (Kotlin)
+  → JNI (nativeTouchDown/nativeKeyEvent)
+    → WWNCoreInjectTouch*/WWNCoreInjectKey (Rust FFI)
+      → Wayland protocol handlers → surface commits
+
+Render loop (C pthread in android_jni.c):
+  WWNCoreProcessEvents → WWNCoreGetRenderScene → iterate CRenderNode[]
+    → Vulkan textured quad draw (SHM → VkImage upload)
+    → WWNCoreNotifyFramePresented per node → WWNRenderSceneFree
+
+Waypipe + SSH (C pthreads in android_jni.c):
+  SharedPreferences → nativeRunWaypipe → resolve_ssh_binary_paths()
+    → dladdr() finds native lib dir → copy libssh_bin.so/libsshpass_bin.so to cache
+    → waypipe_main(argc, argv) [Rust entry point]
+      → SSH bridge thread: fork() → exec(ssh_bin_path) [Dropbear dbclient]
+        → SSHPASS env var → remote waypipe server → Wayland forwarding
+```
+
+### SSH Binary Bundling & Execution
+
+Android doesn't ship with SSH tools. Wawona bundles **Dropbear SSH** (lightweight SSH client) and **sshpass** as static ARM64 executables:
+
+1. **Build-time**: Nix cross-compiles Dropbear (`dbclient`) and sshpass for `aarch64-linux-android`
+2. **APK bundling**: Binaries packaged as `libssh_bin.so` and `libsshpass_bin.so` in `jniLibs/arm64-v8a/`
+3. **Runtime extraction**: `AndroidManifest.xml` sets `extractNativeLibs="true"` so Android extracts libs to `/data/app/.../lib/arm64/`
+4. **Path resolution**: `resolve_ssh_binary_paths()` uses `dladdr()` to find native lib directory, copies binaries to app cache (`XDG_RUNTIME_DIR`), makes them executable
+5. **Execution**: SSH bridge thread uses `exec()` with absolute paths to extracted binaries
+
+**Key implementation details:**
+- Dropbear's `dbclient` is renamed to `ssh` for compatibility
+- Dropbear patched to read password from `SSHPASS` env var (no TTY available)
+- `sshpass` bundled but optional (Dropbear can use SSHPASS directly)
+- All binaries statically linked (no external dependencies)
+
+### Nix Build Pipeline
+
+1. **Cross-compile native C deps** — `dependencies/platforms/android.nix` registers builders for xkbcommon, openssl, libwayland, pixman, expat, libxml2, zstd, lz4, etc.
+2. **Cross-compile SSH tools** — `dependencies/libs/openssh/android.nix` builds Dropbear SSH client; `dependencies/libs/sshpass/android.nix` builds sshpass
+3. **Rust backend** — `dependencies/wawona/rust-backend-c2n.nix` cross-compiles `libwawona.a` for `aarch64-linux-android` with vendored waypipe (patched for Android, exposes `waypipe_main` C entry point)
+4. **APK build** — `dependencies/wawona/android.nix`:
+   - Compiles JNI C code (`android_jni.c`)
+   - Links `libwawona.a` + all static deps into `libwawona.so`
+   - Bundles SSH binaries as `libssh_bin.so` and `libsshpass_bin.so` in `jniLibs/arm64-v8a/`
+   - Generates Gradle build files via `gradlegen`
+   - Assembles final APK with `gradle assembleDebug`
+5. **Deploy** — `nix run .#wawona-android` installs via `adb install -r` and launches emulator/app
+
+### Android-Specific Dependencies
+
+| Library | Nix Module | Purpose |
+|---------|-----------|---------|
+| xkbcommon | `dependencies/libs/xkbcommon/android.nix` | Keyboard keymaps (XKB) |
+| openssl | `dependencies/libs/openssl/android.nix` | TLS/crypto (Dropbear, waypipe) |
+| **openssh** | `dependencies/libs/openssh/android.nix` | **Dropbear SSH client** (fork/exec) |
+| **sshpass** | `dependencies/libs/sshpass/android.nix` | **Password automation** (optional) |
+| libwayland | `dependencies/libs/libwayland/android.nix` | Wayland protocol library |
+| pixman | `dependencies/libs/pixman/android.nix` | Pixel manipulation |
+| libffi | `dependencies/libs/libffi/android.nix` | Foreign function interface |
+| expat | `dependencies/libs/expat/android.nix` | XML parser (xkbcommon dep) |
+| libxml2 | `dependencies/libs/libxml2/android.nix` | XML parser |
+| zstd | `dependencies/libs/zstd/android.nix` | Compression (waypipe) |
+| lz4 | `dependencies/libs/lz4/android.nix` | Compression (waypipe) |
+| swiftshader | `dependencies/libs/swiftshader/android.nix` | Software Vulkan renderer (fallback) |
+
+### Waypipe Integration on Android
+
+Waypipe is integrated via Rust FFI: `waypipe_main()` is exposed as a C-callable function from the Rust backend.
+
+**Architecture:**
+- **Local waypipe client**: `waypipe --socket /path/wp.sock --oneshot client` connects to compositor
+- **SSH bridge thread**: Forks `ssh` (Dropbear) with remote command (Python script that runs waypipe server)
+- **Data forwarding**: Bridges data between local Unix socket and SSH stdin/stdout pipes
+
+**Key differences from iOS:**
+- Uses **OpenSSH/Dropbear** (fork/exec) instead of libssh2 (library-based)
+- SSH binaries bundled in APK and extracted at runtime
+- Waypipe Rust backend compiled with Android-specific patches (stubs for gbm/video, C entry point injection)
+
+---
+
+*Last updated: 2026-02-20*

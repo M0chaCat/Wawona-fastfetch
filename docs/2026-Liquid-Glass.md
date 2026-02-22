@@ -1,4 +1,4 @@
-# Liquid Glass in macOS Tahoe
+# Liquid Glass in macOS Tahoe & iOS 26
 
 ## Official Apple Resources
 
@@ -8,6 +8,37 @@
     > [!IMPORTANT]
     > To place your content on glass, use the `NSGlassEffectView` API. Setting a `contentView` allows AppKit to apply all of the necessary visual treatments... You can customize the appearance of the glass using the `cornerRadius` and `tintColor` properties.
 *   **Apple Human Interface Guidelines (macOS)** – The Materials section and related pages (HIG) cover Liquid Glass usage. See “Designing for macOS – Materials” and “Toolbars” for guidance on using the new glass material and related controls.
+
+## New UIKit APIs in iOS 26
+
+*   **`UIGlassEffect`** – A new `UIVisualEffect` subclass (iOS 26+) that describes the glass style (`.regular`, `.clear`). Use with `UIVisualEffectView` to render Liquid Glass material. Supports `isInteractive` for press-state visual feedback.
+*   **`UIGlassEffectView`** – A dedicated view that renders Liquid Glass content, replacing the older `UIVisualEffectView` pattern for glass-specific use cases. Provides deeper, more adaptive rendering.
+*   **`UIGlassEffectContainerView`** – Groups multiple glass views for compositing and morphing animations, similar to `NSGlassEffectContainerView` on macOS.
+*   **SwiftUI `.glassEffect()` modifier** – Applies Liquid Glass to any SwiftUI view. Supports shapes (`.rect(cornerRadius:)`, capsule), styles (`.regular`, `.clear`), tinting (`.tint(_:)`), and interactive states (`.interactive()`).
+*   **`GlassEffectContainer`** – SwiftUI container for coordinated glass effects across grouped elements, enabling merge/morph transitions.
+*   **`.buttonStyle(.glass)`** – A new SwiftUI button style that renders buttons with the Liquid Glass material.
+
+### UIKit Usage (Objective-C)
+
+```objc
+// Basic glass background
+if (@available(iOS 26, *)) {
+    UIGlassEffect *glass = [[UIGlassEffect alloc] init];
+    UIVisualEffectView *glassView =
+        [[UIVisualEffectView alloc] initWithEffect:glass];
+    glassView.frame = someView.bounds;
+    [someView addSubview:glassView];
+    // Add content to glassView.contentView
+}
+```
+
+### Glass Effect Styles
+
+| Style       | Usage                                      |
+|-------------|-------------------------------------------|
+| `.regular`  | Default for most UI (nav bars, toolbars)   |
+| `.clear`    | Media-rich backgrounds, minimal tinting    |
+| `.identity` | Conditional disable (no glass rendering)   |
 
 ## New AppKit APIs in macOS 15 (Tahoe)
 

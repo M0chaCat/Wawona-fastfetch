@@ -1,0 +1,51 @@
+Wawona - Third-Party Notices
+============================
+
+This project includes or depends on the following third-party software.
+See docs/THIRD_PARTY_LICENSES.md for full details and license compatibility.
+
+Rust crates
+-----------
+Licenses (MIT and/or Apache-2.0) are listed in Cargo.toml / crates.io.
+Generate a full list with: ./scripts/list-licenses.sh
+UniFFI (Rust bindings): Mozilla Public License 2.0 (MPL-2.0)
+  https://github.com/mozilla/uniffi-rs
+
+Native / C libraries (representative)
+-------------------------------------
+- libwayland, waypipe, pixman, xkbcommon, expat, libffi, libxml2: MIT
+- zlib: zlib License
+- zstd, lz4 (lib): BSD
+- OpenSSL 3.x: Apache-2.0
+- libssh2: BSD-3-Clause
+- mbedtls: Apache-2.0
+- OpenSSH: BSD (SSH-OpenSSH)
+- sshpass: GPL-2.0-or-later (separate program; see GPL-2.0)
+- FFmpeg: LGPL-2.1+
+- KosmicKrisp (Mesa): MIT
+- SPIRV-Tools, SPIRV-LLVM-Translator: Apache-2.0
+- SwiftShader: Apache-2.0
+- FreeType: FreeType License (FTL)
+- fontconfig, fcft, tllist, utf8proc, foot: MIT or permissive
+
+Vulkan / GPU
+------------
+- MoltenVK: Apache-2.0 (Khronos)
+- KosmicKrisp: MIT
+- SwiftShader: Apache-2.0
+
+Android
+-------
+- AndroidX, Compose, Kotlin: Apache-2.0
+
+Full license texts
+-----------------
+Copy or link the following into your distribution as required:
+- MIT: LICENSE (this project) and per-component notices
+- Apache-2.0: https://www.apache.org/licenses/LICENSE-2.0
+- MPL-2.0: https://www.mozilla.org/en-US/MPL/2.0/
+- GPL-2.0 (sshpass): https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+- LGPL-2.1 (FFmpeg): https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+- BSD-2-Clause, BSD-3-Clause, zlib, FTL: see component sources or docs/THIRD_PARTY_LICENSES.md
+
+Rename this file to NOTICE and customize for your distribution if needed.

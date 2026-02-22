@@ -1,13 +1,13 @@
 #pragma once
 
 // Compatibility header for macOS/iOS backend
-// Provides alias for WawonaCompositor
+// Provides alias for WWNCompositor
 
-#include "WawonaCompositor.h"
+#include "WWNCompositor.h"
 
 // Alias for backward compatibility
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-typedef WawonaCompositor MacOSCompositor;
+typedef WWNCompositor MacOSCompositor;
 #else
-typedef WawonaCompositor MacOSCompositor;
+typedef WWNCompositor MacOSCompositor;
 #endif

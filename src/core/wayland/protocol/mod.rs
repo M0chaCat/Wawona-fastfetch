@@ -107,6 +107,10 @@ pub mod server {
         pub use wayland_protocols_misc::server_decoration::server::*;
     }
 
+    pub mod plasma {
+        pub use wayland_protocols_plasma::*;
+    }
+
     /// input_method - Input method protocol (unstable, zwp)
     pub mod zwp_input_method_v2 {
         pub use wayland_protocols_misc::zwp_input_method_v2::server::*;

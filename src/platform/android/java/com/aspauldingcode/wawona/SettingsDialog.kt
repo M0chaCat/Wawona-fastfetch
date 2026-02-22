@@ -2,7 +2,10 @@ package com.aspauldingcode.wawona
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,11 +20,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
+
+private enum class SettingsTab(val label: String, val icon: ImageVector) {
+    DISPLAY("Display", Icons.Filled.DesktopWindows),
+    GRAPHICS("Graphics", Icons.Filled.GraphicEq),
+    ADVANCED("Advanced", Icons.Filled.Tune),
+    INPUT("Input", Icons.Filled.Keyboard),
+    WAYPIPE("Waypipe", Icons.Filled.Wifi),
+    SSH("SSH", Icons.Filled.Lock)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,554 +51,451 @@ fun SettingsDialog(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
     val localIpAddress = remember { getLocalIpAddress(context) }
-    
+    var selectedTab by remember { mutableStateOf(SettingsTab.DISPLAY) }
+
     ModalBottomSheet(
-        onDismissRequest = {
-            onApply()
-            onDismiss()
-        },
+        onDismissRequest = { onApply(); onDismiss() },
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         dragHandle = {
             Box(
-                modifier = Modifier
+                Modifier
                     .padding(vertical = 12.dp)
                     .width(40.dp)
                     .height(4.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(2.dp)
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        RoundedCornerShape(2.dp)
                     )
             )
         }
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 32.dp)
-        ) {
+        Column(Modifier.fillMaxWidth()) {
             // Header
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = null,
-                    modifier = Modifier.size(28.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = "Wawona Settings",
+                Icon(Icons.Filled.Settings, null, Modifier.size(28.dp),
+                    tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text("Wawona Settings",
                     style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = (-0.01).sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                        fontWeight = FontWeight.SemiBold, letterSpacing = (-0.01).sp),
+                    color = MaterialTheme.colorScheme.onSurface)
             }
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-            
-            // Display & Rendering Section
-            SettingsSectionHeader(
-                title = "Display & Rendering",
-                icon = Icons.Filled.DesktopWindows
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "autoScale",
-                title = "Auto Scale",
-                description = "Detect and match Android UI Scaling",
-                icon = Icons.Filled.AspectRatio,
-                default = true
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "respectSafeArea",
-                title = "Respect Safe Area",
-                description = "Avoid system UI and notches",
-                icon = Icons.Filled.Security,
-                default = true
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // Advanced Features Section
-            SettingsSectionHeader(
-                title = "Advanced Features",
-                icon = Icons.Filled.Tune
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "colorOperations",
-                title = "Color Operations",
-                description = "Enable color profiles, HDR requests, etc.",
-                icon = Icons.Filled.Palette,
-                default = true
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "nestedCompositorsSupport",
-                title = "Nested Compositors",
-                description = "Support nested Wayland compositors",
-                icon = Icons.Filled.Layers,
-                default = true
-            )
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "multipleClients",
-                title = "Multiple Clients",
-                description = "Allow multiple Wayland clients",
-                icon = Icons.Filled.Group,
-                default = false
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // Waypipe Section
-            SettingsSectionHeader(
-                title = "Waypipe",
-                icon = Icons.Filled.Wifi
-            )
-            
-            // Local IP Address Display
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Info,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Local IP Address",
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                fontWeight = FontWeight.Medium
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = localIpAddress ?: "Not available",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-            
-            // Waypipe Display Socket
-            SettingsTextInputItem(
-                prefs = prefs,
-                key = "waypipeDisplay",
-                title = "Wayland Display",
-                description = "Display socket name (e.g., wayland-0)",
-                icon = Icons.Filled.DesktopWindows,
-                default = "wayland-0",
-                keyboardType = KeyboardType.Text,
-                revertToDefaultOnEmpty = true
-            )
-            
-            // Waypipe Socket Path (read-only on Android/iOS - set by platform)
-            val context = LocalContext.current
-            val androidSocketPath = remember {
-                "${context.cacheDir.absolutePath}/waypipe"
-            }
-            SettingsTextInputItem(
-                prefs = prefs,
-                key = "waypipeSocket",
-                title = "Socket Path",
-                description = "Unix socket path (set by platform)",
-                icon = Icons.Filled.Folder,
-                default = androidSocketPath,
-                keyboardType = KeyboardType.Text,
-                readOnly = true
-            )
-            
-            // Compression
-            SettingsDropdownItem(
-                prefs = prefs,
-                key = "waypipeCompress",
-                title = "Compression",
-                description = "Compression method for data transfers",
-                icon = Icons.Filled.Archive,
-                default = "lz4",
-                options = listOf("none", "lz4", "zstd")
-            )
-            
-            // Compression Level (if zstd selected)
-            val compressionMethod = remember { 
-                mutableStateOf(prefs.getString("waypipeCompress", "lz4") ?: "lz4")
-            }
-            LaunchedEffect(prefs.getString("waypipeCompress", "lz4")) {
-                compressionMethod.value = prefs.getString("waypipeCompress", "lz4") ?: "lz4"
-            }
-            
-            if (compressionMethod.value == "zstd" || compressionMethod.value.startsWith("zstd=")) {
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeCompressLevel",
-                    title = "Compression Level",
-                    description = "Zstd compression level (1-22)",
-                    icon = Icons.Filled.Tune,
-                    default = "7",
-                    keyboardType = KeyboardType.Number
-                )
-            }
-            
-            // Threads
-            SettingsTextInputItem(
-                prefs = prefs,
-                key = "waypipeThreads",
-                title = "Threads",
-                description = "Number of threads (0 = auto)",
-                icon = Icons.Filled.Memory,
-                default = "0",
-                keyboardType = KeyboardType.Number,
-                revertToDefaultOnEmpty = true
-            )
-            
-            // Video Compression
-            SettingsDropdownItem(
-                prefs = prefs,
-                key = "waypipeVideo",
-                title = "Video Compression",
-                description = "DMABUF video compression codec",
-                icon = Icons.Filled.VideoCall,
-                default = "none",
-                options = listOf("none", "h264", "vp9", "av1")
-            )
-            
-            // Video Encoding/Decoding
-            val videoCodec = remember { 
-                mutableStateOf(prefs.getString("waypipeVideo", "none") ?: "none")
-            }
-            LaunchedEffect(prefs.getString("waypipeVideo", "none")) {
-                videoCodec.value = prefs.getString("waypipeVideo", "none") ?: "none"
-            }
-            
-            if (videoCodec.value != "none") {
-                SettingsDropdownItem(
-                    prefs = prefs,
-                    key = "waypipeVideoEncoding",
-                    title = "Video Encoding",
-                    description = "Hardware or software encoding",
-                    icon = Icons.Filled.Settings,
-                    default = "hw",
-                    options = listOf("hw", "sw", "hwenc", "swenc")
-                )
-                SettingsDropdownItem(
-                    prefs = prefs,
-                    key = "waypipeVideoDecoding",
-                    title = "Video Decoding",
-                    description = "Hardware or software decoding",
-                    icon = Icons.Filled.Settings,
-                    default = "hw",
-                    options = listOf("hw", "sw", "hwdec", "swdec")
-                )
-                // Fix: Clear any version string that may have been incorrectly stored in waypipeVideoBpf
-                LaunchedEffect(Unit) {
-                    val currentValue = prefs.getString("waypipeVideoBpf", "")
-                    if (currentValue != null && currentValue.contains(".") && currentValue.matches(Regex("^\\d+\\.\\d+.*"))) {
-                        // Looks like a version string (e.g., "1.0.0"), clear it
-                        prefs.edit().putString("waypipeVideoBpf", "").apply()
-                    }
-                }
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeVideoBpf",
-                    title = "Bits Per Frame",
-                    description = "Target bit rate (e.g., 750000)",
-                    icon = Icons.Filled.Speed,
-                    default = "",
-                    keyboardType = KeyboardType.Number
-                )
-            }
-            
-            // SSH Configuration
-            SettingsSwitchItem(
-                prefs = prefs,
-                key = "waypipeSSHEnabled",
-                title = "Enable SSH",
-                description = "Allow SSH connections for waypipe",
-                icon = Icons.Filled.Lock,
-                default = false
-            )
-            
-            val sshEnabled = remember { mutableStateOf(prefs.getBoolean("waypipeSSHEnabled", false)) }
-            LaunchedEffect(prefs.getBoolean("waypipeSSHEnabled", false)) {
-                sshEnabled.value = prefs.getBoolean("waypipeSSHEnabled", false)
-            }
-            
-            if (sshEnabled.value) {
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeSSHHost",
-                    title = "SSH Host",
-                    description = "Remote host for SSH connection",
-                    icon = Icons.Filled.Computer,
-                    default = "",
-                    keyboardType = KeyboardType.Text
-                )
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeSSHUser",
-                    title = "SSH User",
-                    description = "SSH username",
-                    icon = Icons.Filled.Person,
-                    default = "",
-                    keyboardType = KeyboardType.Text
-                )
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeSSHBinary",
-                    title = "SSH Binary Path",
-                    description = "Path to ssh binary (default: ssh)",
-                    icon = Icons.Filled.Build,
-                    default = "ssh",
-                    keyboardType = KeyboardType.Text
-                )
-                SettingsTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeRemoteCommand",
-                    title = "Remote Command",
-                    description = "Application to run on remote host (e.g., weston, weston-terminal)",
-                    icon = Icons.Filled.PlayArrow,
-                    default = "",
-                    keyboardType = KeyboardType.Text
-                )
-                SettingsMultiLineTextInputItem(
-                    prefs = prefs,
-                    key = "waypipeCustomScript",
-                    title = "Custom Script",
-                    description = "Full command line script to execute remotely (overrides Remote Command)",
-                    icon = Icons.Filled.Code,
-                    default = ""
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(8.dp))
 
-            // Advanced Waypipe Options (Sub-page)
-            var showAdvancedWaypipe by remember { mutableStateOf(false) }
-            
-            Surface(
-                onClick = { showAdvancedWaypipe = true },
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth()
+            // Section tabs
+            ScrollableTabRow(
+                selectedTabIndex = selectedTab.ordinal,
+                modifier = Modifier.fillMaxWidth(),
+                edgePadding = 16.dp,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary,
+                divider = {}
             ) {
-                Row(
-                    modifier = Modifier
-                        .padding(vertical = 12.dp)
-                        .fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.SettingsSuggest,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Advanced Options",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Debug, GPU, One-shot, etc.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Filled.ChevronRight,
-                        contentDescription = "Open",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                SettingsTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTab = tab },
+                        text = { Text(tab.label, maxLines = 1) },
+                        icon = { Icon(tab.icon, null, Modifier.size(18.dp)) }
                     )
                 }
             }
-            
-            if (showAdvancedWaypipe) {
-                AdvancedWaypipeDialog(
-                    prefs = prefs,
-                    onDismiss = { showAdvancedWaypipe = false }
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // Apply Button
-            Button(
-                onClick = {
-                    onApply()
-                    onDismiss()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            ) {
-                Text(
-                    text = "Apply Settings",
-                    style = MaterialTheme.typography.labelLarge.copy(
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
+            HorizontalDivider(Modifier.padding(top = 2.dp))
+
+            // Tab content
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                label = "settings_tab"
+            ) { tab ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(bottom = 32.dp)
+                ) {
+                    when (tab) {
+                        SettingsTab.DISPLAY -> DisplaySection(prefs)
+                        SettingsTab.GRAPHICS -> GraphicsSection(prefs)
+                        SettingsTab.ADVANCED -> AdvancedSection(prefs)
+                        SettingsTab.INPUT -> InputSection(prefs)
+                        SettingsTab.WAYPIPE -> WaypipeSection(prefs, localIpAddress, context)
+                        SettingsTab.SSH -> SSHSection(prefs)
+                    }
+                }
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Section composables
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-fun SettingsSectionHeader(
-    title: String,
-    icon: ImageVector
-) {
+private fun DisplaySection(prefs: SharedPreferences) {
+    SettingsSwitchItem(prefs, "forceServerSideDecorations", "Force Server-Side Decorations",
+        "Compositor-drawn window borders", Icons.Filled.BorderOuter, default = true)
+    SettingsSwitchItem(prefs, "autoScale", "Auto Scale",
+        "Detect and match Android UI scaling", Icons.Filled.AspectRatio, default = true)
+    SettingsSwitchItem(prefs, "respectSafeArea", "Respect Safe Area",
+        "Avoid system UI and notches", Icons.Filled.Security, default = true)
+}
+
+@Composable
+private fun GraphicsSection(prefs: SharedPreferences) {
+    SettingsSectionHeader("Drivers", Icons.Filled.Speed)
+    SettingsDropdownItem(prefs, "vulkanDriver", "Vulkan Driver",
+        "Select Vulkan implementation. None disables Vulkan.", Icons.Filled.Speed, "system",
+        listOf("None", "SwiftShader", "Turnip", "System"))
+    SettingsDropdownItem(prefs, "openglDriver", "OpenGL Driver",
+        "Select OpenGL/GLES implementation. None disables OpenGL.", Icons.Filled.GraphicEq, "system",
+        listOf("None", "ANGLE", "System"))
+    SettingsSectionHeader("Features", Icons.Filled.Tune)
+    SettingsSwitchItem(prefs, "dmabufEnabled", "DmaBuf Support",
+        "Enable DMA buffer sharing between clients", Icons.Filled.Share, default = true)
+}
+
+@Composable
+private fun AdvancedSection(prefs: SharedPreferences) {
+    SettingsSwitchItem(prefs, "colorOperations", "Color Operations",
+        "Enable color profiles, HDR requests, etc.", Icons.Filled.Palette, default = true)
+    SettingsSwitchItem(prefs, "nestedCompositorsSupport", "Nested Compositors",
+        "Support nested Wayland compositors", Icons.Filled.Layers, default = true)
+    SettingsSwitchItem(prefs, "multipleClients", "Multiple Clients",
+        "Allow multiple Wayland clients", Icons.Filled.Group, default = false)
+    SettingsSwitchItem(prefs, "enableLauncher", "Enable Launcher",
+        "Show built-in application launcher", Icons.Filled.Apps, default = false)
+    SettingsSwitchItem(prefs, "westonSimpleSHMEnabled", "Enable Weston Simple SHM",
+        "Start weston-simple-shm on launch", Icons.Filled.PlayArrow, default = false)
+}
+
+@Composable
+private fun InputSection(prefs: SharedPreferences) {
+    SettingsSwitchItem(prefs, "touchpadMode", "Touchpad Mode",
+        "1-finger = pointer, tap = click, 2-finger drag = scroll. When off, use direct touch (multi-touch)",
+        Icons.Filled.TouchApp, default = false)
+    SettingsSwitchItem(prefs, "enableTextAssist", "Enable Text Assist",
+        "Autocorrect, text suggestions, smart punctuation, swipe-to-type, and text replacements via the native keyboard",
+        Icons.Filled.Spellcheck, default = false)
+    SettingsSwitchItem(prefs, "enableDictation", "Enable Dictation",
+        "Voice dictation input. Spoken text is transcribed and sent to the focused Wayland client",
+        Icons.Filled.Mic, default = false)
+}
+
+@Composable
+private fun WaypipeSection(prefs: SharedPreferences, localIp: String?, context: Context) {
+    // Local IP info card
+    Surface(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+    ) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Info, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Local IP Address",
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(4.dp))
+                Text(localIp ?: "Not available",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace)
+            }
+        }
+    }
+
+    SettingsTextInputItem(prefs, "waypipeDisplay", "Wayland Display",
+        "Display socket name (e.g., wayland-0)", Icons.Filled.DesktopWindows,
+        "wayland-0", KeyboardType.Text, revertToDefaultOnEmpty = true)
+
+    val androidSocketPath = remember { "${context.cacheDir.absolutePath}/waypipe" }
+    SettingsTextInputItem(prefs, "waypipeSocket", "Socket Path",
+        "Unix socket path (set by platform)", Icons.Filled.Folder,
+        androidSocketPath, KeyboardType.Text, readOnly = true)
+
+    SettingsDropdownItem(prefs, "waypipeCompress", "Compression",
+        "Compression method for data transfers", Icons.Filled.Archive, "lz4",
+        listOf("none", "lz4", "zstd"))
+
+    val compress = remember { mutableStateOf(prefs.getString("waypipeCompress", "lz4") ?: "lz4") }
+    LaunchedEffect(prefs.getString("waypipeCompress", "lz4")) {
+        compress.value = prefs.getString("waypipeCompress", "lz4") ?: "lz4"
+    }
+    if (compress.value == "zstd" || compress.value.startsWith("zstd=")) {
+        SettingsTextInputItem(prefs, "waypipeCompressLevel", "Compression Level",
+            "Zstd compression level (1-22)", Icons.Filled.Tune, "7", KeyboardType.Number)
+    }
+
+    SettingsTextInputItem(prefs, "waypipeThreads", "Threads",
+        "Number of threads (0 = auto)", Icons.Filled.Memory, "0",
+        KeyboardType.Number, revertToDefaultOnEmpty = true)
+
+    SettingsDropdownItem(prefs, "waypipeVideo", "Video Compression",
+        "DMABUF video compression codec", Icons.Filled.VideoCall, "none",
+        listOf("none", "h264", "vp9", "av1"))
+
+    val videoCodec = remember { mutableStateOf(prefs.getString("waypipeVideo", "none") ?: "none") }
+    LaunchedEffect(prefs.getString("waypipeVideo", "none")) {
+        videoCodec.value = prefs.getString("waypipeVideo", "none") ?: "none"
+    }
+    if (videoCodec.value != "none") {
+        SettingsDropdownItem(prefs, "waypipeVideoEncoding", "Video Encoding",
+            "Hardware or software encoding", Icons.Filled.Settings, "hw",
+            listOf("hw", "sw", "hwenc", "swenc"))
+        SettingsDropdownItem(prefs, "waypipeVideoDecoding", "Video Decoding",
+            "Hardware or software decoding", Icons.Filled.Settings, "hw",
+            listOf("hw", "sw", "hwdec", "swdec"))
+        LaunchedEffect(Unit) {
+            val v = prefs.getString("waypipeVideoBpf", "")
+            if (v != null && v.contains(".") && v.matches(Regex("^\\d+\\.\\d+.*")))
+                prefs.edit().putString("waypipeVideoBpf", "").apply()
+        }
+        SettingsTextInputItem(prefs, "waypipeVideoBpf", "Bits Per Frame",
+            "Target bit rate (e.g., 750000)", Icons.Filled.Speed, "", KeyboardType.Number)
+    }
+
+    // Remote execution (belongs in Waypipe since it's what runs on the remote end)
+    SettingsSectionHeader("Remote Execution", Icons.Filled.PlayArrow)
+    SettingsTextInputItem(prefs, "waypipeRemoteCommand", "Remote Command",
+        "Application to run remotely (e.g., weston-terminal)", Icons.Filled.PlayArrow, "", KeyboardType.Text)
+    SettingsMultiLineTextInputItem(prefs, "waypipeCustomScript", "Custom Script",
+        "Full command line script (overrides Remote Command)", Icons.Filled.Code, "")
+
+    Spacer(Modifier.height(8.dp))
+
+    // Advanced Waypipe Options
+    var showAdvanced by remember { mutableStateOf(false) }
+    Surface(
+        onClick = { showAdvanced = true },
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(Modifier.padding(vertical = 12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.SettingsSuggest, null, Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.secondary)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Advanced Waypipe Options", style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface)
+                Text("Debug, GPU, login shell, title prefix, security context",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.Filled.ChevronRight, "Open", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    if (showAdvanced) {
+        AdvancedWaypipeDialog(prefs) { showAdvanced = false }
+    }
+}
+
+@Composable
+private fun SSHSection(prefs: SharedPreferences) {
+    SettingsSwitchItem(prefs, "waypipeSSHEnabled", "Enable SSH",
+        "Use SSH transport for waypipe connections", Icons.Filled.Lock, default = true)
+
+    val sshEnabled = remember { mutableStateOf(prefs.getBoolean("waypipeSSHEnabled", true)) }
+    LaunchedEffect(prefs.getBoolean("waypipeSSHEnabled", true)) {
+        sshEnabled.value = prefs.getBoolean("waypipeSSHEnabled", true)
+    }
+
+    if (!sshEnabled.value) {
+        Surface(
+            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        ) {
+            Text("Enable SSH to configure connection settings.",
+                Modifier.padding(24.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+
+    // Connection settings
+    SettingsSectionHeader("Connection", Icons.Filled.Computer)
+    SettingsTextInputItem(prefs, "waypipeSSHHost", "SSH Host",
+        "Remote host address", Icons.Filled.Computer, "", KeyboardType.Text)
+    SettingsTextInputItem(prefs, "waypipeSSHUser", "SSH User",
+        "SSH username", Icons.Filled.Person, "", KeyboardType.Text)
+
+    // Auth method
+    SettingsSectionHeader("Authentication", Icons.Filled.VpnKey)
+    SettingsDropdownItem(prefs, "sshAuthMethod", "Auth Method",
+        "How to authenticate with the remote host", Icons.Filled.VpnKey, "password",
+        listOf("password", "publickey"))
+
+    val authMethod = remember { mutableStateOf(prefs.getString("sshAuthMethod", "password") ?: "password") }
+    LaunchedEffect(prefs.getString("sshAuthMethod", "password")) {
+        authMethod.value = prefs.getString("sshAuthMethod", "password") ?: "password"
+    }
+
+    if (authMethod.value == "password") {
+        SettingsPasswordInputItem(prefs, "waypipeSSHPassword", "SSH Password",
+            "Password for SSH authentication", Icons.Filled.Password, "")
+    } else {
+        SettingsTextInputItem(prefs, "sshKeyPath", "Private Key Path",
+            "Path to SSH private key (e.g., /sdcard/.ssh/id_ed25519)", Icons.Filled.Key,
+            "", KeyboardType.Text)
+        SettingsTextInputItem(prefs, "sshKeyPassphrase", "Key Passphrase",
+            "Passphrase for encrypted private key (leave empty if none)", Icons.Filled.Password,
+            "", KeyboardType.Password)
+    }
+
+    Spacer(Modifier.height(12.dp))
+
+    // Test buttons -- read prefs FRESH at click time (not cached at composition)
+    SettingsSectionHeader("Diagnostics", Icons.Filled.NetworkCheck)
+    val scope = rememberCoroutineScope()
+    var pingResult by remember { mutableStateOf<String?>(null) }
+    var sshResult by remember { mutableStateOf<String?>(null) }
+    var isPinging by remember { mutableStateOf(false) }
+    var isSshTesting by remember { mutableStateOf(false) }
+
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = {
+                val host = prefs.getString("waypipeSSHHost", "") ?: ""
+                if (host.isBlank()) { pingResult = "FAIL: SSH Host is empty"; return@OutlinedButton }
+                isPinging = true; pingResult = null
+                scope.launch {
+                    pingResult = withContext(Dispatchers.IO) {
+                        try { WawonaNative.nativeTestPing(host, 22, 5000) }
+                        catch (e: Exception) { "FAIL: ${e.message}" }
+                    }
+                    isPinging = false
+                }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = !isPinging,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Filled.NetworkPing, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(if (isPinging) "Pinging..." else "Test Ping")
+        }
+
+        OutlinedButton(
+            onClick = {
+                val host = prefs.getString("waypipeSSHHost", "") ?: ""
+                val user = prefs.getString("waypipeSSHUser", "") ?: ""
+                val pass = prefs.getString("waypipeSSHPassword", "") ?: ""
+                if (host.isBlank()) { sshResult = "FAIL: SSH Host is empty"; return@OutlinedButton }
+                if (user.isBlank()) { sshResult = "FAIL: SSH User is empty"; return@OutlinedButton }
+                isSshTesting = true; sshResult = null
+                scope.launch {
+                    sshResult = withContext(Dispatchers.IO) {
+                        try { WawonaNative.nativeTestSSH(host, user, pass, 22) }
+                        catch (e: Exception) { "FAIL: ${e.message}" }
+                    }
+                    isSshTesting = false
+                }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = !isSshTesting,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Filled.Wifi, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(if (isSshTesting) "Testing..." else "Test SSH")
+        }
+    }
+
+    pingResult?.let { TestResultCard(it) }
+    sshResult?.let { TestResultCard(it) }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Result card
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+fun TestResultCard(result: String) {
+    val isOk = result.startsWith("OK")
+    Surface(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isOk) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+    ) {
+        Text(result, Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = if (isOk) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onErrorContainer)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reusable composables
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+fun SettingsSectionHeader(title: String, icon: ImageVector) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp, horizontal = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(20.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = title,
+        Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(8.dp))
+        Text(title,
             style = MaterialTheme.typography.titleMedium.copy(
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-0.01).sp
-            ),
-            color = MaterialTheme.colorScheme.primary
-        )
+                fontWeight = FontWeight.SemiBold, letterSpacing = (-0.01).sp),
+            color = MaterialTheme.colorScheme.primary)
     }
 }
 
 @Composable
 fun SettingsSwitchItem(
-    prefs: SharedPreferences,
-    key: String,
-    title: String,
-    description: String,
-    icon: ImageVector,
-    default: Boolean,
-    enabled: Boolean = true
+    prefs: SharedPreferences, key: String, title: String, description: String,
+    icon: ImageVector, default: Boolean, enabled: Boolean = true
 ) {
     var checked by remember { mutableStateOf(prefs.getBoolean(key, default)) }
-    
     LaunchedEffect(key) {
-        if (enabled) {
-            checked = prefs.getBoolean(key, default)
-        } else {
-            // For disabled items, always use default and ensure it's saved
-            checked = default
-            prefs.edit().putBoolean(key, default).apply()
-        }
+        if (enabled) checked = prefs.getBoolean(key, default)
+        else { checked = default; prefs.edit().putBoolean(key, default).apply() }
     }
-    
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        onClick = { if (enabled) { checked = !checked; prefs.edit().putBoolean(key, checked).apply() } },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 0.4f else 0.2f),
-        onClick = {
-            if (enabled) {
-                checked = !checked
-                prefs.edit().putBoolean(key, checked).apply()
-            }
-        }
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 0.4f else 0.2f)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Start
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 0.8f else 0.4f)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.6f)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.6f)
-                    )
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 0.8f else 0.4f))
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.6f))
+                    Spacer(Modifier.height(4.dp))
+                    Text(description, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.6f))
                 }
             }
-            Spacer(modifier = Modifier.width(16.dp))
-            Switch(
-                checked = checked,
-                onCheckedChange = {
-                    if (enabled) {
-                        checked = it
-                        prefs.edit().putBoolean(key, it).apply()
-                    }
-                },
-                enabled = enabled,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = MaterialTheme.colorScheme.primary,
-                    checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,
-                    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
-                    disabledCheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    disabledCheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    disabledUncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    disabledUncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            )
+            Spacer(Modifier.width(16.dp))
+            Switch(checked = checked, onCheckedChange = {
+                if (enabled) { checked = it; prefs.edit().putBoolean(key, it).apply() }
+            }, enabled = enabled, colors = SwitchDefaults.colors(
+                checkedThumbColor = MaterialTheme.colorScheme.primary,
+                checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,
+                uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+            ))
         }
     }
 }
@@ -588,86 +503,43 @@ fun SettingsSwitchItem(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsTextInputItem(
-    prefs: SharedPreferences,
-    key: String,
-    title: String,
-    description: String,
-    icon: ImageVector,
-    default: String,
-    keyboardType: KeyboardType,
-    revertToDefaultOnEmpty: Boolean = false,
-    readOnly: Boolean = false
+    prefs: SharedPreferences, key: String, title: String, description: String,
+    icon: ImageVector, default: String, keyboardType: KeyboardType,
+    revertToDefaultOnEmpty: Boolean = false, readOnly: Boolean = false
 ) {
     var text by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
-    
     LaunchedEffect(key) {
-        if (!readOnly) {
-            text = prefs.getString(key, default) ?: default
-        } else {
-            // For read-only fields, always use the default (platform-set value)
-            text = default
-            // Update preferences to match platform value
-            prefs.edit().putString(key, default).apply()
-        }
+        if (!readOnly) text = prefs.getString(key, default) ?: default
+        else { text = default; prefs.edit().putString(key, default).apply() }
     }
-    
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(description, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = text,
-                onValueChange = { newValue ->
+                onValueChange = { nv ->
                     if (!readOnly) {
-                        val finalValue = if (revertToDefaultOnEmpty && newValue.isEmpty()) {
-                            default
-                        } else {
-                            newValue
-                        }
-                        text = finalValue
-                        prefs.edit().putString(key, finalValue).apply()
+                        val fv = if (revertToDefaultOnEmpty && nv.isEmpty()) default else nv
+                        text = fv; prefs.edit().putString(key, fv).apply()
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                readOnly = readOnly,
-                enabled = !readOnly,
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                readOnly = readOnly, enabled = !readOnly,
                 keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -683,71 +555,84 @@ fun SettingsTextInputItem(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsMultiLineTextInputItem(
-    prefs: SharedPreferences,
-    key: String,
-    title: String,
-    description: String,
-    icon: ImageVector,
-    default: String
+fun SettingsPasswordInputItem(
+    prefs: SharedPreferences, key: String, title: String, description: String,
+    icon: ImageVector, default: String
 ) {
     var text by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
-    
-    LaunchedEffect(key) {
-        text = prefs.getString(key, default) ?: default
-    }
-    
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(key) { text = prefs.getString(key, default) ?: default }
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(description, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = text,
-                onValueChange = { newValue ->
-                    text = newValue
-                    prefs.edit().putString(key, newValue).apply()
+                onValueChange = { text = it; prefs.edit().putString(key, it).apply() },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { visible = !visible }) {
+                        Icon(if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            "Toggle visibility")
+                    }
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 120.dp),
-                maxLines = 10,
-                minLines = 4,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                ),
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsMultiLineTextInputItem(
+    prefs: SharedPreferences, key: String, title: String, description: String,
+    icon: ImageVector, default: String
+) {
+    var text by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
+    LaunchedEffect(key) { text = prefs.getString(key, default) ?: default }
+    Surface(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(description, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it; prefs.edit().putString(key, it).apply() },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+                maxLines = 10, minLines = 4,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -762,93 +647,49 @@ fun SettingsMultiLineTextInputItem(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsDropdownItem(
-    prefs: SharedPreferences,
-    key: String,
-    title: String,
-    description: String,
-    icon: ImageVector,
-    default: String,
-    options: List<String>
+    prefs: SharedPreferences, key: String, title: String, description: String,
+    icon: ImageVector, default: String, options: List<String>
 ) {
     var expanded by remember { mutableStateOf(false) }
     var selectedOption by remember { mutableStateOf(prefs.getString(key, default) ?: default) }
-    
-    LaunchedEffect(key) {
-        selectedOption = prefs.getString(key, default) ?: default
-    }
-    
+    LaunchedEffect(key) { selectedOption = prefs.getString(key, default) ?: default }
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(description, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
             Box {
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
-                ) {
+                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     OutlinedTextField(
-                        value = selectedOption,
-                        onValueChange = {},
-                        readOnly = true,
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(),
+                        value = selectedOption, onValueChange = {}, readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = MaterialTheme.colorScheme.primary,
                             unfocusedBorderColor = MaterialTheme.colorScheme.outline
                         ),
                         shape = RoundedCornerShape(12.dp)
                     )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         options.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option) },
-                                onClick = {
-                                    selectedOption = option
-                                    prefs.edit().putString(key, option).apply()
-                                    expanded = false
-                                }
-                            )
+                            DropdownMenuItem(text = { Text(option) }, onClick = {
+                                selectedOption = option
+                                prefs.edit().putString(key, option).apply()
+                                expanded = false
+                            })
                         }
                     }
                 }
@@ -861,84 +702,46 @@ fun getLocalIpAddress(context: Context): String? {
     try {
         val interfaces = NetworkInterface.getNetworkInterfaces()
         while (interfaces.hasMoreElements()) {
-            val networkInterface = interfaces.nextElement()
-            val addresses = networkInterface.inetAddresses
-            while (addresses.hasMoreElements()) {
-                val address = addresses.nextElement()
-                if (!address.isLoopbackAddress && address.hostAddress != null) {
-                    val hostAddress = address.hostAddress
-                    if (hostAddress != null && !hostAddress.contains(":")) {
-                        return hostAddress
-                    }
-                }
+            val ni = interfaces.nextElement()
+            val addrs = ni.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val addr = addrs.nextElement()
+                if (!addr.isLoopbackAddress && addr.hostAddress?.contains(":") == false)
+                    return addr.hostAddress
             }
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
+    } catch (_: Exception) {}
     return null
 }
 
 @Composable
-fun AdvancedWaypipeDialog(
-    prefs: SharedPreferences,
-    onDismiss: () -> Unit
-) {
+fun AdvancedWaypipeDialog(prefs: SharedPreferences, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Advanced Waypipe Options") },
         text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                SettingsSwitchItem(
-                    prefs = prefs,
-                    key = "waypipeDebug",
-                    title = "Debug Mode",
-                    description = "Enable verbose logging",
-                    icon = Icons.Filled.BugReport,
-                    default = false
-                )
-                SettingsSwitchItem(
-                    prefs = prefs,
-                    key = "waypipeDisableGpu",
-                    title = "Disable GPU",
-                    description = "Force software rendering",
-                    icon = Icons.Filled.Memory,
-                    default = false
-                )
-                SettingsSwitchItem(
-                    prefs = prefs,
-                    key = "waypipeOneshot",
-                    title = "One-Shot",
-                    description = "Exit after first client disconnects",
-                    icon = Icons.Filled.ExitToApp,
-                    default = false
-                )
-                SettingsSwitchItem(
-                    prefs = prefs,
-                    key = "waypipeSleepOnExit",
-                    title = "Sleep on Exit",
-                    description = "Keep socket open after exit",
-                    icon = Icons.Filled.Timer,
-                    default = false
-                )
-                SettingsSwitchItem(
-                    prefs = prefs,
-                    key = "waypipeUnlinkOnExit",
-                    title = "Unlink on Exit",
-                    description = "Remove socket file on exit",
-                    icon = Icons.Filled.Delete,
-                    default = true
-                )
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                SettingsSwitchItem(prefs, "waypipeDebug", "Debug Mode",
+                    "Enable verbose logging", Icons.Filled.BugReport, default = false)
+                SettingsSwitchItem(prefs, "waypipeDisableGpu", "Disable GPU",
+                    "Force software rendering", Icons.Filled.Memory, default = false)
+                SettingsSwitchItem(prefs, "waypipeOneshot", "One-Shot",
+                    "Exit after first client disconnects", Icons.Filled.ExitToApp, default = false)
+                SettingsSwitchItem(prefs, "waypipeLoginShell", "Login Shell",
+                    "Use login shell on remote host", Icons.Filled.Terminal, default = false)
+                SettingsSwitchItem(prefs, "waypipeSleepOnExit", "Sleep on Exit",
+                    "Keep socket open after exit", Icons.Filled.Timer, default = false)
+                SettingsSwitchItem(prefs, "waypipeUnlinkOnExit", "Unlink on Exit",
+                    "Remove socket file on exit", Icons.Filled.Delete, default = true)
+
+                Spacer(Modifier.height(8.dp))
+
+                SettingsTextInputItem(prefs, "waypipeTitlePrefix", "Title Prefix",
+                    "Window title prefix (e.g., Remote:)", Icons.Filled.Label, "", KeyboardType.Text)
+                SettingsTextInputItem(prefs, "waypipeSecCtx", "Security Context",
+                    "Wayland security context string", Icons.Filled.Shield, "", KeyboardType.Text)
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Done")
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }
     )
 }

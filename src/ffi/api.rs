@@ -80,6 +80,9 @@ pub struct WawonaCore {
     
     /// Pending redraw requests
     pending_redraws: RwLock<Vec<WindowId>>,
+    
+    /// IPC Server (for CLI tools)
+    ipc_server: Mutex<Option<crate::core::ipc::IpcServer>>,
 }
 
 #[uniffi::export]
@@ -96,7 +99,7 @@ impl WawonaCore {
         Arc::new(Self {
             compositor: Mutex::new(None),
             runtime: Mutex::new(Runtime::new()),
-            state: Arc::new(RwLock::new(CompositorState::new())),
+            state: Arc::new(RwLock::new(CompositorState::new(None))), // Default for now, updated in start()
             output_size: RwLock::new((1920, 1080, 1.0)),
             force_ssd: RwLock::new(false),
             ffi_windows: RwLock::new(HashMap::new()),
@@ -108,6 +111,7 @@ impl WawonaCore {
             pending_client_events: RwLock::new(Vec::new()),
             pending_buffers: RwLock::new(HashMap::new()),
             pending_redraws: RwLock::new(Vec::new()),
+            ipc_server: Mutex::new(None),
         })
     }
     
@@ -153,12 +157,17 @@ impl WawonaCore {
         } else {
             crate::core::state::DecorationPolicy::PreferClient
         };
-        drop(state);
         
-        compositor.start()
+        compositor.start(&mut state)
             .map_err(|e| CompositorError::initialization_failed(e.to_string()))?;
         
+        drop(state);
+        
         *compositor_guard = Some(compositor);
+        
+        // Start IPC server
+        let ipc = crate::core::ipc::IpcServer::new(self.state.clone());
+        *self.ipc_server.lock().unwrap() = Some(ipc);
         
         crate::wlog!(crate::util::logging::FFI, "Compositor started successfully");
         Ok(())
@@ -181,71 +190,64 @@ impl WawonaCore {
         *self.force_ssd.write().unwrap() = enabled;
         
         // 3. Notify existing decorations if protocol is active
-        use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as XdgMode;
+        use crate::core::wayland::protocol::server::org_kde_kwin_server_decoration::org_kde_kwin_server_decoration::Mode as KdeMode;
         
-        let target_mode = if enabled {
-            Mode::ServerSide
+        let target_xdg_mode = if enabled {
+            XdgMode::ServerSide
         } else {
-            Mode::ClientSide
+            XdgMode::ClientSide
+        };
+
+        let target_kde_mode = if enabled {
+            KdeMode::Server
+        } else {
+            KdeMode::Client
         };
         
         // Collect existing decorations to trigger updates
         let mut decorations_to_configure = Vec::new();
-        for decoration in state.decorations.values() {
-            if let Some(res) = &decoration.resource {
-                decorations_to_configure.push((res.clone(), decoration.window_id));
-            }
+        for decoration in state.xdg.decoration.decorations.values() {
+            decorations_to_configure.push(decoration.clone());
         }
         
-        crate::wlog!(crate::util::logging::FFI, "Updating {} active decorations to {:?}", decorations_to_configure.len(), target_mode);
+        crate::wlog!(crate::util::logging::FFI, "Updating {} active decorations", decorations_to_configure.len());
         
-        for (res, window_id) in decorations_to_configure {
-            // Send the decoration mode configure
-            res.configure(target_mode);
+        for decoration in decorations_to_configure {
+            let window_id = decoration.window_id;
+
+            // Handle XDG Decoration
+            if let Some(res) = &decoration.resource {
+                res.configure(target_xdg_mode);
+            }
+
+            // Handle KDE Decoration
+            if let Some(res) = &decoration.kde_resource {
+                res.mode(target_kde_mode);
+            }
             
+            let new_mode = if enabled {
+                crate::core::window::DecorationMode::ServerSide
+            } else {
+                crate::core::window::DecorationMode::ClientSide
+            };
+
             // Update window decoration mode state
             if let Some(window) = state.get_window(window_id) {
                 let mut window = window.write().unwrap();
-                window.decoration_mode = if enabled {
-                    crate::core::window::DecorationMode::ServerSide
-                } else {
-                    crate::core::window::DecorationMode::ClientSide
-                };
+                window.decoration_mode = new_mode;
             }
-            
-            // CRITICAL: Trigger a full configure sequence (toplevel + surface)
-            // for the mode to take effect and for the client to resize!
-            
-            let mut surface_res = None;
-            let mut toplevel_res = None;
-            let mut internal_surface_id = 0;
-            
-            // Find toplevel and surface resources for this window
-            for tl in state.xdg_toplevels.values() {
-                if tl.window_id == window_id {
-                    internal_surface_id = tl.surface_id;
-                    toplevel_res = tl.resource.clone();
-                    break;
-                }
-            }
-            
-            if internal_surface_id != 0 {
-                if let Some(surf) = state.xdg_surfaces.get(&internal_surface_id) {
-                    surface_res = surf.resource.clone();
-                }
-            }
-            
-            if let Some(tl) = toplevel_res {
-                // Send current size or 0,0 to request re-layout
-                // In Wawona, 0,0 usually tells client to decide
-                tl.configure(0, 0, vec![]);
-                
-                if let Some(surf) = surface_res {
-                    let serial = state.next_serial();
-                    surf.configure(serial);
-                    crate::wlog!(crate::util::logging::FFI, "Sent configure serial {} to window {} for SSD change", serial, window_id);
-                }
-            }
+
+            // Notify platform so it can update window style (e.g. titled vs borderless)
+            state.pending_compositor_events.push(
+                crate::core::compositor::CompositorEvent::DecorationModeChanged {
+                    window_id,
+                    mode: new_mode,
+                },
+            );
+
+            // Trigger reconfiguration
+            state.reconfigure_window_decorations(window_id);
         }
     }
     
@@ -269,7 +271,11 @@ impl WawonaCore {
         self.pending_window_events.write().unwrap().clear();
         self.pending_client_events.write().unwrap().clear();
         self.pending_buffers.write().unwrap().clear();
+        self.pending_buffers.write().unwrap().clear();
         self.pending_redraws.write().unwrap().clear();
+        
+        // Stop IPC server
+        *self.ipc_server.lock().unwrap() = None;
         
         crate::wlog!(crate::util::logging::FFI, "Compositor stopped");
         Ok(())
@@ -384,6 +390,21 @@ impl WawonaCore {
             InputEvent::KeyboardModifiers { depressed, latched, locked, group } => {
                 crate::core::input::InputEvent::KeyboardModifiers { depressed, latched, locked, group }
             }
+            InputEvent::TouchDown { id, x, y, time_ms } => {
+                crate::core::input::InputEvent::TouchDown { id, x, y, time_ms }
+            }
+            InputEvent::TouchUp { id, time_ms } => {
+                crate::core::input::InputEvent::TouchUp { id, time_ms }
+            }
+            InputEvent::TouchMotion { id, x, y, time_ms } => {
+                crate::core::input::InputEvent::TouchMotion { id, x, y, time_ms }
+            }
+            InputEvent::TouchCancel => {
+                crate::core::input::InputEvent::TouchCancel
+            }
+            InputEvent::TouchFrame => {
+                crate::core::input::InputEvent::TouchFrame
+            }
         };
 
         let mut state = self.state.write().unwrap();
@@ -472,6 +493,24 @@ impl WawonaCore {
             let _ = compositor.flush();
         }
     }
+
+    /// Report that a frame was presented
+    /// 
+    /// This should be called by the platform when the frame is actually displayed.
+    /// It updates the frame clock and triggers presentation feedback events.
+    pub fn frame_presented(&self, refresh_mhz: u32) {
+        // 1. Update Frame Clock
+        {
+            let mut runtime = self.runtime.lock().unwrap();
+            runtime.report_presentation(std::time::Instant::now(), refresh_mhz);
+        }
+        
+        // 2. Fire presentation feedback events
+        {
+            let mut state = self.state.write().unwrap();
+            state.report_presentation_feedback(std::time::Instant::now(), refresh_mhz);
+        }
+    }
 }
 
 // Internal methods (not exported via UniFFI)
@@ -512,7 +551,28 @@ impl WawonaCore {
                     }
                 );
             }
-            CompositorEvent::WindowCreated { window_id, surface_id, title, width, height } => {
+            CompositorEvent::WindowMinimized { window_id, minimized } => {
+                if minimized {
+                    self.pending_window_events.write().unwrap().push(
+                        WindowEvent::MinimizeRequested { 
+                            window_id: WindowId { id: window_id as u64 } 
+                        }
+                    );
+                }
+            }
+            CompositorEvent::WindowCreated {
+                window_id,
+                surface_id,
+                title,
+                width,
+                height,
+                decoration_mode,
+                fullscreen_shell,
+            } => {
+                let ffi_decoration_mode = match decoration_mode {
+                    crate::core::window::DecorationMode::ClientSide => DecorationMode::ClientSide,
+                    crate::core::window::DecorationMode::ServerSide => DecorationMode::ServerSide,
+                };
                 let window_info = WindowInfo {
                     id: WindowId { id: window_id as u64 },
                     surface_id: SurfaceId { id: surface_id },
@@ -520,13 +580,13 @@ impl WawonaCore {
                     app_id: String::new(),
                     width,
                     height,
-                    decoration_mode: DecorationMode::ClientSide,
+                    decoration_mode: ffi_decoration_mode,
                     state: crate::ffi::types::WindowState::Normal,
                     activated: false,
                     resizing: false,
                 };
                 self.ffi_windows.write().unwrap().insert(window_id as u64, window_info.clone());
-                
+
                 let config = WindowConfig {
                     title,
                     app_id: String::new(),
@@ -536,17 +596,17 @@ impl WawonaCore {
                     min_height: None,
                     max_width: None,
                     max_height: None,
-                    decoration_mode: DecorationMode::ClientSide,
+                    decoration_mode: ffi_decoration_mode,
+                    fullscreen_shell,
                     state: crate::ffi::types::WindowState::Normal,
                     parent: None,
                 };
                 self.pending_window_events.write().unwrap().push(
-                    WindowEvent::Created { 
-                        window_id: WindowId { id: window_id as u64 }, 
-                        config 
+                    WindowEvent::Created {
+                        window_id: WindowId { id: window_id as u64 },
+                        config,
                     }
                 );
-
             }
             CompositorEvent::PopupCreated { window_id, surface_id: _, parent_id, x, y, width, height } => {
                 let _config = WindowConfig {
@@ -559,6 +619,7 @@ impl WawonaCore {
                     max_width: None,
                     max_height: None,
                     decoration_mode: DecorationMode::ClientSide,
+                    fullscreen_shell: false,
                     state: crate::ffi::types::WindowState::Normal,
                     parent: if parent_id > 0 { Some(WindowId::new(parent_id as u64)) } else { None },
                 };
@@ -608,10 +669,25 @@ impl WawonaCore {
                     info.height = height;
                 }
                 self.pending_window_events.write().unwrap().push(
-                    WindowEvent::SizeChanged { 
-                        window_id: WindowId { id: window_id as u64 }, 
-                        width, 
-                        height 
+                    WindowEvent::SizeChanged {
+                        window_id: WindowId { id: window_id as u64 },
+                        width,
+                        height,
+                    }
+                );
+            }
+            CompositorEvent::DecorationModeChanged { window_id, mode } => {
+                let ffi_mode = match mode {
+                    crate::core::window::DecorationMode::ClientSide => DecorationMode::ClientSide,
+                    crate::core::window::DecorationMode::ServerSide => DecorationMode::ServerSide,
+                };
+                if let Some(info) = self.ffi_windows.write().unwrap().get_mut(&(window_id as u64)) {
+                    info.decoration_mode = ffi_mode;
+                }
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::DecorationModeChanged {
+                        window_id: WindowId { id: window_id as u64 },
+                        mode: ffi_mode,
                     }
                 );
             }
@@ -646,122 +722,112 @@ impl WawonaCore {
                     *count
                 });
                 
-                crate::wlog!(crate::util::logging::FFI, "SurfaceCommitted surface={}, buffer_id={:?} (commit #{})", 
+                crate::wtrace!(crate::util::logging::FFI, "SurfaceCommitted surface={}, buffer_id={:?} (commit #{})", 
                     surface_id, buffer_id, commit_count);
                 
                 let buffer_id = if let Some(bid) = buffer_id {
                     bid as u32
                 } else {
                     crate::wlog!(crate::util::logging::FFI, "FFI: SurfaceCommitted with no buffer_id");
-                    return; // Exit this event handler early
+                    return;
                 };
-                let mut state = self.state.write().unwrap();
                 
-                // Try to get the buffer data - clone Arc first to avoid borrowing state
-                let buffer = state.buffers.get(&buffer_id).cloned();
-                crate::wlog!(crate::util::logging::FFI, "Buffer {} found: {}", 
-                    buffer_id, buffer.is_some());
+                // -------------------------------------------------------
+                // Phase 1: Gather metadata and copy raw pixel bytes under
+                // the state lock.  The memcpy is fast; the expensive
+                // per-pixel alpha fixup is deferred to Phase 2.
+                // -------------------------------------------------------
                 
-                // Check opaque region
-                let is_opaque = if let Some(surface) = state.surfaces.get(&surface_id) {
-                    let surface = surface.read().unwrap();
-                    surface.current.opaque_region.as_ref().map(|r| !r.is_empty()).unwrap_or(false)
-                } else {
-                    false
-                };
-
+                // Intermediate result from Phase 1.
+                enum RawCopy {
+                    Shm {
+                        raw_pixels: Vec<u8>,
+                        width: u32,
+                        height: u32,
+                        stride: u32,
+                        format: u32,
+                        is_opaque: bool,
+                    },
+                    Iosurface { id: u32, width: u32, height: u32, format: u32 },
+                    None,
+                }
                 
-                let buffer_data = if let Some(buffer) = buffer {
-                    let buffer = buffer.read().unwrap();
-                    match &buffer.buffer_type {
-                        crate::core::surface::BufferType::Shm(shm) => {
-                            crate::wlog!(crate::util::logging::FFI, "SHM buffer {}x{}, pool={}, offset={}, fmt={}", 
-                                shm.width, shm.height, shm.pool_id, shm.offset, shm.format);
-                            // Find and map the pool
-                            if let Some(pool) = state.shm_pools.get_mut(&shm.pool_id) {
-                                if let Some(ptr) = pool.map() {
-                                    let offset = shm.offset as usize;
-                                    let size = (shm.height * shm.stride) as usize;
-                                    
-                                    // Safety: ptr is valid mmap'd memory from pool.fd of length pool.size
-                                    // We need to ensure we don't read out of bounds
-                                    if offset + size <= pool.size {
-                                        let src_slice = unsafe {
-                                            std::slice::from_raw_parts(ptr.add(offset), size)
-                                        };
-                                        
-
-                                        
-                                        // Handle formats
-                                        // 0 = ARGB8888, 1 = XRGB8888
-                                        let (format, needs_alpha_fix) = match shm.format {
-                                            0 => (types::BufferFormat::Argb8888, is_opaque), // Force alpha if marked opaque!
-                                            1 => (types::BufferFormat::Xrgb8888, true),      // Always force alpha for XRGB
-                                            _ => (types::BufferFormat::Argb8888, is_opaque),
-                                        };
-                                        
-                                        let mut pixels = src_slice.to_vec();
-                                        
-
-
-                                        // Fix alpha channel for XRGB8888 or Opaque ARGB (force 0xFF)
-                                        if needs_alpha_fix {
-                                            for chunk in pixels.chunks_exact_mut(4) {
-                                                chunk[3] = 0xFF; // Force Alpha to opaque
+                let (raw_copy, target_window_id) = {
+                    let mut state = self.state.write().unwrap();
+                    
+                    let buffer = state.buffers.get(&buffer_id).cloned();
+                    crate::wtrace!(crate::util::logging::FFI, "Buffer {} found: {}", 
+                        buffer_id, buffer.is_some());
+                    
+                    let is_opaque = if let Some(surface) = state.surfaces.get(&surface_id) {
+                        let surface = surface.read().unwrap();
+                        surface.current.opaque_region.as_ref().map(|r| !r.is_empty()).unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    
+                    let raw = if let Some(buffer) = buffer {
+                        let buffer = buffer.read().unwrap();
+                        match &buffer.buffer_type {
+                            crate::core::surface::BufferType::Shm(shm) => {
+                                crate::wtrace!(crate::util::logging::FFI, "SHM buffer {}x{}, pool={}, offset={}, fmt={}", 
+                                    shm.width, shm.height, shm.pool_id, shm.offset, shm.format);
+                                if let Some(pool) = state.shm_pools.get_mut(&shm.pool_id) {
+                                    if let Some(ptr) = pool.map() {
+                                        let offset = shm.offset as usize;
+                                        let size = (shm.height * shm.stride) as usize;
+                                        if offset + size <= pool.size {
+                                            let raw_pixels = unsafe {
+                                                std::slice::from_raw_parts(ptr.add(offset), size)
+                                            }.to_vec();
+                                            RawCopy::Shm {
+                                                raw_pixels,
+                                                width: shm.width as u32,
+                                                height: shm.height as u32,
+                                                stride: shm.stride as u32,
+                                                format: shm.format,
+                                                is_opaque,
                                             }
+                                        } else {
+                                            crate::wlog!(crate::util::logging::FFI, "Buffer out of bounds: offset={} size={} pool_size={}", offset, size, pool.size);
+                                            RawCopy::None
                                         }
-
-                                        Some(types::BufferData::Shm {
-                                            pixels,
-                                            width: shm.width as u32,
-                                            height: shm.height as u32,
-                                            format, 
-                                            stride: shm.stride as u32,
-                                        })
                                     } else {
-                                        crate::wlog!(crate::util::logging::FFI, "Buffer out of bounds: offset={} size={} pool_size={}", offset, size, pool.size);
-                                        None
+                                        crate::wlog!(crate::util::logging::FFI, "Failed to map SHM pool {}", shm.pool_id);
+                                        RawCopy::None
                                     }
                                 } else {
-                                    crate::wlog!(crate::util::logging::FFI, "Failed to map SHM pool {}", shm.pool_id);
-                                    None
+                                    crate::wlog!(crate::util::logging::FFI, "SHM pool {} not found", shm.pool_id);
+                                    RawCopy::None
                                 }
-                            } else {
-                                crate::wlog!(crate::util::logging::FFI, "SHM pool {} not found", shm.pool_id);
-                                None
+                            },
+                            crate::core::surface::BufferType::Native(native) => {
+                                crate::wlog!(crate::util::logging::FFI, "FFI: IOSurface buffer id={} {}x{}", 
+                                    native.id, native.width, native.height);
+                                RawCopy::Iosurface {
+                                    id: native.id as u32,
+                                    width: native.width as u32,
+                                    height: native.height as u32,
+                                    format: native.format,
+                                }
+                            },
+                            _ => {
+                                crate::wlog!(crate::util::logging::FFI, "FFI: Non-SHM buffer type, skipping");
+                                RawCopy::None
                             }
-                        },
-                        crate::core::surface::BufferType::Native(native) => {
-                            crate::wlog!(crate::util::logging::FFI, "FFI: IOSurface buffer id={} {}x{}", 
-                                native.id, native.width, native.height);
-                            
-                            Some(types::BufferData::Iosurface {
-                                id: native.id as u32,
-                                width: native.width as u32,
-                                height: native.height as u32,
-                                format: native.format,
-                            })
-                        },
-                        _ => {
-                            crate::wlog!(crate::util::logging::FFI, "FFI: Non-SHM buffer type, skipping");
-                            None
                         }
-                    }
-                } else {
-                    crate::wlog!(crate::util::logging::FFI, "FFI: Buffer {} not found in state.buffers", buffer_id);
-                    None
-                };
-                
-                if let Some(data) = buffer_data {
-                    let mut target_window_id = state.surface_to_window.get(&surface_id).copied();
+                    } else {
+                        crate::wlog!(crate::util::logging::FFI, "FFI: Buffer {} not found in state.buffers", buffer_id);
+                        RawCopy::None
+                    };
                     
-                    // If no direct window mapping, check if it's a subsurface
+                    // Resolve surface → window mapping (including subsurface chains)
+                    let mut target_window_id = state.surface_to_window.get(&surface_id).copied();
                     if target_window_id.is_none() {
                         if let Some(subsurface) = state.get_subsurface(surface_id) {
                             let mut parent_id = subsurface.parent_id;
                             let mut path = format!("{}->{}", surface_id, parent_id);
-                            
-                            for _ in 0..10 { // Max depth
+                            for _ in 0..10 {
                                 if let Some(wid) = state.surface_to_window.get(&parent_id) {
                                     crate::wlog!(crate::util::logging::FFI, "Resolved subsurface path: {} -> Window {}", path, wid);
                                     target_window_id = Some(*wid);
@@ -777,45 +843,78 @@ impl WawonaCore {
                             }
                         }
                     }
-
-                    // Notify redraw if associated with a window
-                    if let Some(window_id) = target_window_id {
-                        let win_id = types::WindowId { id: window_id as u64 };
-                        crate::wlog!(crate::util::logging::FFI, "FFI: Queuing buffer for window {}", win_id.id);
-                        
-                        let mut pending = self.pending_buffers.write().unwrap();
-                        let new_buffer = types::WindowBuffer {
-                            window_id: win_id,
-                            surface_id: types::SurfaceId { id: surface_id },
-                            buffer: types::Buffer {
-                                id: types::BufferId { id: buffer_id as u64 },
-                                data
-                            }
+                    
+                    (raw, target_window_id)
+                }; // state write-lock released
+                
+                // -------------------------------------------------------
+                // Phase 2: Expensive per-pixel work OUTSIDE the lock.
+                // For a 1920×1080 XRGB buffer this iterates ~2M pixels;
+                // doing it without holding the state lock avoids blocking
+                // the IPC server and other readers.
+                // -------------------------------------------------------
+                let buffer_data = match raw_copy {
+                    RawCopy::Shm { mut raw_pixels, width, height, stride, format, is_opaque } => {
+                        let (fmt, needs_alpha_fix) = match format {
+                            0 => (types::BufferFormat::Argb8888, is_opaque),
+                            1 => (types::BufferFormat::Xrgb8888, true),
+                            _ => (types::BufferFormat::Argb8888, is_opaque),
                         };
-                        
-                        if let Some(old_buffer) = pending.insert(win_id, new_buffer) {
-                            // Only release if it's actually a DIFFERENT buffer
-                            // This prevents premature release if the same buffer is committed multiple times
-                            // before the UI thread has displayed it.
-                            if old_buffer.buffer.id.id != buffer_id as u64 {
-                                crate::wlog!(crate::util::logging::FFI, "Released superseded buffer {} for window {}", 
-                                    old_buffer.buffer.id.id, win_id.id);
-                                state.release_buffer(old_buffer.buffer.id.id as u32);
-                            } else {
-                                crate::wlog!(crate::util::logging::FFI, "Keeping reused buffer {} for window {}", 
-                                    buffer_id, win_id.id);
+                        if needs_alpha_fix {
+                            for chunk in raw_pixels.chunks_exact_mut(4) {
+                                chunk[3] = 0xFF;
                             }
                         }
-                        
-                        self.pending_redraws.write().unwrap().push(win_id);
-                    } else {
-                        crate::wlog!(crate::util::logging::FFI, "FFI: No window for surface {} in SurfaceCommitted", surface_id);
-                    }
-                }
+                        Some(types::BufferData::Shm {
+                            pixels: raw_pixels,
+                            width,
+                            height,
+                            format: fmt,
+                            stride,
+                        })
+                    },
+                    RawCopy::Iosurface { id, width, height, format } => {
+                        Some(types::BufferData::Iosurface { id, width, height, format })
+                    },
+                    RawCopy::None => None,
+                };
                 
-                // Flush frame callbacks
-                state.flush_frame_callbacks(surface_id, Some(crate::core::state::CompositorState::get_timestamp_ms()));
-                crate::wlog!(crate::util::logging::FFI, "Flushed frame callbacks for surface {}", surface_id);
+                // -------------------------------------------------------
+                // Phase 3: Enqueue result and flush callbacks (fast, brief
+                // lock acquisition).
+                // -------------------------------------------------------
+                {
+                    let mut state = self.state.write().unwrap();
+                    
+                    if let Some(data) = buffer_data {
+                        if let Some(window_id) = target_window_id {
+                            let win_id = types::WindowId { id: window_id as u64 };
+                            crate::wtrace!(crate::util::logging::FFI, "FFI: Queuing buffer for window {}", win_id.id);
+                            
+                            let mut pending = self.pending_buffers.write().unwrap();
+                            let new_buffer = types::WindowBuffer {
+                                window_id: win_id,
+                                surface_id: types::SurfaceId { id: surface_id },
+                                buffer: types::Buffer {
+                                    id: types::BufferId { id: buffer_id as u64 },
+                                    data
+                                }
+                            };
+                            
+                            if let Some(old_buffer) = pending.insert(win_id, new_buffer) {
+                                if old_buffer.buffer.id.id != buffer_id as u64 {
+                                    state.release_buffer(old_buffer.buffer.id.id as u32);
+                                }
+                            }
+                            
+                            self.pending_redraws.write().unwrap().push(win_id);
+                        } else {
+                            crate::wlog!(crate::util::logging::FFI, "FFI: No window for surface {} in SurfaceCommitted", surface_id);
+                        }
+                    }
+                    
+                    state.flush_frame_callbacks(surface_id, Some(crate::core::state::CompositorState::get_timestamp_ms()));
+                }
             }
             CompositorEvent::LayerSurfaceCommitted { surface_id, buffer_id } => {
                 // Layer surface commit - TODO: Implement full layer surface rendering
@@ -832,6 +931,151 @@ impl WawonaCore {
                 }
                 
                 state.flush_frame_callbacks(surface_id, Some(crate::core::state::CompositorState::get_timestamp_ms()));
+            }
+            CompositorEvent::CursorCommitted { surface_id, buffer_id, hotspot_x, hotspot_y } => {
+                crate::wlog!(crate::util::logging::FFI, "CursorCommitted surface={}, buffer_id={:?}, hotspot=({}, {})", 
+                    surface_id, buffer_id, hotspot_x, hotspot_y);
+                
+                // Process cursor buffer exactly like a window buffer so the
+                // platform can render the Wayland-provided cursor image.
+                if let Some(bid) = buffer_id {
+                    let buffer_id_u32 = bid as u32;
+
+                    // Phase 1: copy raw pixel data under the state lock
+                    enum CursorRaw {
+                        Shm { pixels: Vec<u8>, width: u32, height: u32, stride: u32, format: u32 },
+                        Iosurface { id: u32, width: u32, height: u32, format: u32 },
+                        None,
+                    }
+
+                    let raw = {
+                        let mut state = self.state.write().unwrap();
+
+                        // Extract buffer metadata first so we can drop the
+                        // immutable borrow before mutably borrowing shm_pools.
+                        enum BufInfo {
+                            Shm { pool_id: u32, offset: usize, size: usize, width: u32, height: u32, stride: u32, format: u32 },
+                            Native { id: u32, width: u32, height: u32, format: u32 },
+                            None,
+                        }
+
+                        let info = if let Some(buf_ref) = state.buffers.get(&buffer_id_u32) {
+                            let buf = buf_ref.read().unwrap();
+                            match &buf.buffer_type {
+                                crate::core::surface::BufferType::Shm(shm) => BufInfo::Shm {
+                                    pool_id: shm.pool_id,
+                                    offset: shm.offset as usize,
+                                    size: (shm.height * shm.stride) as usize,
+                                    width: shm.width as u32,
+                                    height: shm.height as u32,
+                                    stride: shm.stride as u32,
+                                    format: shm.format as u32,
+                                },
+                                crate::core::surface::BufferType::Native(native) => BufInfo::Native {
+                                    id: native.id as u32,
+                                    width: native.width as u32,
+                                    height: native.height as u32,
+                                    format: native.format,
+                                },
+                                _ => BufInfo::None,
+                            }
+                        } else { BufInfo::None };
+
+                        match info {
+                            BufInfo::Shm { pool_id, offset, size, width, height, stride, format } => {
+                                if let Some(pool) = state.shm_pools.get_mut(&pool_id) {
+                                    if let Some(ptr) = pool.map() {
+                                        if offset + size <= pool.size {
+                                            let pixels = unsafe {
+                                                std::slice::from_raw_parts(ptr.add(offset), size)
+                                            }.to_vec();
+                                            CursorRaw::Shm { pixels, width, height, stride, format }
+                                        } else { CursorRaw::None }
+                                    } else { CursorRaw::None }
+                                } else { CursorRaw::None }
+                            }
+                            BufInfo::Native { id, width, height, format } => {
+                                CursorRaw::Iosurface { id, width, height, format }
+                            }
+                            BufInfo::None => CursorRaw::None,
+                        }
+                    };
+
+                    // Phase 2: alpha fixup outside lock
+                    let cursor_buffer = match raw {
+                        CursorRaw::Shm { mut pixels, width, height, stride, format } => {
+                            let (fmt, needs_fix) = match format {
+                                0 => (types::BufferFormat::Argb8888, false),
+                                1 => (types::BufferFormat::Xrgb8888, true),
+                                _ => (types::BufferFormat::Argb8888, false),
+                            };
+                            if needs_fix {
+                                for chunk in pixels.chunks_exact_mut(4) {
+                                    chunk[3] = 0xFF;
+                                }
+                            }
+                            Some(types::BufferData::Shm { pixels, width, height, format: fmt, stride })
+                        }
+                        CursorRaw::Iosurface { id, width, height, format } => {
+                            Some(types::BufferData::Iosurface { id, width, height, format })
+                        }
+                        CursorRaw::None => None,
+                    };
+
+                    // Phase 3: enqueue cursor buffer for the platform
+                    if let Some(data) = cursor_buffer {
+                        // Use a sentinel window ID (u64::MAX) to tag cursor buffers
+                        let cursor_win_id = types::WindowId { id: u64::MAX };
+                        let mut pending = self.pending_buffers.write().unwrap();
+                        let new_buffer = types::WindowBuffer {
+                            window_id: cursor_win_id,
+                            surface_id: types::SurfaceId { id: surface_id },
+                            buffer: types::Buffer {
+                                id: types::BufferId { id: bid },
+                                data,
+                            },
+                        };
+                        if let Some(old) = pending.insert(cursor_win_id, new_buffer) {
+                            if old.buffer.id.id != bid {
+                                let mut state = self.state.write().unwrap();
+                                state.release_buffer(old.buffer.id.id as u32);
+                            }
+                        }
+                    }
+                }
+
+                // Always flush frame callbacks so the client can keep rendering
+                let mut state = self.state.write().unwrap();
+                state.flush_frame_callbacks(surface_id, Some(crate::core::state::CompositorState::get_timestamp_ms()));
+            }
+            CompositorEvent::WindowMoveRequested { window_id, seat_id: _, serial } => {
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::MoveRequested { 
+                        window_id: WindowId { id: window_id as u64 }, 
+                        serial 
+                    }
+                );
+            }
+            CompositorEvent::WindowResizeRequested { window_id, seat_id: _, serial, edges } => {
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::ResizeRequested { 
+                        window_id: WindowId { id: window_id as u64 }, 
+                        serial,
+                        edge: crate::ffi::types::ResizeEdge::from_u32(edges)
+                    }
+                );
+            }
+            CompositorEvent::CursorShapeChanged { shape } => {
+                crate::wlog!(crate::util::logging::FFI, "CursorShapeChanged shape={}", shape);
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::CursorShapeChanged { shape }
+                );
+            }
+            CompositorEvent::SystemBell { surface_id } => {
+                crate::wlog!(crate::util::logging::FFI, "SystemBell surface={}", surface_id);
+                self.pending_window_events.write().unwrap().push(
+                    WindowEvent::SystemBell { surface_id }
+                );
             }
         }
     }
@@ -870,21 +1114,71 @@ impl WawonaCore {
         pending.remove(&key)
     }
 
+    /// Pop pending gamma apply (platform applies via CGSetDisplayTransferByTable)
+    pub fn pop_pending_gamma_apply(&self) -> Option<crate::core::state::GammaRampApply> {
+        if !self.is_running() {
+            return None;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::wlr::gamma_control::pop_pending_gamma_apply(&mut state)
+    }
+
+    /// Pop pending gamma restore (platform restores original tables)
+    pub fn pop_pending_gamma_restore(&self) -> Option<u32> {
+        if !self.is_running() {
+            return None;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::wlr::gamma_control::pop_pending_gamma_restore(&mut state)
+    }
+
+    /// Get the first pending screencopy (platform writes ARGB8888 pixels to ptr, then calls screencopy_done)
+    pub fn get_pending_screencopy(&self) -> Option<types::ScreencopyRequest> {
+        if !self.is_running() {
+            return None;
+        }
+        let state = self.state.read().unwrap();
+        crate::core::wayland::wlr::screencopy::get_pending_screencopy(&state).map(
+            |(capture_id, ptr, width, height, stride, size)| types::ScreencopyRequest {
+                capture_id,
+                ptr: ptr as u64,
+                width,
+                height,
+                stride,
+                size: size as u64,
+            },
+        )
+    }
+
+    /// Notify screencopy capture complete (platform has written pixels to the buffer)
+    pub fn screencopy_done(&self, capture_id: u64) {
+        if !self.is_running() {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::wlr::screencopy::complete_screencopy(&mut state, capture_id);
+    }
+
+    /// Notify screencopy capture failed
+    pub fn screencopy_failed(&self, capture_id: u64) {
+        if !self.is_running() {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::wlr::screencopy::fail_screencopy(&mut state, capture_id);
+    }
+
     /// Notify that a frame has been presented
     pub fn notify_frame_presented(&self, surface_id: SurfaceId, buffer_id: Option<BufferId>, timestamp: u32) {
         let mut state = self.state.write().unwrap();
         
         // Flush frame callbacks for this surface
         state.flush_frame_callbacks(surface_id.id, Some(timestamp));
-        crate::wlog!(crate::util::logging::FFI, "Flushed frame callbacks for surface {}", 
-            surface_id.id);
             
-        // Release buffer if provided
         // Release buffer if provided
         if let Some(buf_id) = buffer_id {
             let buffer_id_u32 = buf_id.id as u32;
             state.release_buffer(buffer_id_u32);
-            crate::wlog!(crate::util::logging::FFI, "Released buffer {}", buffer_id_u32);
         }
     }
     
@@ -930,13 +1224,13 @@ impl WawonaCore {
 
         if let Some(sid) = surface_id {
              // Find toplevel data
-             let toplevel_id = state.xdg_toplevels.iter()
+             let toplevel_id = state.xdg.toplevels.iter()
                  .find(|(_, data)| data.surface_id == sid)
                  .map(|(&id, _)| id);
             
              if let Some(tid) = toplevel_id {
                  let scale = state.primary_output().scale;
-                 if let Some(toplevel_data) = state.xdg_toplevels.get_mut(&tid) {
+                 if let Some(toplevel_data) = state.xdg.toplevels.get_mut(&tid) {
                      // Dedup: if size hasn't changed, don't spam configure
                      if toplevel_data.width == width && toplevel_data.height == height {
                          return;
@@ -962,12 +1256,12 @@ impl WawonaCore {
                          // We must also send surface configure to commit the state
                          // Note: xdg_surfaces is keyed by xdg_surface's protocol_id, not wl_surface internal ID
                          // So we need to find the xdg_surface by its surface_id field
-                         let xdg_surface_key = state.xdg_surfaces.iter()
+                         let xdg_surface_key = state.xdg.surfaces.iter()
                              .find(|(_, data)| data.surface_id == sid)
                              .map(|(&key, _)| key);
                          
                          if let Some(xdg_key) = xdg_surface_key {
-                             if let Some(surface_data) = state.xdg_surfaces.get_mut(&xdg_key) {
+                             if let Some(surface_data) = state.xdg.surfaces.get_mut(&xdg_key) {
                                  if let Some(surface_resource) = &surface_data.resource {
                                       // Need serial from compositor
                                       if let Some(compositor) = self.compositor.lock().unwrap().as_mut() {
@@ -1010,13 +1304,13 @@ impl WawonaCore {
 
         if let Some(sid) = surface_id {
              // Find toplevel data
-             let toplevel_id = state.xdg_toplevels.iter()
+             let toplevel_id = state.xdg.toplevels.iter()
                  .find(|(_, data)| data.surface_id == sid)
                  .map(|(&id, _)| id);
             
              if let Some(tid) = toplevel_id {
                  let scale = state.primary_output().scale;
-                 if let Some(toplevel_data) = state.xdg_toplevels.get_mut(&tid) {
+                 if let Some(toplevel_data) = state.xdg.toplevels.get_mut(&tid) {
                      toplevel_data.activated = active;
                      
                      if let Some(resource) = &toplevel_data.resource {
@@ -1039,7 +1333,7 @@ impl WawonaCore {
                          }
 
                          // We must also send surface configure to commit the state
-                         if let Some(surface_data) = state.xdg_surfaces.get_mut(&sid) {
+                         if let Some(surface_data) = state.xdg.surfaces.get_mut(&sid) {
                              if let Some(surface_resource) = &surface_data.resource {
                                   // Need serial from compositor
                                   if let Some(compositor) = self.compositor.lock().unwrap().as_mut() {
@@ -1077,15 +1371,15 @@ impl WawonaCore {
         state.seat.cleanup_resources();
         
         // Update seat state
-        state.seat.pointer_x = x;
-        state.seat.pointer_y = y;
-        state.seat.cursor_hotspot_x = x;
-        state.seat.cursor_hotspot_y = y;
+        state.seat.pointer.x = x;
+        state.seat.pointer.y = y;
+        state.seat.pointer.cursor_hotspot_x = x;
+        state.seat.pointer.cursor_hotspot_y = y;
         
         let focused_client = state.focused_pointer_client();
         // Broadcast motion + frame event (required for clients to process atomically)
         state.seat.broadcast_pointer_motion(timestamp_ms, x, y, focused_client.as_ref());
-        state.seat.broadcast_pointer_frame();
+        state.seat.broadcast_pointer_frame(focused_client.as_ref());
     }
     
     /// Inject pointer button event
@@ -1121,10 +1415,10 @@ impl WawonaCore {
         // Update button count for implicit grab tracking
         match wl_state {
             wayland_server::protocol::wl_pointer::ButtonState::Pressed => {
-                state.seat.pointer_button_count += 1;
+                state.seat.pointer.button_count += 1;
             },
             wayland_server::protocol::wl_pointer::ButtonState::Released => {
-                state.seat.pointer_button_count = state.seat.pointer_button_count.saturating_sub(1);
+                state.seat.pointer.button_count = state.seat.pointer.button_count.saturating_sub(1);
             },
             _ => {}
         }
@@ -1132,23 +1426,30 @@ impl WawonaCore {
         let focused_client = state.focused_pointer_client();
         // Broadcast button + frame event
         state.seat.broadcast_pointer_button(serial, timestamp_ms, button_code, wl_state, focused_client.as_ref());
-        state.seat.broadcast_pointer_frame();
+        state.seat.broadcast_pointer_frame(focused_client.as_ref());
     }
     
     /// Inject pointer axis (scroll) event
     pub fn inject_pointer_axis(
         &self,
         _window_id: WindowId,
-        _axis: PointerAxis,
-        _value: f64,
+        axis: PointerAxis,
+        value: f64,
         _discrete: i32,
         _source: AxisSource,
-        _timestamp_ms: u32,
+        timestamp_ms: u32,
     ) {
         if !self.is_running() {
             return;
         }
-        // TODO: Send wl_pointer::axis - skipping for now as SeatState helper not yet added for axis
+        let mut state = self.state.write().unwrap();
+        let focused_client = state.focused_pointer_client();
+        let wl_axis = match axis {
+            PointerAxis::Vertical => wayland_server::protocol::wl_pointer::Axis::VerticalScroll,
+            PointerAxis::Horizontal => wayland_server::protocol::wl_pointer::Axis::HorizontalScroll,
+        };
+        state.seat.broadcast_pointer_axis(timestamp_ms, wl_axis, value, focused_client.as_ref());
+        state.seat.broadcast_pointer_frame(focused_client.as_ref());
     }
     
     /// Inject pointer frame event
@@ -1156,7 +1457,7 @@ impl WawonaCore {
         if !self.is_running() {
             return;
         }
-        self.state.write().unwrap().seat.broadcast_pointer_frame();
+        self.state.write().unwrap().seat.broadcast_pointer_frame(None);
     }
     
     /// Inject pointer enter event
@@ -1181,7 +1482,7 @@ impl WawonaCore {
             
         if let Some(sid) = surface_id {
             // Respect implicit grab: if buttons are pressed, don't change focus or send enter to others
-            if state.seat.pointer_button_count > 0 {
+            if state.seat.pointer.button_count > 0 {
                 // If we are already focused on this surface, we might want to update position?
                 // But generally `motion` handles that.
                 // If we are focused on another surface (grab owner), we must NOT send enter here.
@@ -1189,7 +1490,7 @@ impl WawonaCore {
             }
 
             // Update pointer focus
-            state.seat.pointer_focus = Some(sid);
+            state.seat.pointer.focus = Some(sid);
 
             // Clone Arc to avoid borrowing state while mutating seat
             if let Some(surface) = state.surfaces.get(&sid).cloned() {
@@ -1218,12 +1519,12 @@ impl WawonaCore {
             
         if let Some(sid) = surface_id {
             // Respect implicit grab: if buttons are pressed, don't leave surface (it keeps focus)
-            if state.seat.pointer_button_count > 0 {
+            if state.seat.pointer.button_count > 0 {
                 return;
             }
 
             // Clear pointer focus
-            state.seat.pointer_focus = None;
+            state.seat.pointer.focus = None;
 
             if let Some(surface) = state.surfaces.get(&sid).cloned() {
                  let surface = surface.read().unwrap();
@@ -1238,13 +1539,22 @@ impl WawonaCore {
 
 
     
-    /// Inject keyboard key event
+    /// Inject keyboard key event.
+    ///
+    /// Processes the key through the server-side XKB state machine so that
+    /// modifier tracking (pressed_keys, depressed/latched/locked) stays in
+    /// sync.  If the key event causes a modifier change, a
+    /// wl_keyboard.modifiers event is broadcast automatically.
     pub fn inject_key(&self, keycode: u32, state: KeyState, timestamp_ms: u32) {
         if !self.is_running() {
             return;
         }
         
-        let serial = self.next_serial();
+        // Pre-generate both serials outside the state lock to avoid
+        // holding the state RwLock while locking the compositor mutex.
+        let key_serial = self.next_serial();
+        let mod_serial = self.next_serial();
+        let pressed = matches!(state, KeyState::Pressed);
         let wl_state = match state {
             KeyState::Released => wayland_server::protocol::wl_keyboard::KeyState::Released,
             KeyState::Pressed => wayland_server::protocol::wl_keyboard::KeyState::Pressed,
@@ -1253,11 +1563,33 @@ impl WawonaCore {
         let mut state = self.state.write().unwrap();
         state.seat.cleanup_resources();
         
+        // Process through XKB to update server-side modifier state and
+        // pressed_keys.  This is essential for correct Shift/Ctrl/Alt/Super
+        // tracking — without it the server's cached modifier mask would
+        // never update from key events alone, and capital letters (among
+        // other shifted symbols) would not be recognised.
+        let mods_changed = state.seat.keyboard.process_key(keycode, pressed)
+            .map_or(false, |r| r.modifiers_changed);
+        
         let focused_client = state.focused_keyboard_client();
-        state.seat.broadcast_key(serial, timestamp_ms, keycode, wl_state, focused_client.as_ref());
+        state.seat.broadcast_key(key_serial, timestamp_ms, keycode, wl_state, focused_client.as_ref());
+        
+        // If XKB detected a modifier change, broadcast the new state so
+        // the client's modifier mask is always up to date.
+        if mods_changed {
+            let (d, la, lo, g) = (
+                state.seat.keyboard.mods_depressed,
+                state.seat.keyboard.mods_latched,
+                state.seat.keyboard.mods_locked,
+                state.seat.keyboard.mods_group,
+            );
+            state.seat.broadcast_modifiers(mod_serial, d, la, lo, g, focused_client.as_ref());
+        }
     }
     
-    /// Inject keyboard modifiers
+    /// Inject keyboard modifiers directly (e.g. from platform modifier
+    /// flags).  Also keeps the server-side XKB state in sync via
+    /// `update_mask`.
     pub fn inject_modifiers(&self, modifiers: KeyboardModifiers) {
         if !self.is_running() {
             return;
@@ -1267,10 +1599,23 @@ impl WawonaCore {
         let mut state = self.state.write().unwrap();
         state.seat.cleanup_resources();
         
-        state.seat.mods_depressed = modifiers.mods_depressed;
-        state.seat.mods_latched = modifiers.mods_latched;
-        state.seat.mods_locked = modifiers.mods_locked;
-        state.seat.mods_group = modifiers.group;
+        state.seat.keyboard.mods_depressed = modifiers.mods_depressed;
+        state.seat.keyboard.mods_latched = modifiers.mods_latched;
+        state.seat.keyboard.mods_locked = modifiers.mods_locked;
+        state.seat.keyboard.mods_group = modifiers.group;
+        
+        // Keep the XKB state machine in sync so that subsequent
+        // process_key() calls see the correct modifier baseline.
+        if let Some(xkb) = &state.seat.keyboard.xkb_state {
+            if let Ok(mut xkb_state) = xkb.lock() {
+                xkb_state.update_mask(
+                    modifiers.mods_depressed,
+                    modifiers.mods_latched,
+                    modifiers.mods_locked,
+                    modifiers.group,
+                );
+            }
+        }
         
         let focused_client = state.focused_keyboard_client();
         state.seat.broadcast_modifiers(serial, modifiers.mods_depressed, modifiers.mods_latched, modifiers.mods_locked, modifiers.group, focused_client.as_ref());
@@ -1295,8 +1640,8 @@ impl WawonaCore {
             
             // DIAGNOSTIC: Log keyboard state
             crate::wlog!(crate::util::logging::FFI, "Keyboards available: {}", 
-                state.seat.keyboards.len());
-            for (idx, kbd) in state.seat.keyboards.iter().enumerate() {
+                state.seat.keyboard.resources.len());
+            for (idx, kbd) in state.seat.keyboard.resources.iter().enumerate() {
                 crate::wlog!(crate::util::logging::FFI, "  Keyboard {}: alive={}, version={}", 
                     idx, kbd.is_alive(), kbd.version());
             }
@@ -1305,9 +1650,13 @@ impl WawonaCore {
                  let surface = surface.read().unwrap();
                  if let Some(res) = &surface.resource {
                      crate::wlog!(crate::util::logging::FFI, "Broadcasting keyboard enter to surface {} ({} keyboards bound)", 
-                         sid, state.seat.keyboards.len());
-                     state.seat.keyboard_focus = Some(sid);
+                         sid, state.seat.keyboard.resources.len());
+                     state.seat.keyboard.focus = Some(sid);
                      state.seat.broadcast_keyboard_enter(serial, res, &pressed_keys);
+
+                     // Also send text-input-v3 enter so IME / emoji
+                     // commits reach this surface's text-input instance.
+                     state.ext.text_input.enter(res);
                  } else {
                  crate::wlog!(crate::util::logging::FFI, "WARNING: Surface {} has no resource for keyboard enter", 
                      sid);
@@ -1339,6 +1688,8 @@ impl WawonaCore {
             if let Some(surface) = state.surfaces.get(&sid).cloned() {
                  let surface = surface.read().unwrap();
                  if let Some(res) = &surface.resource {
+                     // Send text-input-v3 leave before keyboard leave
+                     state.ext.text_input.leave(res);
                      state.seat.broadcast_keyboard_leave(serial, res);
                  }
             }
@@ -1352,61 +1703,164 @@ impl WawonaCore {
         touch_id: i32,
         x: f64,
         y: f64,
-        _timestamp_ms: u32,
+        timestamp_ms: u32,
     ) -> Result<()> {
         if !self.is_running() {
             return Err(CompositorError::NotStarted);
         }
-        
-        let _serial = self.next_serial();
-        crate::wlog!(crate::util::logging::INPUT, "Touch down: window={}, id={}, x={:.2}, y={:.2}", 
-            window_id.id, touch_id, x, y);
-        // TODO: Send wl_touch::down
+
+        let mut state = self.state.write().unwrap();
+        let serial = state.next_serial();
+
+        // Find the surface for this window
+        if let Some(window) = state.get_window(window_id.id as u32) {
+            let window = window.read().unwrap();
+            let surface_id = window.surface_id;
+
+            // Track the touch point
+            state.seat.touch.touch_down(touch_id, surface_id, x, y);
+
+            // Broadcast to client
+            if let Some(surface) = state.get_surface(surface_id) {
+                let surface = surface.read().unwrap();
+                if let Some(res) = &surface.resource {
+                    state.seat.touch.broadcast_down(serial, timestamp_ms, res, touch_id, x, y);
+                }
+            }
+        }
+
+        state.ext.idle_notify.record_activity();
         Ok(())
     }
-    
+
     /// Inject touch up event
-    pub fn inject_touch_up(&self, _touch_id: i32, _timestamp_ms: u32) -> Result<()> {
+    pub fn inject_touch_up(&self, touch_id: i32, timestamp_ms: u32) -> Result<()> {
         if !self.is_running() {
             return Err(CompositorError::NotStarted);
         }
-        
-        let _serial = self.next_serial();
-        // TODO: Send wl_touch::up
+
+        let mut state = self.state.write().unwrap();
+        let serial = state.next_serial();
+
+        // Get the client before removing the touch point
+        let client = state.seat.touch.get_touch_surface(touch_id).and_then(|sid| {
+            state.get_surface(sid).and_then(|sf| {
+                let sf = sf.read().unwrap();
+                sf.resource.as_ref().and_then(|r| r.client())
+            })
+        });
+
+        state.seat.touch.broadcast_up(serial, timestamp_ms, touch_id, client.as_ref());
+        state.seat.touch.touch_up(touch_id);
+        state.ext.idle_notify.record_activity();
         Ok(())
     }
-    
+
     /// Inject touch motion event
     pub fn inject_touch_motion(
         &self,
-        _touch_id: i32,
-        _x: f64,
-        _y: f64,
-        _timestamp_ms: u32,
+        touch_id: i32,
+        x: f64,
+        y: f64,
+        timestamp_ms: u32,
     ) -> Result<()> {
         if !self.is_running() {
             return Err(CompositorError::NotStarted);
         }
-        // TODO: Send wl_touch::motion
+
+        let mut state = self.state.write().unwrap();
+
+        let client = state.seat.touch.get_touch_surface(touch_id).and_then(|sid| {
+            state.get_surface(sid).and_then(|sf| {
+                let sf = sf.read().unwrap();
+                sf.resource.as_ref().and_then(|r| r.client())
+            })
+        });
+
+        state.seat.touch.broadcast_motion(timestamp_ms, touch_id, x, y, client.as_ref());
+        state.seat.touch.touch_motion(touch_id, x, y);
+        state.ext.idle_notify.record_activity();
         Ok(())
     }
-    
+
     /// Inject touch frame event
     pub fn inject_touch_frame(&self) {
         if !self.is_running() {
             return;
         }
-        // TODO: Send wl_touch::frame
+        let state = self.state.read().unwrap();
+        // Send frame to all clients with active touch points
+        let surface_ids: Vec<u32> = state.seat.touch.active_points.values()
+            .map(|p| p.surface_id)
+            .collect();
+        for sid in surface_ids {
+            let client = state.get_surface(sid).and_then(|sf| {
+                let sf = sf.read().unwrap();
+                sf.resource.as_ref().and_then(|r| r.client())
+            });
+            state.seat.touch.broadcast_frame(client.as_ref());
+        }
     }
-    
+
     /// Inject touch cancel event
     pub fn inject_touch_cancel(&self) {
         if !self.is_running() {
             return;
         }
-        // TODO: Send wl_touch::cancel
+        let mut state = self.state.write().unwrap();
+        // Send cancel to all clients with active touch points
+        let surface_ids: Vec<u32> = state.seat.touch.active_points.values()
+            .map(|p| p.surface_id)
+            .collect();
+        for sid in &surface_ids {
+            let client = state.get_surface(*sid).and_then(|sf| {
+                let sf = sf.read().unwrap();
+                sf.resource.as_ref().and_then(|r| r.client())
+            });
+            state.seat.touch.broadcast_cancel(client.as_ref());
+        }
+        state.seat.touch.touch_cancel();
     }
     
+    // =========================================================================
+    // Text Input (IME / Emoji)
+    // =========================================================================
+
+    /// Commit a string through text-input-v3 to the focused Wayland client.
+    ///
+    /// This is the primary path for emoji, composed text, and IME output
+    /// on Apple and Android platforms.  The string must be valid UTF-8.
+    pub fn text_input_commit_string(&self, text: &str) {
+        if !self.is_running() {
+            return;
+        }
+        crate::wlog!(crate::util::logging::INPUT, "text_input commit: {:?}", text);
+        let mut state = self.state.write().unwrap();
+        state.ext.text_input.commit_string(text);
+    }
+
+    /// Send a preedit (composition preview) string through text-input-v3.
+    ///
+    /// `cursor_begin` and `cursor_end` are byte offsets into `text`
+    /// indicating the cursor/highlight range.  Pass (0, 0) if not applicable.
+    pub fn text_input_preedit_string(&self, text: &str, cursor_begin: i32, cursor_end: i32) {
+        if !self.is_running() {
+            return;
+        }
+        crate::wlog!(crate::util::logging::INPUT, "text_input preedit: {:?}", text);
+        let mut state = self.state.write().unwrap();
+        state.ext.text_input.preedit_string(text, cursor_begin, cursor_end);
+    }
+
+    /// Delete surrounding text relative to the cursor through text-input-v3.
+    pub fn text_input_delete_surrounding(&self, before_length: u32, after_length: u32) {
+        if !self.is_running() {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        state.ext.text_input.delete_surrounding_text(before_length, after_length);
+    }
+
     /// Inject gesture event
     pub fn inject_gesture(&self, gesture: GestureEvent) {
         if !self.is_running() {
@@ -1430,12 +1884,97 @@ impl WawonaCore {
         
         let (width, height, scale) = *self.output_size.read().unwrap();
         
-        // TODO: Build scene from compositor state
-        let mut scene = RenderScene::new(width, height, scale);
-        scene.needs_redraw = true;
-        scene
+        // 1. Build the internal scene graph
+        let mut state = self.state.write().unwrap();
+        state.build_scene();
+        
+        let flattened_scene = state.scene.flatten();
+        let global_damage = state.scene_damage.global_damage.clone();
+        
+        // Clear global damage after it's been consumed for rendering
+        state.scene_damage.clear();
+        
+        // 2. Map internal FlattenedSurface to FFI RenderNode
+        let mut ffi_nodes = Vec::new();
+        let ffi_textures = self.textures.read().unwrap();
+        let mut current_anchor: (u32, i32, i32) = (0, 0, 0);
+        
+        for surface in flattened_scene {
+            // Resolve window ID (walks subsurface tree for subsurfaces)
+            let window_id = state.resolve_window_id_for_surface(surface.surface_id).unwrap_or(0);
+            
+            // Update anchor when we hit a surface that owns a window (toplevel or popup)
+            if state.surface_to_window.get(&surface.surface_id).is_some() {
+                current_anchor = (window_id, surface.x, surface.y);
+            }
+            
+            // Get texture handle
+            // Fallback to buffer_id from surface current state if not in textures cache
+            let texture_handle = if let Some(handle) = ffi_textures.get(&(surface.surface_id as u64)) {
+                *handle
+            } else if let Some(surf_ref) = state.get_surface(surface.surface_id) {
+                let surf = surf_ref.read().unwrap();
+                TextureHandle::new(surf.current.buffer_id.unwrap_or(0) as u64)
+            } else {
+                TextureHandle::null()
+            };
+
+            let mut node = RenderNode::new(
+                WindowId::new(window_id as u64),
+                SurfaceId::new(surface.surface_id),
+                texture_handle,
+            );
+            
+            node.x = surface.x;
+            node.y = surface.y;
+            node.width = surface.width;
+            node.height = surface.height;
+            node.scale = surface.scale;
+            node.opacity = surface.opacity;
+            node.visible = true; // Visibility is baked into flatten() results
+            node.anchor_output_x = current_anchor.1;
+            node.anchor_output_y = current_anchor.2;
+            
+            ffi_nodes.push(node);
+        }
+        
+        RenderScene {
+            nodes: ffi_nodes,
+            width,
+            height,
+            scale,
+            needs_redraw: true,
+            damage: global_damage.into_iter().map(|r| Rect::new(r.x, r.y, r.width, r.height)).collect(),
+        }
     }
     
+    /// Notify the compositor that a frame has been presented to the user.
+    /// 
+    /// # Arguments
+    /// * `timestamp_ns` - The timestamp when the frame was actually displayed (nanoseconds)
+    /// * `seq` - The frame sequence number
+    pub fn commit_frame(&self, timestamp_ns: u64, seq: u64) {
+        if !self.is_running() {
+            return;
+        }
+        
+        let mut state = self.state.write().unwrap();
+        
+        // 1. Send wl_surface.frame callbacks
+        state.flush_all_frame_callbacks();
+        
+        // 2. Send wp_presentation feedback events
+        let refresh_ns = 1_000_000_000 / 60; // TODO: Use actual refresh rate from output
+        state.ext.presentation.send_presented_events(timestamp_ns, refresh_ns, seq);
+        
+        // 3. Flush buffer releases
+        state.flush_buffer_releases();
+        
+        // 4. Update runtime timing
+        let mut runtime = self.runtime.lock().unwrap();
+        runtime.end_frame();
+    }
+
     /// Get render scene for a specific window
     pub fn get_window_render_scene(&self, window_id: WindowId) -> RenderScene {
         if !self.is_running() {
@@ -1498,26 +2037,78 @@ impl WawonaCore {
     // Configuration
     // =========================================================================
     
-    /// Set output size and scale
+    /// Set output size and scale.
+    ///
+    /// When the size actually changes (e.g. device rotation on iOS) this:
+    /// 1. Updates the internal output state
+    /// 2. Sends wl_output.mode / .geometry / .done to all bound output resources
+    /// 3. Sends xdg_output logical_size changes
+    /// 4. Reconfigures every xdg_toplevel to the new output dimensions
     pub fn set_output_size(&self, width: u32, height: u32, scale: f32) {
         // FORCING SCALE TO 1.0 to fix Weston coordinate mismatch
         let forced_scale = 1.0;
+
+        let (prev_w, prev_h) = {
+            let cur = self.output_size.read().unwrap();
+            (cur.0, cur.1)
+        };
+
+        if prev_w == width && prev_h == height {
+            return;
+        }
+
         crate::wlog!(crate::util::logging::FFI, "Output size: {}x{} @ {}x (forced from {}x)", width, height, forced_scale, scale);
         *self.output_size.write().unwrap() = (width, height, forced_scale);
-        
+
+        let output_id;
+        // Collect toplevel IDs that need reconfiguring (outside the mutable borrow)
+        let toplevel_ids: Vec<u32>;
+
         // Update state
         {
             let mut state = self.state.write().unwrap();
             state.set_output_size(width, height, forced_scale);
-            
-            // Ensure physical dimensions are updated (assuming ~108 DPI / 4.25 pixels per mm for modern virtual displays)
+
+            // Ensure physical dimensions are updated (~108 DPI / 4.25 px per mm)
             if let Some(output) = state.outputs.get_mut(0) {
                 output.physical_width = (width as f32 / 4.25) as u32;
                 output.physical_height = (height as f32 / 4.25) as u32;
             }
+
+            output_id = state.outputs.first().map(|o| o.id).unwrap_or(0);
+
+            // Gather all toplevel IDs for reconfiguration
+            toplevel_ids = state.xdg.toplevels.keys().copied().collect();
         }
-        
-        // TODO: Send ml_output::mode to clients
+
+        // Only send events if the size actually changed (avoids spamming on
+        // repeated calls with the same dimensions, e.g. redundant layout passes).
+        if prev_w != width || prev_h != height {
+            let state = self.state.read().unwrap();
+
+            // 1. Notify all bound wl_output resources (mode, geometry, done)
+            crate::core::wayland::wayland::output::notify_output_change(&state, output_id);
+
+            crate::wlog!(crate::util::logging::FFI,
+                "Output resized {}x{} → {}x{}, reconfiguring {} toplevels",
+                prev_w, prev_h, width, height, toplevel_ids.len());
+
+            drop(state);
+
+            // 2. Reconfigure every xdg_toplevel to the new output size
+            let mut state = self.state.write().unwrap();
+            for tid in toplevel_ids {
+                state.send_toplevel_configure(tid, width, height);
+            }
+        }
+    }
+    
+    /// Set platform safe area insets on the primary output.
+    /// On iOS these correspond to the notch, home indicator, and rounded corners.
+    pub fn set_safe_area_insets(&self, top: i32, right: i32, bottom: i32, left: i32) {
+        crate::wlog!(crate::util::logging::FFI, "Safe area insets: top={} right={} bottom={} left={}", top, right, bottom, left);
+        let mut state = self.state.write().unwrap();
+        state.set_safe_area_insets(top, right, bottom, left);
     }
     
     /// Configure output
@@ -1802,6 +2393,216 @@ impl WawonaCore {
             self.get_client_count(),
             self.textures.read().unwrap().len(),
         )
+    }
+
+}
+
+// ============================================================================
+// Image copy capture (ext-image-copy-capture-v1) — desktop-protocols only
+// Exported only when feature enabled; c_api has stubs when disabled
+// ============================================================================
+#[cfg(feature = "desktop-protocols")]
+#[uniffi::export]
+impl WawonaCore {
+    /// Get the first pending image copy capture (ext-image-copy-capture-v1; same flow as screencopy)
+    pub fn get_pending_image_copy_capture(&self) -> Option<types::ScreencopyRequest> {
+        if !self.is_running() {
+            return None;
+        }
+        let state = self.state.read().unwrap();
+        crate::core::wayland::ext::image_copy_capture::get_pending_image_copy_capture(&state).map(
+            |(capture_id, ptr, width, height, stride, size)| types::ScreencopyRequest {
+                capture_id,
+                ptr: ptr as u64,
+                width,
+                height,
+                stride,
+                size: size as u64,
+            },
+        )
+    }
+
+    /// Notify image copy capture complete (platform has written pixels)
+    pub fn image_copy_capture_done(&self, capture_id: u64) {
+        if !self.is_running() {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::ext::image_copy_capture::complete_image_copy_capture(&mut state, capture_id);
+    }
+
+    /// Notify image copy capture failed
+    pub fn image_copy_capture_failed(&self, capture_id: u64) {
+        if !self.is_running() {
+            return;
+        }
+        let mut state = self.state.write().unwrap();
+        crate::core::wayland::ext::image_copy_capture::fail_image_copy_capture(&mut state, capture_id);
+    }
+}
+
+// ============================================================================
+// Methods NOT exported via UniFFI (C API only — tuples / non-Record types)
+// ============================================================================
+impl WawonaCore {
+    /// Read the surrounding text and cursor position reported by the focused
+    /// Wayland client via `set_surrounding_text`.  Returns `(text, cursor, anchor)`.
+    /// The platform can use this to seed its native IME context for autocorrect.
+    pub fn text_input_get_surrounding(&self) -> (String, i32, i32) {
+        if !self.is_running() {
+            return (String::new(), 0, 0);
+        }
+        let state = self.state.read().unwrap();
+        for (_id, instance) in &state.ext.text_input.instances {
+            if instance.enabled {
+                return (
+                    instance.surrounding_text.clone(),
+                    instance.surrounding_cursor,
+                    instance.surrounding_anchor,
+                );
+            }
+        }
+        (String::new(), 0, 0)
+    }
+
+    /// Read the cursor rectangle reported by the focused Wayland client
+    /// via `set_cursor_rectangle`.  Returns `(x, y, width, height)` in
+    /// surface-local coordinates.  The platform should use this to position
+    /// IME candidate windows and emoji pickers near the text cursor.
+    pub fn text_input_get_cursor_rect(&self) -> (i32, i32, i32, i32) {
+        if !self.is_running() {
+            return (0, 0, 0, 0);
+        }
+        let state = self.state.read().unwrap();
+        for (_id, instance) in &state.ext.text_input.instances {
+            if instance.enabled {
+                return instance.cursor_rect;
+            }
+        }
+        (0, 0, 0, 0)
+    }
+
+    /// Read the content type hint reported by the focused Wayland client
+    /// via `set_content_type`.  Returns `(hint, purpose)`.
+    /// The platform can use this to configure the native keyboard appropriately.
+    pub fn text_input_get_content_type(&self) -> (u32, u32) {
+        if !self.is_running() {
+            return (0, 0);
+        }
+        let state = self.state.read().unwrap();
+        for (_id, instance) in &state.ext.text_input.instances {
+            if instance.enabled {
+                return (
+                    instance.content_type.hint,
+                    instance.content_type.purpose,
+                );
+            }
+        }
+        (0, 0)
+    }
+
+    /// Get cursor rendering information for the C API.
+    ///
+    /// Returns the pointer position, hotspot, and buffer metadata for the
+    /// cursor surface set by the Wayland client via wl_pointer.set_cursor.
+    pub fn get_cursor_render_info(&self) -> types::CursorRenderInfo {
+        let state = self.state.read().unwrap();
+        let pointer = &state.seat.pointer;
+
+        let cursor_sid = match pointer.cursor_surface {
+            Some(sid) => sid,
+            None => return types::CursorRenderInfo::default(),
+        };
+
+        // Look up the surface's current buffer
+        let buffer_id = if let Some(surface_ref) = state.surfaces.get(&cursor_sid) {
+            let surface = surface_ref.read().unwrap();
+            surface.current.buffer_id.unwrap_or(0) as u64
+        } else {
+            return types::CursorRenderInfo::default();
+        };
+
+        if buffer_id == 0 {
+            return types::CursorRenderInfo::default();
+        }
+
+        // Look up buffer metadata
+        let (width, height, stride, format, iosurface_id) =
+            if let Some(buf_ref) = state.buffers.get(&(buffer_id as u32)) {
+                let buf = buf_ref.read().unwrap();
+                match &buf.buffer_type {
+                    crate::core::surface::BufferType::Shm(shm) => (
+                        shm.width as u32,
+                        shm.height as u32,
+                        shm.stride as u32,
+                        shm.format as u32,
+                        0u32,
+                    ),
+                    crate::core::surface::BufferType::Native(native) => (
+                        native.width as u32,
+                        native.height as u32,
+                        0u32,
+                        native.format,
+                        native.id as u32,
+                    ),
+                    _ => (0, 0, 0, 0, 0),
+                }
+            } else {
+                (0, 0, 0, 0, 0)
+            };
+
+        types::CursorRenderInfo {
+            has_cursor: true,
+            x: pointer.x as f32,
+            y: pointer.y as f32,
+            hotspot_x: pointer.cursor_hotspot_x as f32,
+            hotspot_y: pointer.cursor_hotspot_y as f32,
+            buffer_id,
+            width,
+            height,
+            stride,
+            format,
+            iosurface_id,
+        }
+    }
+
+    /// Helper for C API to lookup buffer info for a scene node
+    /// Returns BufferRenderInfo
+    pub fn get_buffer_render_info(&self, buffer_id: u64) -> BufferRenderInfo {
+        if buffer_id == 0 {
+            return BufferRenderInfo { stride: 0, format: 0, iosurface_id: 0, width: 0, height: 0 };
+        }
+        
+        // We need to look up the buffer in state
+        let state = self.state.read().unwrap();
+        
+        // Cast u64 to u32 for lookup (core uses u32 for buffer IDs)
+        if let Some(auth_buffer) = state.buffers.get(&(buffer_id as u32)) {
+             let buffer = auth_buffer.read().unwrap();
+             match &buffer.buffer_type {
+                crate::core::surface::BufferType::Shm(shm) => {
+                    BufferRenderInfo {
+                        stride: shm.stride as u32,
+                        format: shm.format as u32,
+                        iosurface_id: 0,
+                        width: shm.width as u32,
+                        height: shm.height as u32
+                    }
+                },
+                crate::core::surface::BufferType::Native(native) => {
+                    BufferRenderInfo {
+                        stride: 0,
+                        format: native.format,
+                        iosurface_id: native.id as u32,
+                        width: native.width as u32,
+                        height: native.height as u32
+                    }
+                },
+                _ => BufferRenderInfo { stride: 0, format: 0, iosurface_id: 0, width: 0, height: 0 }
+             }
+        } else {
+            BufferRenderInfo { stride: 0, format: 0, iosurface_id: 0, width: 0, height: 0 }
+        }
     }
 }
 

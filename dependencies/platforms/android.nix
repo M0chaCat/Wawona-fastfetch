@@ -15,7 +15,7 @@ in
   buildForAndroid =
     name: entry:
     if name == "libwayland" then
-      (import ../deps/libwayland/android.nix) {
+      (import ../libs/libwayland/android.nix) {
         inherit
           lib
           pkgs
@@ -25,7 +25,7 @@ in
         buildModule = buildModule;
       }
     else if name == "expat" then
-      (import ../deps/expat/android.nix) {
+      (import ../libs/expat/android.nix) {
         inherit
           lib
           pkgs
@@ -35,7 +35,7 @@ in
         buildModule = buildModule;
       }
     else if name == "libffi" then
-      (import ../deps/libffi/android.nix) {
+      (import ../libs/libffi/android.nix) {
         inherit
           lib
           pkgs
@@ -45,7 +45,7 @@ in
         buildModule = buildModule;
       }
     else if name == "libxml2" then
-      (import ../deps/libxml2/android.nix) {
+      (import ../libs/libxml2/android.nix) {
         inherit
           lib
           pkgs
@@ -55,7 +55,7 @@ in
         buildModule = buildModule;
       }
     else if name == "waypipe" then
-      (import ../deps/waypipe/android.nix) {
+      (import ../libs/waypipe/android.nix) {
         inherit
           lib
           pkgs
@@ -65,7 +65,7 @@ in
         buildModule = buildModule;
       }
     else if name == "swiftshader" then
-      (import ../deps/swiftshader/android.nix) {
+      (import ../libs/swiftshader/android.nix) {
         inherit
           lib
           pkgs
@@ -75,7 +75,7 @@ in
         buildModule = buildModule;
       }
     else if name == "zstd" then
-      (import ../deps/zstd/android.nix) {
+      (import ../libs/zstd/android.nix) {
         inherit
           lib
           pkgs
@@ -85,7 +85,7 @@ in
         buildModule = buildModule;
       }
     else if name == "lz4" then
-      (import ../deps/lz4/android.nix) {
+      (import ../libs/lz4/android.nix) {
         inherit
           lib
           pkgs
@@ -95,7 +95,67 @@ in
         buildModule = buildModule;
       }
     else if name == "ffmpeg" then
-      (import ../deps/ffmpeg/android.nix) {
+      (import ../libs/ffmpeg/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "xkbcommon" then
+      (import ../libs/xkbcommon/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "openssl" then
+      (import ../libs/openssl/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "libssh2" then
+      (import ../libs/libssh2/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "mbedtls" then
+      (import ../libs/mbedtls/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "openssh" then
+      (import ../libs/openssh/android.nix) {
+        inherit
+          lib
+          pkgs
+          buildPackages
+          common
+          ;
+        buildModule = buildModule;
+      }
+    else if name == "sshpass" then
+      (import ../libs/sshpass/android.nix) {
         inherit
           lib
           pkgs
@@ -106,7 +166,7 @@ in
       }
     else
       let
-        androidToolchain = import ../common/android-toolchain.nix { inherit lib pkgs; };
+        androidToolchain = import ../toolchains/android.nix { inherit lib pkgs; };
         src = fetchSource entry;
         buildSystem = getBuildSystem entry;
         buildFlags = entry.buildFlags.android or [ ];

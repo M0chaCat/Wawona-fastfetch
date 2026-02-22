@@ -105,3 +105,29 @@ Here’s the **architecture**:
 If you want, I can write a **minimal macOS Waypipe patch skeleton** that implements **VideoToolbox decoding → CVPixelBuffer → Metal texture**, fully ready for your compositor.
 
 Do you want me to do that next?
+## 6️⃣ Quick Start: Remote macOS Apps
+
+Your project is ready to run macOS apps (like `weston-terminal`) on your iOS or Android device.
+
+### 1. Prepare the Mac
+Run the preparation script on your Mac to verify everything is set up correctly:
+```bash
+bash scripts/prepare_mac_remote.sh
+```
+
+Ensure:
+- **Remote Login (SSH)** is enabled in System Settings.
+- **Python 3** is installed.
+- **Waypipe** is in your PATH. If you use Nix, you may need to add `~/.nix-profile/bin` to your SSH environment (e.g., via `~/.zshenv`).
+
+### 2. Configure the App (iOS/Android)
+1. Open **Wawona**.
+2. Go to **Settings > Waypipe**.
+3. **SSH Host**: Enter your Mac's IP address.
+4. **SSH User**: Your Mac username.
+5. **SSH Password**: Your Mac login password.
+6. **Remote Command**: `nix run ~/Wawona#weston-terminal`
+7. Tap **Start Waypipe**.
+
+### 3. enjoy
+`weston-terminal` should appear on your mobile device as a window!

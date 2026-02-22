@@ -1,13 +1,23 @@
 #include "wayland_seat.h"
 #include "../platform/macos/WawonaCompositor.h"
 #include "compat/macos/stubs/libinput-macos/posix-compat.h"
-#include "logging.h"
+// #include "logging.h"
+#define log_printf(tag, fmt, ...) do { \
+    time_t _lt = time(NULL); \
+    struct tm _ltm; \
+    localtime_r(&_lt, &_ltm); \
+    fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d [%s] " fmt, \
+        _ltm.tm_year + 1900, _ltm.tm_mon + 1, _ltm.tm_mday, \
+        _ltm.tm_hour, _ltm.tm_min, _ltm.tm_sec, \
+        tag, ##__VA_ARGS__); \
+} while(0)
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-server-protocol.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -114,14 +124,14 @@ static void seat_get_keyboard(struct wl_client *client,
       wl_keyboard_send_keymap(keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
                               client_fd, seat->keymap_size);
       // Note: Wayland takes ownership of client_fd, so we don't close it here
-      log_printf("SEAT", "✓ Sent keymap to keyboard client (fd=%d, size=%u)\n",
+      log_printf("SEAT", "Sent keymap to keyboard client (fd=%d, size=%u)\n",
                  client_fd, seat->keymap_size);
     } else {
-      log_printf("SEAT", "❌ Failed to duplicate keymap fd: %s\n",
+      log_printf("SEAT", "Error: Failed to duplicate keymap fd: %s\n",
                  strerror(errno));
     }
   } else {
-    log_printf("SEAT", "⚠️ Warning: No keymap available (fd=%d, size=%u)\n",
+    log_printf("SEAT", "Warning: No keymap available (fd=%d, size=%u)\n",
                seat->keymap_fd, seat->keymap_size);
   }
 }
@@ -222,22 +232,22 @@ struct wl_seat_impl *wl_seat_create(struct wl_display *display) {
               munmap(map, seat->keymap_size);
               // Ensure fd is at offset 0
               lseek(seat->keymap_fd, 0, SEEK_SET);
-              log_printf("SEAT", "✓ Created keymap fd=%d, size=%u\n",
+              log_printf("SEAT", "Created keymap fd=%d, size=%u\n",
                          seat->keymap_fd, seat->keymap_size);
             } else {
-              log_printf("SEAT", "❌ Failed to mmap keymap fd: %s\n",
+              log_printf("SEAT", "Error: Failed to mmap keymap fd: %s\n",
                          strerror(errno));
               close(seat->keymap_fd);
               seat->keymap_fd = -1;
             }
           } else {
-            log_printf("SEAT", "❌ Failed to ftruncate keymap fd: %s\n",
+            log_printf("SEAT", "Error: Failed to ftruncate keymap fd: %s\n",
                        strerror(errno));
             close(seat->keymap_fd);
             seat->keymap_fd = -1;
           }
         } else {
-          log_printf("SEAT", "❌ Failed to create keymap fd: %s\n",
+          log_printf("SEAT", "Error: Failed to create keymap fd: %s\n",
                      strerror(errno));
         }
         free(keymap_string);
@@ -260,7 +270,7 @@ struct wl_seat_impl *wl_seat_create(struct wl_display *display) {
     return NULL;
   }
 
-  log_printf("SEAT", "✓ Created seat with keymap (fd=%d, size=%u)\n",
+  log_printf("SEAT", "Created seat with keymap (fd=%d, size=%u)\n",
              seat->keymap_fd, seat->keymap_size);
 
   return seat;
@@ -322,7 +332,7 @@ void wl_seat_send_pointer_enter(struct wl_seat_impl *seat,
     wl_compositor_flush_and_trigger_frame();
   } else if (!surface) {
     log_printf("SEAT",
-               "⚠️ wl_seat_send_pointer_enter: surface is NULL, skipping\n");
+               "Warning: wl_seat_send_pointer_enter: surface is NULL, skipping\n");
   }
 }
 void wl_seat_send_pointer_leave(struct wl_seat_impl *seat,
@@ -331,7 +341,7 @@ void wl_seat_send_pointer_leave(struct wl_seat_impl *seat,
     wl_pointer_send_leave(seat->pointer_resource, serial, surface);
   } else if (!surface) {
     log_printf("SEAT",
-               "⚠️ wl_seat_send_pointer_leave: surface is NULL, skipping\n");
+               "Warning: wl_seat_send_pointer_leave: surface is NULL, skipping\n");
   }
 }
 void wl_seat_send_pointer_motion(struct wl_seat_impl *seat, uint32_t time,
@@ -366,7 +376,7 @@ void wl_seat_send_keyboard_enter(struct wl_seat_impl *seat,
     wl_compositor_flush_and_trigger_frame();
   } else if (!surface) {
     log_printf("SEAT",
-               "⚠️ wl_seat_send_keyboard_enter: surface is NULL, skipping\n");
+               "Warning: wl_seat_send_keyboard_enter: surface is NULL, skipping\n");
   }
 }
 void wl_seat_send_keyboard_leave(struct wl_seat_impl *seat,
@@ -375,7 +385,7 @@ void wl_seat_send_keyboard_leave(struct wl_seat_impl *seat,
     wl_keyboard_send_leave(seat->keyboard_resource, serial, surface);
   } else if (!surface) {
     log_printf("SEAT",
-               "⚠️ wl_seat_send_keyboard_leave: surface is NULL, skipping\n");
+               "Warning: wl_seat_send_keyboard_leave: surface is NULL, skipping\n");
   }
 }
 void wl_seat_send_keyboard_key(struct wl_seat_impl *seat, uint32_t serial,

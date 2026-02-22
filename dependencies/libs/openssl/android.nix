@@ -1,0 +1,50 @@
+{
+  lib,
+  pkgs,
+  buildPackages,
+  common,
+  buildModule,
+}:
+
+let
+  androidToolchain = import ../../toolchains/android.nix { inherit lib pkgs; };
+in
+pkgs.stdenv.mkDerivation {
+  name = "openssl-android";
+  src = pkgs.fetchurl {
+    url = "https://www.openssl.org/source/openssl-3.3.1.tar.gz";
+    sha256 = "sha256-d3zVlihMiDN1oqehG/XSeG/FQTJV76sgxQ1v/m0CC34=";
+  };
+
+  nativeBuildInputs = with buildPackages; [ perl ];
+  buildInputs = [ ];
+
+  configurePhase = ''
+    runHook preConfigure
+    export CC="${androidToolchain.androidCC}"
+    export AR="${androidToolchain.androidAR}"
+    export RANLIB="${androidToolchain.androidRANLIB}"
+    export CFLAGS="--target=${androidToolchain.androidTarget} -fPIC"
+    export LDFLAGS="--target=${androidToolchain.androidTarget}"
+    export ANDROID_NDK_ROOT="${androidToolchain.androidndkRoot}"
+    export PATH="${androidToolchain.androidndkRoot}/toolchains/llvm/prebuilt/darwin-x86_64/bin:$PATH"
+    ./Configure android-arm64 no-shared no-dso no-tests \
+      --prefix=$out --openssldir=$out/etc/ssl \
+      -D__ANDROID_API__=${toString androidToolchain.androidNdkApiLevel}
+    runHook postConfigure
+  '';
+
+  buildPhase = ''
+    runHook preBuild
+    make -j$NIX_BUILD_CORES
+    runHook postBuild
+  '';
+
+  installPhase = ''
+    runHook preInstall
+    make install_sw install_ssldirs
+    runHook postInstall
+  '';
+
+  __noChroot = true;
+}

@@ -441,6 +441,22 @@ pub enum ResizeEdge {
     BottomRight,
 }
 
+impl ResizeEdge {
+    pub fn from_u32(val: u32) -> Self {
+        match val {
+            1 => ResizeEdge::Top,
+            2 => ResizeEdge::Bottom,
+            4 => ResizeEdge::Left,
+            5 => ResizeEdge::TopLeft,
+            6 => ResizeEdge::BottomLeft,
+            8 => ResizeEdge::Right,
+            9 => ResizeEdge::TopRight,
+            10 => ResizeEdge::BottomRight,
+            _ => ResizeEdge::None,
+        }
+    }
+}
+
 impl Default for ResizeEdge {
     fn default() -> Self {
         Self::None
@@ -459,6 +475,8 @@ pub struct WindowConfig {
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
     pub decoration_mode: DecorationMode,
+    /// True when this window is from fullscreen shell (kiosk); host must not draw window chrome
+    pub fullscreen_shell: bool,
     pub state: WindowState,
     pub parent: Option<WindowId>,
 }
@@ -475,6 +493,7 @@ impl WindowConfig {
             max_width: None,
             max_height: None,
             decoration_mode: DecorationMode::ServerSide,
+            fullscreen_shell: false,
             state: WindowState::Normal,
             parent: None,
         }
@@ -561,6 +580,12 @@ pub enum WindowEvent {
     // Minimize/close requests
     MinimizeRequested { window_id: WindowId },
     CloseRequested { window_id: WindowId },
+
+    // Cursor shape change (from wp_cursor_shape protocol)
+    CursorShapeChanged { shape: u32 },
+
+    // System bell / notification
+    SystemBell { surface_id: u32 },
 }
 
 // ============================================================================
@@ -740,6 +765,43 @@ pub struct WindowBuffer {
     pub buffer: Buffer,
 }
 
+/// Helper struct for buffer rendering info
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BufferRenderInfo {
+    pub stride: u32,
+    pub format: u32,
+    pub iosurface_id: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Cursor rendering info for the C API — position, hotspot, and buffer metadata.
+#[derive(Debug, Clone, Default)]
+pub struct CursorRenderInfo {
+    pub has_cursor: bool,
+    pub x: f32,
+    pub y: f32,
+    pub hotspot_x: f32,
+    pub hotspot_y: f32,
+    pub buffer_id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub format: u32,
+    pub iosurface_id: u32,
+}
+
+/// Pending screencopy — platform writes ARGB8888 pixels to ptr, then calls screencopy_done
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ScreencopyRequest {
+    pub capture_id: u64,
+    /// Pointer to writable buffer (as u64 for FFI; cast to void* on C side)
+    pub ptr: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub size: u64,
+}
 
 // ============================================================================
 // Input Types
@@ -779,6 +841,29 @@ pub enum InputEvent {
         locked: u32,
         group: u32
     },
+    /// Touch down
+    TouchDown {
+        id: i32,
+        x: f64,
+        y: f64,
+        time_ms: u32
+    },
+    /// Touch up
+    TouchUp {
+        id: i32,
+        time_ms: u32
+    },
+    /// Touch motion
+    TouchMotion {
+        id: i32,
+        x: f64,
+        y: f64,
+        time_ms: u32
+    },
+    /// Touch cancel
+    TouchCancel,
+    /// Touch frame
+    TouchFrame,
 }
 
 
@@ -1035,11 +1120,21 @@ impl GestureEvent {
 pub struct RenderNode {
     pub window_id: WindowId,
     pub surface_id: SurfaceId,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub opacity: f32,
+    pub visible: bool,
     pub transform: Mat4,
     pub texture: TextureHandle,
     pub damage: Vec<Rect>,
-    pub opacity: f32,
-    pub visible: bool,
+    /// Anchor position in output space for subsurfaces (parent window/popup origin).
+    /// Used to compute window-local coordinates: (x - anchor_output_x, y - anchor_output_y).
+    /// For toplevels/popups this equals (x, y) since they are their own anchor.
+    pub anchor_output_x: i32,
+    pub anchor_output_y: i32,
 }
 
 impl RenderNode {
@@ -1051,11 +1146,18 @@ impl RenderNode {
         Self {
             window_id,
             surface_id,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            scale: 1.0,
+            opacity: 1.0,
+            visible: true,
             transform: Mat4::identity(),
             texture,
             damage: vec![],
-            opacity: 1.0,
-            visible: true,
+            anchor_output_x: 0,
+            anchor_output_y: 0,
         }
     }
 }

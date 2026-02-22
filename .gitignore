@@ -74,9 +74,21 @@ result-*
 
 # Android Emulator artifacts
 .android_home/
+
+# Gradle build artifacts and cache
+.gradle/
 .gradle-home/
 *.qcow2.gradle_home
 src/android/.gradle/
+build/
+.gradle-build/
+gradle-app.setting
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Gradle local configuration (contains local paths)
+local.properties
+.gradle-local.properties
 
 # generated xcode proj
 Wawona.xcodeproj/
@@ -103,3 +115,5 @@ src/core/wayland/protocol/wlroots/*.rs
 
 
 mesa/
+scripts/setup_inspiration.sh
+Inspiration/

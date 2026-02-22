@@ -8,9 +8,11 @@
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
 
     hiahkernel.url = "github:aspauldingcode/HIAHKernel";
+
+    crate2nix.url = "github:nix-community/crate2nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, hiahkernel }:
+  outputs = { self, nixpkgs, rust-overlay, hiahkernel, crate2nix }:
   let
     systems = [
       "x86_64-linux"
@@ -26,63 +28,18 @@
           (import rust-overlay)
           (self: super: {
             rustToolchain = super.rust-bin.stable.latest.default.override {
-              targets = [ "aarch64-apple-ios-sim" ];
+              targets = [ "aarch64-apple-ios" "aarch64-apple-ios-sim" "aarch64-linux-android" ];
             };
             rustPlatform = super.makeRustPlatform {
               cargo = self.rustToolchain;
               rustc = self.rustToolchain;
             };
-            wayland = super.wayland.overrideAttrs (old: {
-              meta = old.meta // { platforms = old.meta.platforms ++ [ "aarch64-darwin" "x86_64-darwin" ]; badPlatforms = []; };
-              postPatch = (old.postPatch or "") + ''
-                # Create a fix header with ppoll definition
-                mkdir -p src
-                cat > src/macos-fix.h <<EOF
-                #ifdef __APPLE__
-                #define _DARWIN_C_SOURCE
-                #include <poll.h>
-                #include <time.h>
-                #include <signal.h>
-                #include <unistd.h>
-                #ifndef ppoll
-                static inline int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout_ts, const sigset_t *sigmask) {
-                    int timeout_ms = timeout_ts ? (int)(timeout_ts->tv_sec * 1000 + timeout_ts->tv_nsec / 1000000) : -1;
-                    return poll(fds, nfds, timeout_ms);
-                }
-                #endif
-                #endif
-                EOF
-                
-                # Helper to update file
-                patch_file() {
-                    echo "Patching $1 with macos-fix.h..."
-                    if [ -f "$1" ]; then
-                        sed -i '1s/^/#include "macos-fix.h"\n/' "$1"
-                        echo "DEBUG: Head of $1 after patching:"
-                        head -n 3 "$1"
-                    else
-                        echo "Warning: $1 not found"
-                    fi
-                }
-
-                # Inject include at the top of problematic files
-                for f in src/wayland-client.c src/wayland-server.c src/event-loop.c src/wayland-os.c; do
-                    patch_file "$f"
-                done
-                
-                # Check for patch success
-                if grep -q "macos-fix.h" src/wayland-client.c; then
-                    echo "SUCCESS: wayland-client.c patched"
-                else
-                    echo "FAILURE: wayland-client.c NOT patched"
-                    exit 1
-                fi
-              '';
-            });
           })
         ];
+
         config = {
           allowUnfree = true;
+          allowUnsupportedSystem = true;
           android_sdk.accept_license = true;
         };
       };
@@ -90,9 +47,31 @@
     srcFor = pkgs:
       pkgs.lib.cleanSourceWith {
         src = ./.;
-        filter = path: _:
-          let name = builtins.baseNameOf path;
-          in !(name == ".git" || name == "result" || name == ".direnv" || name == "target");
+        filter = path: type:
+          let 
+            name = builtins.baseNameOf path;
+            relPath = pkgs.lib.removePrefix (toString ./.) (toString path);
+            ext = pkgs.lib.last (pkgs.lib.splitString "." name);
+          in 
+            # Exclude obvious non-build directories
+            !(name == ".git" || name == "result" || name == ".direnv" || name == "target" || 
+              name == ".gemini" || name == "Inspiration" || name == ".idea" || name == ".vscode" ||
+              name == ".DS_Store") &&
+            # Include only what Cargo actually needs:
+            #   - Cargo.toml, Cargo.lock, VERSION, build.rs (top-level build files)
+            #   - src/          (Rust source code)
+            #   - protocols/    (Wayland protocol XML for wayland-scanner)
+            #   - scripts/      (build helper scripts referenced by build.rs)
+            #   - include/      (C headers if any)
+            # EXCLUDED: dependencies/ (Nix modules, .nix/.sh — injected separately by Nix)
+            (
+              name == "Cargo.toml" || name == "Cargo.lock" || name == "VERSION" || name == "build.rs" ||
+              pkgs.lib.hasPrefix "/src" relPath ||
+              pkgs.lib.hasPrefix "src" relPath ||
+              pkgs.lib.hasPrefix "/protocols" relPath ||
+              pkgs.lib.hasPrefix "/scripts" relPath ||
+              pkgs.lib.hasPrefix "/include" relPath
+            );
       };
 
     unixWrapper = pkgs: name: bin:
@@ -113,11 +92,20 @@
 
     macosWrapper = pkgs: wawona: pkgs.writeShellScriptBin "wawona" ''
       ${macosEnv}
-      exec "${wawona}/bin/Wawona" "$@"
+      # Launch via the .app bundle so macOS picks up the icon
+      exec open -W "${wawona}/Applications/Wawona.app" --args "$@"
     '';
 
     waypipeWrapper = pkgs: waypipe: pkgs.writeShellScriptBin "waypipe" ''
       ${macosEnv}
+      # Point Vulkan loader at KosmicKrisp ICD if available and not overridden
+      if [ -z "''${VK_DRIVER_FILES:-}" ]; then
+        # Check app bundle first (when launched from Wawona.app)
+        APP_ICD="$(dirname "$(dirname "$0")")/Resources/vulkan/icd.d/kosmickrisp_icd.json"
+        if [ -f "$APP_ICD" ]; then
+          export VK_DRIVER_FILES="$APP_ICD"
+        fi
+      fi
       exec "${waypipe}/bin/waypipe" "$@"
     '';
 
@@ -167,169 +155,149 @@ EOF
     globalSrc = srcFor defaultPkgs;
     wawonaVersion = defaultPkgs.lib.removeSuffix "\n" (defaultPkgs.lib.fileContents (globalSrc + "/VERSION"));
 
+    # Centralized waypipe source
+    waypipe-src = defaultPkgs.fetchFromGitLab {
+      owner = "mstoeckl";
+      repo = "waypipe";
+      rev = "v0.10.6";
+      sha256 = "sha256-Tbd/yY90yb2+/ODYVL3SudHaJCGJKatZ9FuGM2uAX+8=";
+    };
+
   in
   {
     packages = builtins.listToAttrs (map (system: let
       pkgs = pkgsFor system;
       src  = srcFor pkgs;
 
-      # Rust compositor
-      compositor = pkgs.rustPlatform.buildRustPackage {
-        pname = "wawona";
-        version = wawonaVersion;
-
-        inherit src;
-        cargoLock.lockFile = ./Cargo.lock;
-
-        prePatch = ''
-          echo "Patching Cargo.toml version to ${wawonaVersion}..."
-          sed -i 's/^version = .*/version = "${wawonaVersion}"/' Cargo.toml
-        '';
-        
-        # Disable tests - they require XDG_RUNTIME_DIR which isn't available in Nix sandbox
-        doCheck = false;
-        
-        # Build library and all binaries
-        cargoBuildFlags = [ "--lib" "--bins" ];
-
-        nativeBuildInputs = [ pkgs.pkg-config ];
-        buildInputs = [
-          pkgs.libxkbcommon
-          pkgs.libffi
-        ];
-
-        postInstall = ''
-          # Create include directory for Rust backend headers
-          mkdir -p $out/include
-          
-          # Copy any existing headers if they exist
-          if [ -d include ]; then
-            cp -r include/* $out/include/ || true
-          fi
-          
-          # Generate UniFFI bindings for Swift/Objective-C
-          echo "📦 Generating UniFFI bindings..."
-          mkdir -p $out/uniffi/swift
-          
-          # Generate Swift bindings from UDL file (must be in source dir during build)
-          if [ -f "$out/bin/uniffi-bindgen" ] && [ -f "src/wawona.udl" ]; then
-            echo "Found uniffi-bindgen and wawona.udl, generating bindings..."
-            $out/bin/uniffi-bindgen generate \
-              src/wawona.udl \
-              --language swift \
-              --out-dir $out/uniffi/swift 2>&1 | tee $out/uniffi/generation.log
-          else
-            echo "Missing: uniffi-bindgen=$(test -f $out/bin/uniffi-bindgen && echo yes || echo no), udl=$(test -f src/wawona.udl && echo yes || echo no)"
-          fi
-          
-          # Copy UDL for reference
-          cp src/wawona.udl $out/uniffi/ 2>/dev/null || true
-          
-          if [ -d "$out/uniffi/swift" ] && [ "$(ls -A $out/uniffi/swift)" ]; then
-            echo "✅ UniFFI bindings generated in $out/uniffi/swift/"
-          else
-            echo "⚠️  UniFFI bindings not generated (this is OK for now)"
-          fi
-        '';
+      # ── Pre-patched waypipe source derivations (cached separately) ──
+      # Changing the patch script only invalidates these + their dependents,
+      # NOT the entire Rust build.
+      waypipe-patched-ios = pkgs.callPackage ./dependencies/libs/waypipe/waypipe-patched-src.nix {
+        inherit waypipe-src;
+        patchScript = ./dependencies/libs/waypipe/patch-waypipe-source.sh;
+        platform = "ios";
       };
 
-      compositor-ios = let
-        # Use Nixpkgs cross-compilation infrastructure for iOS Simulator (aarch64) dependencies
-        crossPkgs = import nixpkgs {
-          localSystem = system;
-          crossSystem = {
-            config = "aarch64-apple-darwin";
-            sdk = "iPhoneSimulator";
-            xcodePlatform = "iPhoneSimulator";
-            rustc.config = "aarch64-apple-ios-sim";
-          };
-          config.allowUnfree = true;
-          overlays = [
-            (self: super: {
-              # Fix atf configure check for cross-compilation
-              atf = super.atf.overrideAttrs (old: {
-                configureFlags = (old.configureFlags or []) ++ [
-                  "atf_cv_prog_getopt_plus=yes"
-                ];
-                doCheck = false; # Cannot run tests for cross-compiled binaries
-              });
-              # Disable tests for libuv during cross-compilation
-              libuv = super.libuv.overrideAttrs (old: {
-                doCheck = false;
-              });
-            })
-          ];
+      waypipe-patched-macos = pkgs.callPackage ./dependencies/libs/waypipe/waypipe-patched-src.nix {
+        inherit waypipe-src;
+        patchScript = ./dependencies/libs/waypipe/patch-waypipe-source.sh;
+        platform = "macos";
+      };
+
+      waypipe-patched-android = pkgs.callPackage ./dependencies/libs/waypipe/waypipe-patched-src.nix {
+        inherit waypipe-src;
+        patchScript = ./dependencies/libs/waypipe/patch-waypipe-android.sh;
+        platform = "android";
+      };
+
+      # ── Workspace source assembly (wawona src + waypipe) ──
+      # iOS device and simulator share the same workspace source (same waypipe patches).
+      workspace-src-ios = pkgs.callPackage ./dependencies/wawona/workspace-src.nix {
+        wawonaSrc = src;
+        waypipeSrc = waypipe-patched-ios;
+        platform = "ios";
+        inherit wawonaVersion;
+      };
+
+      workspace-src-macos = pkgs.callPackage ./dependencies/wawona/workspace-src.nix {
+        wawonaSrc = src;
+        waypipeSrc = waypipe-patched-macos;
+        platform = "macos";
+        inherit wawonaVersion;
+      };
+
+      workspace-src-android = pkgs.callPackage ./dependencies/wawona/workspace-src.nix {
+        wawonaSrc = src;
+        waypipeSrc = waypipe-patched-android;
+        platform = "android";
+        inherit wawonaVersion;
+      };
+
+      # ── crate2nix Rust backends (per-crate caching!) ──
+      backend-macos = pkgs.callPackage ./dependencies/wawona/rust-backend-c2n.nix {
+        inherit crate2nix wawonaVersion toolchains nixpkgs;
+        workspaceSrc = workspace-src-macos;
+        platform = "macos";
+        nativeDeps = {
+          libwayland = toolchains.macos.libwayland;
         };
-      in pkgs.rustPlatform.buildRustPackage {
-        pname = "wawona-ios-backend";
-        version = wawonaVersion;
-        inherit src;
-        cargoLock.lockFile = ./Cargo.lock;
-
-        # Target aarch64-apple-ios-sim specifically for simulator
-        cargoBuildTarget = "aarch64-apple-ios-sim";
-
-        # Disable tests as they can't run on the build host
-        doCheck = false;
-
-        nativeBuildInputs = [ pkgs.pkg-config ];
-        buildInputs = [
-          crossPkgs.libxkbcommon
-          crossPkgs.libffi
-        ];
-
-        # Cargo needs the linker set correctly for the cross target
-        # We use the cross-compiler from crossPkgs
-        CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER = "${crossPkgs.stdenv.cc.targetPrefix}cc";
-        
-        prePatch = ''
-          echo "Patching Cargo.toml version to ${wawonaVersion}..."
-          sed -i 's/^version = .*/version = "${wawonaVersion}"/' Cargo.toml
-        '';
-
-        # Patch dependencies that don't support iOS out of the box
-        postPatch = ''
-          # We search for it in the vendor directory
-          find . -name common_poll.rs -exec sed -i 's/"macos"/"macos", target_os = "ios"/g' {} +
-          find . -name handle.rs -exec sed -i 's/"macos"/"macos", target_os = "ios"/g' {} +
-          
-          # Socket flags: ios (like macos) doesn't have MSG_NOSIGNAL or CMSG_CLOEXEC
-          find . -name socket.rs -exec sed -i 's/target_os = "macos"/any(target_os = "macos", target_os = "ios")/g' {} +
-          find . -name socket.rs -exec sed -i 's/not(target_os = "macos")/not(any(target_os = "macos", target_os = "ios"))/g' {} +
-        '';
-
-        postInstall = ''
-          mkdir -p $out/include
-          if [ -d include ]; then
-            cp -r include/* $out/include/ || true
-          fi
-        '';
       };
 
-      # Platform-specific builds (macOS/iOS/Android)
-      buildModule = import ./dependencies/build.nix {
+      backend-ios = pkgs.callPackage ./dependencies/wawona/rust-backend-c2n.nix {
+        inherit crate2nix wawonaVersion toolchains nixpkgs;
+        workspaceSrc = workspace-src-ios;
+        platform = "ios";
+        nativeDeps = {
+          xkbcommon = toolchains.ios.xkbcommon;
+          libffi = toolchains.ios.libffi;
+          libwayland = toolchains.ios.libwayland;
+          zstd = toolchains.ios.zstd;
+          lz4 = toolchains.ios.lz4;
+          zlib = toolchains.buildForIOS "zlib" {};
+          libssh2 = toolchains.ios.libssh2;
+          mbedtls = toolchains.ios.mbedtls;
+          openssl = toolchains.buildForIOS "openssl" {};
+          kosmickrisp = toolchains.buildForIOS "kosmickrisp" {};
+          ffmpeg = toolchains.buildForIOS "ffmpeg" {};
+          epoll-shim = toolchains.buildForIOS "epoll-shim" {};
+        };
+      };
+
+      backend-ios-sim = pkgs.callPackage ./dependencies/wawona/rust-backend-c2n.nix {
+        inherit crate2nix wawonaVersion toolchains nixpkgs;
+        workspaceSrc = workspace-src-ios;
+        platform = "ios";
+        simulator = true;
+        nativeDeps = {
+          xkbcommon = toolchains.ios.xkbcommon;
+          libffi = toolchains.ios.libffi;
+          libwayland = toolchains.ios.libwayland;
+          zstd = toolchains.ios.zstd;
+          lz4 = toolchains.ios.lz4;
+          zlib = toolchains.buildForIOS "zlib" { simulator = true; };
+          libssh2 = toolchains.ios.libssh2;
+          mbedtls = toolchains.ios.mbedtls;
+          openssl = toolchains.buildForIOS "openssl" { simulator = true; };
+          kosmickrisp = toolchains.buildForIOS "kosmickrisp" { simulator = true; };
+          ffmpeg = toolchains.buildForIOS "ffmpeg" { simulator = true; };
+          epoll-shim = toolchains.buildForIOS "epoll-shim" { simulator = true; };
+        };
+      };
+
+      backend-android = pkgs.callPackage ./dependencies/wawona/rust-backend-c2n.nix {
+        inherit crate2nix wawonaVersion toolchains nixpkgs;
+        workspaceSrc = workspace-src-android;
+        platform = "android";
+        nativeDeps = {
+          xkbcommon = toolchains.android.xkbcommon;
+          libwayland = toolchains.android.libwayland;
+          zstd = toolchains.android.zstd;
+          lz4 = toolchains.android.lz4;
+          pixman = toolchains.android.pixman;
+          openssl = toolchains.android.openssl;
+          libffi = toolchains.android.libffi;
+          expat = toolchains.android.expat;
+          libxml2 = toolchains.android.libxml2;
+        };
+      };
+
+      # Toolchains for cross-compilation
+      toolchains = import ./dependencies/toolchains {
         inherit (pkgs) lib pkgs stdenv buildPackages;
       };
 
       # Wawona system module (macOS/iOS/Android)
       wawonaSrc = src;
       
-      wawona-macos = pkgs.callPackage ./dependencies/wawona-macos.nix {
-        inherit buildModule wawonaSrc;
-        compositor = compositor;
-        wawonaVersion = wawonaVersion;
-        weston = weston;
-        waylandVersion = pkgs.wayland.version;
-        xkbcommonVersion = pkgs.libxkbcommon.version;
-        lz4Version = pkgs.lz4.version;
-        zstdVersion = pkgs.zstd.version;
-        libffiVersion = pkgs.libffi.version;
-        sshpassVersion = pkgs.sshpass.version;
-        waypipeVersion = pkgs.waypipe.version;
-        waypipe = buildModule.macos.waypipe;
-      };
+      libwayland-macos = toolchains.macos.libwayland;
+      
+      # wawona-macos is defined via wawonaModules below
 
-      weston = pkgs.callPackage ./dependencies/applications/weston/macos.nix { };
+
+      weston = pkgs.callPackage ./dependencies/clients/weston/macos.nix {
+        wayland = libwayland-macos;
+        wayland-scanner = libwayland-macos;
+      };
 
       androidSDK = pkgs.androidenv.composeAndroidPackages {
         cmdLineToolsVersion = "8.0";
@@ -346,26 +314,34 @@ EOF
         ndkVersions = ["27.0.12077973"];
       };
 
-      wawona-android = pkgs.callPackage ./dependencies/wawona-android.nix {
-        inherit buildModule wawonaSrc androidSDK;
-        wawonaVersion = wawonaVersion;
+      # Android needs full src/ including platform C files; use cleanSource for that
+      androidSrc = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          let name = builtins.baseNameOf path;
+          in !(name == ".git" || name == "result" || name == ".direnv" || name == "target" ||
+               name == ".gemini" || name == "Inspiration" || name == ".idea" || name == ".vscode" ||
+               name == ".DS_Store");
       };
 
-      wawona-ios = pkgs.callPackage ./dependencies/wawona-ios.nix {
-        inherit buildModule wawonaSrc hiahkernel;
-        wawonaVersion = wawonaVersion;
-        compositor = compositor-ios;
-      };
-      
-      xcodegenProject = pkgs.callPackage ./dependencies/xcodegen-wawona.nix {
-        inherit pkgs;
-        rustPlatform = pkgs.rustPlatform;
-        hiahkernel = hiahkernel;
-        wawonaVersion = wawonaVersion;
-        compositor = compositor-ios;
+      # Central app builds and generators
+      wawonaApps = pkgs.callPackage ./dependencies/wawona {
+        buildModule = toolchains;
+        inherit wawonaSrc wawonaVersion androidSDK weston androidSrc;
+        waypipe = toolchains.macos.waypipe;
+        rustBackendMacOS = backend-macos;
+        rustBackendIOS = backend-ios;
+        rustBackendIOSSim = backend-ios-sim;
+        rustBackendAndroid = backend-android;
       };
 
-      gradlegen = pkgs.callPackage ./dependencies/gradlegen-wawona.nix { };
+      wawona-android = wawonaApps.android;
+      wawona-ios = wawonaApps.ios;
+      wawona-macos = wawonaApps.macos;
+
+
+      # generators are in wawonaModules.generators
+
 
       isDarwin = pkgs.stdenv.isDarwin;
       isLinux = pkgs.stdenv.isLinux;
@@ -375,40 +351,77 @@ EOF
         export XDG_RUNTIME_DIR="/tmp/wawona-$(id -u)"
         export WAYLAND_DISPLAY="wayland-0"
         echo "[CLIENT] Connecting to $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-        exec ${compositor}/bin/keyboard-test-client "$@"
+        exec ${backend-macos}/bin/keyboard-test-client "$@"
       '';
 
       # Define the main package based on platform
       mainPackage = if pkgs.stdenv.isDarwin 
         then (macosWrapper pkgs wawona-macos)
-        else (linuxWrapper pkgs compositor);
+        else (linuxWrapper pkgs backend-macos);
 
       # Generic keyboard test client (wrapper handles env vars)
       keyboardTestClient = keyboard-test-client-macos; 
+
+      # Vulkan CTS (Conformance Test Suite)
+      vulkan-cts-android = pkgs.callPackage ./dependencies/libs/vulkan-cts/android.nix {
+        lib = pkgs.lib;
+        buildPackages = pkgs.buildPackages;
+      };
 
       packagesForSystem = {
         default = mainPackage;
         wawona = mainPackage;
         wawona-macos = wawona-macos;
+        wawona-macos-backend = backend-macos;
+        wawona-ios-backend = backend-ios;
+        wawona-ios-sim-backend = backend-ios-sim;
+        wawona-android-backend = backend-android;
         
         # Mobile targets
         wawona-android = wawona-android;
         
         # Tooling
-        gradlegen-android = gradlegen;
+        gradlegen-android = wawonaApps.generators.gradlegen.generateScript;
+        gradlegen = wawonaApps.generators.gradlegen.generateScript;
         
         # Clients
         keyboard-test-client = keyboardTestClient;
+
+        # Vulkan CTS
+        vulkan-cts-android = vulkan-cts-android;
       } // (pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
-        # macOS/iOS specific
         wawona-ios = wawona-ios;
-        xcodegen-ios = xcodegenProject.project;
-        waypipe = waypipeWrapper pkgs buildModule.macos.waypipe;
-        foot = footWrapper pkgs buildModule.macos.foot;
+        # Full Xcode project with both iOS + macOS targets
+        xcodegen = wawonaApps.generators.xcodegen.app;
+        # iOS-only Xcode project (does not build macOS dependencies)
+        xcodegen-ios = (pkgs.callPackage ./dependencies/generators/xcodegen.nix {
+          inherit wawonaVersion;
+          rustBackendIOS = backend-ios;
+          rustBackendIOSSim = backend-ios-sim;
+          includeMacOSTarget = false;
+          rustPlatform = pkgs.rustPlatform;
+        }).app;
+        waypipe = waypipeWrapper pkgs toolchains.macos.waypipe;
+        waypipe-ios = toolchains.ios.waypipe;
+        waypipe-ios-sim = toolchains.buildForIOS "waypipe" { simulator = true; };
+        foot = footWrapper pkgs toolchains.macos.foot;
         weston = weston;
         weston-terminal = westonAppWrapper pkgs weston "weston-terminal";
         weston-debug = westonAppWrapper pkgs weston "weston-debug";
         weston-simple-shm = westonAppWrapper pkgs weston "weston-simple-shm";
+
+        # Vulkan CTS for macOS (uses KosmicKrisp Vulkan driver)
+        vulkan-cts = pkgs.callPackage ./dependencies/libs/vulkan-cts/macos.nix {
+          lib = pkgs.lib;
+          kosmickrisp = toolchains.macos.kosmickrisp;
+        };
+
+        # Vulkan CTS for iOS (cross-compiled for simulator)
+        vulkan-cts-ios = pkgs.callPackage ./dependencies/libs/vulkan-cts/ios.nix {
+          lib = pkgs.lib;
+          buildPackages = pkgs.buildPackages;
+          buildModule = toolchains;
+        };
       });
 
     in {
@@ -427,12 +440,21 @@ EOF
       value = {
         gradlegen-android = {
           type = "app";
-          program = "${(pkgs.callPackage ./dependencies/gradlegen-wawona.nix { }).generateScript}/bin/gradlegen";
+          program = "${self.packages.${system}.gradlegen-android}/bin/gradlegen";
+        };
+        gradlegen = {
+          type = "app";
+          program = "${self.packages.${system}.gradlegen}/bin/gradlegen";
         };
 
         wawona-android = {
           type = "app";
           program = "${self.packages.${system}.wawona-android}/bin/wawona-android-run";
+        };
+
+        vulkan-cts-android = {
+          type = "app";
+          program = "${self.packages.${system}.vulkan-cts-android}/bin/vulkan-cts-android-run";
         };
         
       } // (pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
@@ -441,14 +463,10 @@ EOF
           program = "${self.packages.${system}.wawona-ios.automationScript}/bin/wawona-ios-automat";
         };
 
-        xcodegen-ios = {
+        xcodegen = {
+
           type = "app";
-          program = "${(pkgs.callPackage ./dependencies/xcodegen-wawona.nix {
-            inherit pkgs;
-            rustPlatform = pkgs.rustPlatform;
-            hiahkernel = hiahkernel;
-            wawonaVersion = wv;
-          }).openScript}/bin/xcodegen-open";
+          program = "${self.packages.${system}.xcodegen}/bin/xcodegen";
         };
 
         foot = {
@@ -470,24 +488,33 @@ EOF
           type = "app";
           program = "${self.packages.${system}.weston-simple-shm}/bin/weston-simple-shm";
         };
+
+        vulkan-cts = {
+          type = "app";
+          program = "${self.packages.${system}.vulkan-cts}/bin/deqp-vk";
+        };
       });
     }) systems);
     devShells = builtins.listToAttrs (map (system: let
       pkgs = pkgsFor system;
+      toolchains = import ./dependencies/toolchains {
+        inherit (pkgs) lib pkgs stdenv buildPackages;
+      };
     in {
       name = system;
       value = {
         default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.pkg-config
-            pkgs.wayland-scanner
           ];
+
           buildInputs = [
             pkgs.rustToolchain  # This provides both cargo and rustc
             pkgs.libxkbcommon
             pkgs.libffi
             pkgs.wayland-protocols
-          ];
+            pkgs.openssl
+          ] ++ (pkgs.lib.optional pkgs.stdenv.isDarwin toolchains.macos.libwayland);
 
           # Read TEAM_ID from .envrc if it exists, otherwise use default
           shellHook = ''

@@ -3,21 +3,21 @@
 use std::os::raw::c_char;
 use std::ffi::{CStr, CString};
 use std::sync::Arc;
-use super::api::WawonaCore;
-use super::types::{WindowId, PointerButton, ButtonState, KeyState, KeyboardModifiers};
+use super::api::WawonaCore as WWNCore;
+use super::types::{WindowId, PointerButton, PointerAxis, AxisSource, ButtonState, KeyState, KeyboardModifiers};
 
 
-/// Create a new WawonaCore instance
+/// Create a new WWNCore instance
 #[no_mangle]
-pub extern "C" fn wawona_core_new() -> *mut WawonaCore {
-    let core = WawonaCore::new();
-    Arc::into_raw(core) as *mut WawonaCore
+pub extern "C" fn WWNCoreNew() -> *mut WWNCore {
+    let core = WWNCore::new();
+    Arc::into_raw(core) as *mut WWNCore
 }
 
 /// Start the compositor
 #[no_mangle]
-pub extern "C" fn wawona_core_start(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreStart(
+    core: *mut WWNCore,
     socket_name: *const c_char
 ) -> bool {
     if core.is_null() {
@@ -48,7 +48,7 @@ pub extern "C" fn wawona_core_start(
 
 /// Stop the compositor
 #[no_mangle]
-pub extern "C" fn wawona_core_stop(core: *mut WawonaCore) -> bool {
+pub extern "C" fn WWNCoreStop(core: *mut WWNCore) -> bool {
     if core.is_null() {
         return false;
     }
@@ -59,7 +59,7 @@ pub extern "C" fn wawona_core_stop(core: *mut WawonaCore) -> bool {
 
 /// Check if compositor is running
 #[no_mangle]
-pub extern "C" fn wawona_core_is_running(core: *const WawonaCore) -> bool {
+pub extern "C" fn WWNCoreIsRunning(core: *const WWNCore) -> bool {
     if core.is_null() {
         return false;
     }
@@ -70,7 +70,7 @@ pub extern "C" fn wawona_core_is_running(core: *const WawonaCore) -> bool {
 
 /// Get socket path (returns malloc'd string, caller must free)
 #[no_mangle]
-pub extern "C" fn wawona_core_get_socket_path(core: *const WawonaCore) -> *mut c_char {
+pub extern "C" fn WWNCoreGetSocketPath(core: *const WWNCore) -> *mut c_char {
     if core.is_null() {
         return std::ptr::null_mut();
     }
@@ -85,7 +85,7 @@ pub extern "C" fn wawona_core_get_socket_path(core: *const WawonaCore) -> *mut c
 
 /// Get socket name (returns malloc'd string, caller must free)
 #[no_mangle]
-pub extern "C" fn wawona_core_get_socket_name(core: *const WawonaCore) -> *mut c_char {
+pub extern "C" fn WWNCoreGetSocketName(core: *const WWNCore) -> *mut c_char {
     if core.is_null() {
         return std::ptr::null_mut();
     }
@@ -100,7 +100,7 @@ pub extern "C" fn wawona_core_get_socket_name(core: *const WawonaCore) -> *mut c
 
 /// Free a string returned by this API
 #[no_mangle]
-pub extern "C" fn wawona_string_free(s: *mut c_char) {
+pub extern "C" fn WWNStringFree(s: *mut c_char) {
     if !s.is_null() {
         unsafe { drop(CString::from_raw(s)); }
     }
@@ -108,7 +108,7 @@ pub extern "C" fn wawona_string_free(s: *mut c_char) {
 
 /// Process events
 #[no_mangle]
-pub extern "C" fn wawona_core_process_events(core: *mut WawonaCore) -> bool {
+pub extern "C" fn WWNCoreProcessEvents(core: *mut WWNCore) -> bool {
     if core.is_null() {
         return false;
     }
@@ -119,8 +119,8 @@ pub extern "C" fn wawona_core_process_events(core: *mut WawonaCore) -> bool {
 
 /// Set output size
 #[no_mangle]
-pub extern "C" fn wawona_core_set_output_size(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreSetOutputSize(
+    core: *mut WWNCore,
     width: u32,
     height: u32,
     scale: f32
@@ -133,10 +133,28 @@ pub extern "C" fn wawona_core_set_output_size(
     core.set_output_size(width, height, scale);
 }
 
+/// Set platform safe area insets (iOS notch, home indicator, etc.)
+/// These are applied as implicit exclusive zones for layer-shell positioning.
+#[no_mangle]
+pub extern "C" fn WWNCoreSetSafeAreaInsets(
+    core: *mut WWNCore,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    left: i32,
+) {
+    if core.is_null() {
+        return;
+    }
+    
+    let core = unsafe { &*core };
+    core.set_safe_area_insets(top, right, bottom, left);
+}
+
 /// Set force SSD policy
 #[no_mangle]
-pub extern "C" fn wawona_core_set_force_ssd(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreSetForceSSD(
+    core: *mut WWNCore,
     enabled: bool
 ) {
     if core.is_null() {
@@ -149,8 +167,8 @@ pub extern "C" fn wawona_core_set_force_ssd(
 
 /// Inject window resize
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_window_resize(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectWindowResize(
+    core: *mut WWNCore,
     window_id: u64,
     width: u32,
     height: u32
@@ -162,8 +180,8 @@ pub extern "C" fn wawona_core_inject_window_resize(
 
 /// Set window activation state (focus)
 #[no_mangle]
-pub extern "C" fn wawona_core_set_window_activated(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreSetWindowActivated(
+    core: *mut WWNCore,
     window_id: u64,
     active: bool
 ) {
@@ -172,9 +190,9 @@ pub extern "C" fn wawona_core_set_window_activated(
     core.set_window_activated(WindowId { id: window_id }, active);
 }
 
-/// Free WawonaCore instance
+/// Free WWNCore instance
 #[no_mangle]
-pub extern "C" fn wawona_core_free(core: *mut WawonaCore) {
+pub extern "C" fn WWNCoreFree(core: *mut WWNCore) {
     if !core.is_null() {
         unsafe {
             drop(Arc::from_raw(core));
@@ -192,6 +210,9 @@ pub enum CWindowEventType {
     SizeChanged = 3,
     PopupCreated = 4,
     PopupRepositioned = 5,
+    MoveRequested = 6,
+    ResizeRequested = 7,
+    DecorationModeChanged = 8,
 }
 
 /// C-compatible window event structure
@@ -206,12 +227,16 @@ pub struct CWindowEvent {
     pub parent_id: u64,
     pub x: i32,
     pub y: i32,
-    pub padding: u32, // explicit padding for the 8-byte boundary if needed
+    /// 0 = ClientSide, 1 = ServerSide
+    pub decoration_mode: u8,
+    /// 0 = false, 1 = true (fullscreen shell / kiosk - no host chrome)
+    pub fullscreen_shell: u8,
+    pub padding: u16,
 }
 
 /// Pop the next pending window event
 #[no_mangle]
-pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CWindowEvent {
+pub extern "C" fn WWNCorePopWindowEvent(core: *mut WWNCore) -> *mut CWindowEvent {
     if core.is_null() {
         return std::ptr::null_mut();
     }
@@ -220,7 +245,7 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
     
     if let Some(event) = core.pop_window_event() {
         let mut c_event = Box::new(CWindowEvent {
-            event_type: CWindowEventType::Created as u64, // Default
+            event_type: CWindowEventType::Created as u64,
             window_id: 0,
             surface_id: 0,
             title: std::ptr::null_mut(),
@@ -229,6 +254,8 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
             parent_id: 0,
             x: 0,
             y: 0,
+            decoration_mode: 0,
+            fullscreen_shell: 0,
             padding: 0,
         });
 
@@ -236,12 +263,13 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
             super::types::WindowEvent::Created { window_id, config } => {
                 c_event.event_type = CWindowEventType::Created as u64;
                 c_event.window_id = window_id.id;
-                // We don't have surface_id in Created event from api.rs yet, 
-                // but we might need it for completeness. For now just window_id is fine for toplevels.
-                // However, the event from CompositorEvent has it.
-                // Let's check api.rs handle_compositor_event
                 c_event.width = config.width;
                 c_event.height = config.height;
+                c_event.decoration_mode = match config.decoration_mode {
+                    super::types::DecorationMode::ClientSide => 0,
+                    super::types::DecorationMode::ServerSide => 1,
+                };
+                c_event.fullscreen_shell = if config.fullscreen_shell { 1 } else { 0 };
                 c_event.title = CString::new(config.title).ok()
                     .map(|s| s.into_raw())
                     .unwrap_or(std::ptr::null_mut());
@@ -292,6 +320,25 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
                 tracing::info!("FFI: PopupRepositioned {} at {},{} {}x{}", window_id.id, x, y, width, height);
                 true
             },
+            super::types::WindowEvent::MoveRequested { window_id, serial: _ } => {
+                c_event.event_type = CWindowEventType::MoveRequested as u64;
+                c_event.window_id = window_id.id;
+                true
+            },
+            super::types::WindowEvent::ResizeRequested { window_id, serial: _, edge: _ } => {
+                c_event.event_type = CWindowEventType::ResizeRequested as u64;
+                c_event.window_id = window_id.id;
+                true
+            },
+            super::types::WindowEvent::DecorationModeChanged { window_id, mode } => {
+                c_event.event_type = CWindowEventType::DecorationModeChanged as u64;
+                c_event.window_id = window_id.id;
+                c_event.decoration_mode = match mode {
+                    super::types::DecorationMode::ClientSide => 0,
+                    super::types::DecorationMode::ServerSide => 1,
+                };
+                true
+            },
             _ => {
                 // Ignore other events for now
                 false
@@ -310,7 +357,7 @@ pub extern "C" fn wawona_core_pop_window_event(core: *mut WawonaCore) -> *mut CW
 
 /// Free a CWindowEvent structure
 #[no_mangle]
-pub extern "C" fn wawona_window_event_free(event: *mut CWindowEvent) {
+pub extern "C" fn WWNWindowEventFree(event: *mut CWindowEvent) {
     if !event.is_null() {
         unsafe {
             let event = Box::from_raw(event);
@@ -327,12 +374,12 @@ pub struct CWindowInfo {
     pub window_id: u64,
     pub width: u32,
     pub height: u32,
-    pub title: *mut c_char,  // Caller must free with wawona_string_free
+    pub title: *mut c_char,  // Caller must free with WWNStringFree
 }
 
 /// Get count of pending window created events
 #[no_mangle]
-pub extern "C" fn wawona_core_pending_window_count(core: *const WawonaCore) -> u32 {
+pub extern "C" fn WWNCorePendingWindowCount(core: *const WWNCore) -> u32 {
     if core.is_null() {
         return 0;
     }
@@ -341,16 +388,16 @@ pub extern "C" fn wawona_core_pending_window_count(core: *const WawonaCore) -> u
 
 /// Pop and return the next pending window creation info
 /// Returns NULL if no pending windows
-/// Caller must free title with wawona_string_free
+/// Caller must free title with WWNStringFree
 #[no_mangle]
-pub extern "C" fn wawona_core_pop_pending_window(_core: *mut WawonaCore) -> *mut CWindowInfo {
-    // DEPRECATED: Use wawona_core_pop_window_event instead
+pub extern "C" fn WWNCorePopPendingWindow(_core: *mut WWNCore) -> *mut CWindowInfo {
+    // DEPRECATED: Use WWNCorePop_window_event instead
     std::ptr::null_mut()
 }
 
 /// Free a CWindowInfo structure
 #[no_mangle]
-pub extern "C" fn wawona_window_info_free(info: *mut CWindowInfo) {
+pub extern "C" fn WWNWindowInfoFree(info: *mut CWindowInfo) {
     if !info.is_null() {
         unsafe {
             let info = Box::from_raw(info);
@@ -379,9 +426,9 @@ pub struct CBufferData {
 
 /// Pop the next pending buffer update
 /// Returns NULL if no updates
-/// Caller must free with wawona_buffer_data_free
+/// Caller must free with WWNBufferDataFree
 #[no_mangle]
-pub extern "C" fn wawona_core_pop_pending_buffer(core: *mut WawonaCore) -> *mut CBufferData {
+pub extern "C" fn WWNCorePopPendingBuffer(core: *mut WWNCore) -> *mut CBufferData {
     if core.is_null() {
         return std::ptr::null_mut();
     }
@@ -444,7 +491,7 @@ pub extern "C" fn wawona_core_pop_pending_buffer(core: *mut WawonaCore) -> *mut 
 
 /// Free a CBufferData structure and its pixel data
 #[no_mangle]
-pub extern "C" fn wawona_buffer_data_free(data: *mut CBufferData) {
+pub extern "C" fn WWNBufferDataFree(data: *mut CBufferData) {
     if !data.is_null() {
         unsafe {
             let data = Box::from_raw(data);
@@ -458,8 +505,8 @@ pub extern "C" fn wawona_buffer_data_free(data: *mut CBufferData) {
 
 /// Notify that a frame has been presented
 #[no_mangle]
-pub extern "C" fn wawona_core_notify_frame_presented(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreNotifyFramePresented(
+    core: *mut WWNCore,
     surface_id: u32,
     buffer_id: u64,
     timestamp: u32
@@ -483,8 +530,8 @@ pub extern "C" fn wawona_core_notify_frame_presented(
 
 /// Inject pointer motion event
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_pointer_motion(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectPointerMotion(
+    core: *mut WWNCore,
     window_id: u64,
     x: f64,
     y: f64,
@@ -499,8 +546,8 @@ pub extern "C" fn wawona_core_inject_pointer_motion(
 /// request_code: Linux input event code (0x110=BTN_LEFT, etc)
 /// state: 0 = Released, 1 = Pressed
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_pointer_button(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectPointerButton(
+    core: *mut WWNCore,
     window_id: u64,
     button_code: u32,
     state: u32,
@@ -517,8 +564,8 @@ pub extern "C" fn wawona_core_inject_pointer_button(
 
 /// Inject pointer enter event
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_pointer_enter(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectPointerEnter(
+    core: *mut WWNCore,
     window_id: u64,
     x: f64,
     y: f64,
@@ -531,8 +578,8 @@ pub extern "C" fn wawona_core_inject_pointer_enter(
 
 /// Inject pointer leave event
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_pointer_leave(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectPointerLeave(
+    core: *mut WWNCore,
     window_id: u64,
     timestamp_ms: u32
 ) {
@@ -541,12 +588,35 @@ pub extern "C" fn wawona_core_inject_pointer_leave(
     core.inject_pointer_leave(WindowId { id: window_id }, timestamp_ms);
 }
 
+/// Inject pointer axis (scroll) event
+/// axis: 0 = vertical, 1 = horizontal
+#[no_mangle]
+pub extern "C" fn WWNCoreInjectPointerAxis(
+    core: *mut WWNCore,
+    window_id: u64,
+    axis: u32,
+    value: f64,
+    timestamp_ms: u32
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    let pa = if axis == 1 { PointerAxis::Horizontal } else { PointerAxis::Vertical };
+    core.inject_pointer_axis(
+        WindowId { id: window_id },
+        pa,
+        value,
+        0,
+        AxisSource::Finger,
+        timestamp_ms,
+    );
+}
+
 /// Inject keyboard key event
 /// keycode: Linux key code
 /// state: 0 = Released, 1 = Pressed
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_key(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectKey(
+    core: *mut WWNCore,
     keycode: u32,
     state: u32,
     timestamp_ms: u32
@@ -561,8 +631,8 @@ pub extern "C" fn wawona_core_inject_key(
 
 /// Inject keyboard modifiers
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_modifiers(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectModifiers(
+    core: *mut WWNCore,
     mods_depressed: u32,
     mods_latched: u32,
     mods_locked: u32,
@@ -583,11 +653,12 @@ pub extern "C" fn wawona_core_inject_modifiers(
 
 /// Inject keyboard enter event
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_keyboard_enter(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectKeyboardEnter(
+    core: *mut WWNCore,
     window_id: u64,
     keys: *const u32,
-    count: usize
+    count: usize,
+    _timestamp_ms: u32
 ) {
     if core.is_null() { return; }
     let core = unsafe { &*core };
@@ -605,11 +676,569 @@ pub extern "C" fn wawona_core_inject_keyboard_enter(
 
 /// Inject keyboard leave event
 #[no_mangle]
-pub extern "C" fn wawona_core_inject_keyboard_leave(
-    core: *mut WawonaCore,
+pub extern "C" fn WWNCoreInjectKeyboardLeave(
+    core: *mut WWNCore,
     window_id: u64
 ) {
     if core.is_null() { return; }
     let core = unsafe { &*core };
     core.inject_keyboard_leave(WindowId { id: window_id });
+}
+
+// ============================================================================
+// Text Input (IME / Emoji)
+// ============================================================================
+
+/// Commit a UTF-8 string to the focused Wayland client via text-input-v3.
+///
+/// This is how platform IME, emoji pickers, and composed text reach the
+/// client.  `text` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputCommit(
+    core: *mut WWNCore,
+    text: *const c_char
+) {
+    if core.is_null() || text.is_null() { return; }
+    let core = unsafe { &*core };
+    let s = unsafe { CStr::from_ptr(text) };
+    if let Ok(text_str) = s.to_str() {
+        core.text_input_commit_string(text_str);
+    }
+}
+
+/// Send a preedit (composition preview) string via text-input-v3.
+///
+/// `cursor_begin` and `cursor_end` are byte offsets into `text`.
+/// Pass (0, 0) when not applicable.
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputPreedit(
+    core: *mut WWNCore,
+    text: *const c_char,
+    cursor_begin: i32,
+    cursor_end: i32
+) {
+    if core.is_null() || text.is_null() { return; }
+    let core = unsafe { &*core };
+    let s = unsafe { CStr::from_ptr(text) };
+    if let Ok(text_str) = s.to_str() {
+        core.text_input_preedit_string(text_str, cursor_begin, cursor_end);
+    }
+}
+
+/// Delete surrounding text relative to the cursor via text-input-v3.
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputDeleteSurrounding(
+    core: *mut WWNCore,
+    before_length: u32,
+    after_length: u32
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    core.text_input_delete_surrounding(before_length, after_length);
+}
+
+/// Get surrounding text reported by the Wayland client.
+/// Writes the text (as a UTF-8 C string) into `out_buf` (up to `buf_len` bytes),
+/// and writes cursor/anchor byte offsets to `out_cursor`/`out_anchor`.
+/// Returns the number of bytes written (excluding NUL terminator).
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputGetSurrounding(
+    core: *mut WWNCore,
+    out_buf: *mut u8,
+    buf_len: u32,
+    out_cursor: *mut i32,
+    out_anchor: *mut i32,
+) -> u32 {
+    if core.is_null() || out_buf.is_null() { return 0; }
+    let core = unsafe { &*core };
+    let (text, cursor, anchor) = core.text_input_get_surrounding();
+    if !out_cursor.is_null() { unsafe { *out_cursor = cursor; } }
+    if !out_anchor.is_null() { unsafe { *out_anchor = anchor; } }
+    let bytes = text.as_bytes();
+    let copy_len = std::cmp::min(bytes.len(), (buf_len as usize).saturating_sub(1));
+    if copy_len > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, copy_len); }
+    }
+    unsafe { *out_buf.add(copy_len) = 0; } // NUL terminate
+    copy_len as u32
+}
+
+/// Get content type (hint, purpose) reported by the Wayland client.
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputGetContentType(
+    core: *mut WWNCore,
+    out_hint: *mut u32,
+    out_purpose: *mut u32,
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    let (hint, purpose) = core.text_input_get_content_type();
+    if !out_hint.is_null() { unsafe { *out_hint = hint; } }
+    if !out_purpose.is_null() { unsafe { *out_purpose = purpose; } }
+}
+
+/// Get the cursor rectangle reported by the focused Wayland client
+/// via `set_cursor_rectangle`.  The platform uses this to position
+/// IME candidate windows and emoji pickers near the text cursor.
+///
+/// Coordinates are in surface-local pixels.
+#[no_mangle]
+pub extern "C" fn WWNCoreTextInputGetCursorRect(
+    core: *mut WWNCore,
+    out_x: *mut i32,
+    out_y: *mut i32,
+    out_width: *mut i32,
+    out_height: *mut i32,
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    let (x, y, w, h) = core.text_input_get_cursor_rect();
+    if !out_x.is_null() { unsafe { *out_x = x; } }
+    if !out_y.is_null() { unsafe { *out_y = y; } }
+    if !out_width.is_null() { unsafe { *out_width = w; } }
+    if !out_height.is_null() { unsafe { *out_height = h; } }
+}
+
+// ============================================================================
+// Touch Injection
+// ============================================================================
+
+/// Inject touch down event
+#[no_mangle]
+pub extern "C" fn WWNCoreInjectTouchDown(
+    core: *mut WWNCore,
+    id: i32,
+    x: f64,
+    y: f64,
+    timestamp_ms: u32
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    
+    // Create InputEvent::TouchDown
+    let event = super::types::InputEvent::TouchDown {
+        id,
+        x,
+        y,
+        time_ms: timestamp_ms,
+    };
+    
+    core.inject_input_event(event);
+}
+
+/// Inject touch up event
+#[no_mangle]
+pub extern "C" fn WWNCoreInjectTouchUp(
+    core: *mut WWNCore,
+    id: i32,
+    timestamp_ms: u32
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    
+    // Create InputEvent::TouchUp
+    let event = super::types::InputEvent::TouchUp {
+        id,
+        time_ms: timestamp_ms,
+    };
+    
+    core.inject_input_event(event);
+}
+
+/// Inject touch motion event
+#[no_mangle]
+pub extern "C" fn WWNCoreInjectTouchMotion(
+    core: *mut WWNCore,
+    id: i32,
+    x: f64,
+    y: f64,
+    timestamp_ms: u32
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    
+    // Create InputEvent::TouchMotion
+    let event = super::types::InputEvent::TouchMotion {
+        id,
+        x,
+        y,
+        time_ms: timestamp_ms,
+    };
+    
+    core.inject_input_event(event);
+}
+
+/// Inject touch cancel event
+#[no_mangle]
+pub extern "C" fn WWNCoreInjectTouchCancel(
+    core: *mut WWNCore
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    
+    // Create InputEvent::TouchCancel
+    let event = super::types::InputEvent::TouchCancel;
+    
+    core.inject_input_event(event);
+}
+
+/// Inject touch frame event
+#[no_mangle]
+pub extern "C" fn WWNCoreInject_touch_frame(
+    core: *mut WWNCore
+) {
+    if core.is_null() { return; }
+    let core = unsafe { &*core };
+    
+    // Create InputEvent::TouchFrame
+    let event = super::types::InputEvent::TouchFrame;
+    
+    core.inject_input_event(event);
+}
+
+// ----------------------------------------------------------------------------
+// Scene Graph API
+// ----------------------------------------------------------------------------
+
+/// C-compatible RenderNode structure
+#[repr(C)]
+pub struct CRenderNode {
+    pub node_id: u64,
+    pub window_id: u64,
+    pub surface_id: u32,
+    pub buffer_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub scale: f32,
+    pub opacity: f32,
+    pub corner_radius: f32,
+    pub is_opaque: bool,
+    pub buffer_width: u32,
+    pub buffer_height: u32,
+    pub buffer_stride: u32,
+    pub buffer_format: u32,
+    pub iosurface_id: u32,
+    /// Anchor position in output space for subsurface positioning
+    pub anchor_output_x: f32,
+    pub anchor_output_y: f32,
+}
+
+/// C-compatible RenderScene structure
+#[repr(C)]
+pub struct CRenderScene {
+    pub nodes: *mut CRenderNode,
+    pub count: usize,
+    pub capacity: usize,
+    // Cursor state — populated when a Wayland client has set a cursor surface
+    pub has_cursor: bool,
+    pub cursor_x: f32,
+    pub cursor_y: f32,
+    pub cursor_hotspot_x: f32,
+    pub cursor_hotspot_y: f32,
+    pub cursor_buffer_id: u64,
+    pub cursor_width: u32,
+    pub cursor_height: u32,
+    pub cursor_stride: u32,
+    pub cursor_format: u32,
+    pub cursor_iosurface_id: u32,
+}
+
+/// Get the current render scene
+/// Caller must free the returned pointer with WWNRenderSceneFree
+#[no_mangle]
+pub extern "C" fn WWNCoreGetRenderScene(core: *mut WWNCore) -> *mut CRenderScene {
+    if core.is_null() { return std::ptr::null_mut(); }
+    let core = unsafe { &*core };
+    
+    // 1. Get the abstract scene (ffi::types::RenderScene)
+    let scene = core.get_render_scene();
+    
+    // Convert Vec<RenderNode> to Vec<CRenderNode>
+    let mut c_nodes = Vec::with_capacity(scene.nodes.len());
+    
+    for node in scene.nodes {
+        let buffer_id = node.texture.handle;
+        
+        // Call helper to get buffer info
+        // Call helper to get buffer info
+        let info = core.get_buffer_render_info(buffer_id);
+        let (stride, format, iosurface_id, width, height) = (info.stride, info.format, info.iosurface_id, info.width, info.height);
+        
+        c_nodes.push(CRenderNode {
+            node_id: 0, 
+            window_id: node.window_id.id,
+            surface_id: node.surface_id.id,
+            buffer_id,
+            x: node.x as f32,
+            y: node.y as f32,
+            width: node.width as f32,
+            height: node.height as f32,
+            scale: node.scale,
+            opacity: node.opacity,
+            corner_radius: 0.0,
+            is_opaque: false, 
+            buffer_width: width,
+            buffer_height: height,
+            buffer_stride: stride,
+            buffer_format: format,
+            iosurface_id,
+            anchor_output_x: node.anchor_output_x as f32,
+            anchor_output_y: node.anchor_output_y as f32,
+        });
+    }
+    
+    // Gather cursor state from the compositor
+    let cursor_info = core.get_cursor_render_info();
+
+    let c_scene = Box::new(CRenderScene {
+        nodes: c_nodes.as_mut_ptr(),
+        count: c_nodes.len(),
+        capacity: c_nodes.capacity(),
+        has_cursor: cursor_info.has_cursor,
+        cursor_x: cursor_info.x,
+        cursor_y: cursor_info.y,
+        cursor_hotspot_x: cursor_info.hotspot_x,
+        cursor_hotspot_y: cursor_info.hotspot_y,
+        cursor_buffer_id: cursor_info.buffer_id,
+        cursor_width: cursor_info.width,
+        cursor_height: cursor_info.height,
+        cursor_stride: cursor_info.stride,
+        cursor_format: cursor_info.format,
+        cursor_iosurface_id: cursor_info.iosurface_id,
+    });
+    std::mem::forget(c_nodes);
+    
+    Box::into_raw(c_scene)
+}
+
+/// Free a RenderScene
+#[no_mangle]
+pub extern "C" fn WWNRenderSceneFree(scene: *mut CRenderScene) {
+    if !scene.is_null() {
+        unsafe {
+            let scene = Box::from_raw(scene);
+            if !scene.nodes.is_null() && scene.capacity > 0 {
+                let _ = Vec::from_raw_parts(scene.nodes, scene.count, scene.capacity);
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Screencopy API (zwlr_screencopy_manager_v1)
+// ----------------------------------------------------------------------------
+
+/// Screencopy request — platform writes ARGB8888 pixels to ptr, then calls WWNCoreScreencopyDone
+#[repr(C)]
+pub struct CScreencopyRequest {
+    pub capture_id: u64,
+    pub ptr: *mut std::ffi::c_void,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub size: usize,
+}
+
+/// Get the first pending screencopy. Returns capture_id=0 if none.
+/// Platform must memcpy ARGB8888 pixels to ptr, then call WWNCoreScreencopyDone(capture_id).
+#[no_mangle]
+pub extern "C" fn WWNCoreGetPendingScreencopy(core: *mut WWNCore) -> CScreencopyRequest {
+    let empty = CScreencopyRequest {
+        capture_id: 0,
+        ptr: std::ptr::null_mut(),
+        width: 0,
+        height: 0,
+        stride: 0,
+        size: 0,
+    };
+    if core.is_null() {
+        return empty;
+    }
+    let core = unsafe { &*core };
+    core.get_pending_screencopy()
+        .map(|r| CScreencopyRequest {
+            capture_id: r.capture_id,
+            ptr: r.ptr as *mut std::ffi::c_void,
+            width: r.width,
+            height: r.height,
+            stride: r.stride,
+            size: r.size as usize,
+        })
+        .unwrap_or(empty)
+}
+
+/// Notify screencopy capture complete (platform has written pixels)
+#[no_mangle]
+pub extern "C" fn WWNCoreScreencopyDone(core: *mut WWNCore, capture_id: u64) {
+    if core.is_null() {
+        return;
+    }
+    let core = unsafe { &*core };
+    core.screencopy_done(capture_id);
+}
+
+/// Notify screencopy capture failed
+#[no_mangle]
+pub extern "C" fn WWNCoreScreencopyFailed(core: *mut WWNCore, capture_id: u64) {
+    if core.is_null() {
+        return;
+    }
+    let core = unsafe { &*core };
+    core.screencopy_failed(capture_id);
+}
+
+// ----------------------------------------------------------------------------
+// Image Copy Capture API (ext-image-copy-capture-v1, desktop-protocols only)
+// ----------------------------------------------------------------------------
+
+/// Get the first pending image copy capture. Returns capture_id=0 if none.
+/// Same structure as screencopy; platform writes ARGB8888 pixels then calls WWNCoreImageCopyCaptureDone.
+#[cfg(feature = "desktop-protocols")]
+#[no_mangle]
+pub extern "C" fn WWNCoreGetPendingImageCopyCapture(core: *mut WWNCore) -> CScreencopyRequest {
+    let empty = CScreencopyRequest {
+        capture_id: 0,
+        ptr: std::ptr::null_mut(),
+        width: 0,
+        height: 0,
+        stride: 0,
+        size: 0,
+    };
+    if core.is_null() {
+        return empty;
+    }
+    let core = unsafe { &*core };
+    core.get_pending_image_copy_capture()
+        .map(|r| CScreencopyRequest {
+            capture_id: r.capture_id,
+            ptr: r.ptr as *mut std::ffi::c_void,
+            width: r.width,
+            height: r.height,
+            stride: r.stride,
+            size: r.size as usize,
+        })
+        .unwrap_or(empty)
+}
+
+#[cfg(not(feature = "desktop-protocols"))]
+#[no_mangle]
+pub extern "C" fn WWNCoreGetPendingImageCopyCapture(core: *mut WWNCore) -> CScreencopyRequest {
+    let _ = core;
+    CScreencopyRequest {
+        capture_id: 0,
+        ptr: std::ptr::null_mut(),
+        width: 0,
+        height: 0,
+        stride: 0,
+        size: 0,
+    }
+}
+
+/// Notify image copy capture complete
+#[cfg(feature = "desktop-protocols")]
+#[no_mangle]
+pub extern "C" fn WWNCoreImageCopyCaptureDone(core: *mut WWNCore, capture_id: u64) {
+    if core.is_null() {
+        return;
+    }
+    let core = unsafe { &*core };
+    core.image_copy_capture_done(capture_id);
+}
+
+#[cfg(not(feature = "desktop-protocols"))]
+#[no_mangle]
+pub extern "C" fn WWNCoreImageCopyCaptureDone(_core: *mut WWNCore, _capture_id: u64) {
+    // No-op when desktop-protocols disabled
+}
+
+/// Notify image copy capture failed
+#[cfg(feature = "desktop-protocols")]
+#[no_mangle]
+pub extern "C" fn WWNCoreImageCopyCaptureFailed(core: *mut WWNCore, capture_id: u64) {
+    if core.is_null() {
+        return;
+    }
+    let core = unsafe { &*core };
+    core.image_copy_capture_failed(capture_id);
+}
+
+#[cfg(not(feature = "desktop-protocols"))]
+#[no_mangle]
+pub extern "C" fn WWNCoreImageCopyCaptureFailed(_core: *mut WWNCore, _capture_id: u64) {
+    // No-op when desktop-protocols disabled
+}
+
+// ----------------------------------------------------------------------------
+// Gamma Control API (zwlr_gamma_control_manager_v1)
+// ----------------------------------------------------------------------------
+
+/// Gamma ramp apply — platform uses CGSetDisplayTransferByTable.
+/// Convert u16 (0-65535) to float (0-1) for CGGammaValue.
+#[repr(C)]
+pub struct CGammaApply {
+    pub output_id: u32,
+    pub size: u32,
+    pub red: *const u16,
+    pub green: *const u16,
+    pub blue: *const u16,
+}
+
+/// Gamma apply with owned buffers (CGammaApply is first field, same address)
+#[repr(C)]
+struct GammaApplyOwned {
+    c: CGammaApply,
+    _red: Box<[u16]>,
+    _green: Box<[u16]>,
+    _blue: Box<[u16]>,
+}
+
+/// Pop pending gamma apply. Caller must free with WWNGammaApplyFree.
+#[no_mangle]
+pub extern "C" fn WWNCorePopPendingGammaApply(core: *mut WWNCore) -> *mut CGammaApply {
+    if core.is_null() {
+        return std::ptr::null_mut();
+    }
+    let core = unsafe { &*core };
+    if let Some(apply) = core.pop_pending_gamma_apply() {
+        let red = apply.red.into_boxed_slice();
+        let green = apply.green.into_boxed_slice();
+        let blue = apply.blue.into_boxed_slice();
+        let owned = Box::new(GammaApplyOwned {
+            c: CGammaApply {
+                output_id: apply.output_id,
+                size: apply.size,
+                red: red.as_ptr(),
+                green: green.as_ptr(),
+                blue: blue.as_ptr(),
+            },
+            _red: red,
+            _green: green,
+            _blue: blue,
+        });
+        let ptr = Box::into_raw(owned);
+        ptr as *mut CGammaApply
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// Free gamma apply (call after platform has applied)
+#[no_mangle]
+pub extern "C" fn WWNGammaApplyFree(apply: *mut CGammaApply) {
+    if !apply.is_null() {
+        let _ = unsafe { Box::from_raw(apply as *mut GammaApplyOwned) };
+    }
+}
+
+/// Pop pending gamma restore (output_id to restore)
+/// Returns 0 if none, or output_id to restore
+#[no_mangle]
+pub extern "C" fn WWNCorePopPendingGammaRestore(core: *mut WWNCore) -> u32 {
+    if core.is_null() {
+        return 0;
+    }
+    let core = unsafe { &*core };
+    core.pop_pending_gamma_restore().unwrap_or(0)
 }

@@ -18,42 +18,43 @@ use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use anyhow::{Result, Context};
 
 use crate::core::state::CompositorState;
+use crate::core::window::DecorationMode;
 use crate::core::errors::CoreError;
 use crate::core::socket_manager::SocketManager;
 
 // Import protocol modules to ensure trait impls are linked
 #[allow(unused_imports)]
-use crate::core::wayland::subcompositor;
+use crate::core::wayland::ext::subcompositor;
 #[allow(unused_imports)]
-use crate::core::wayland::data_device;
+use crate::core::wayland::ext::data_device;
 #[allow(unused_imports)]
-use crate::core::wayland::decoration;
+use crate::core::wayland::xdg::decoration;
 #[allow(unused_imports)]
-use crate::core::wayland::xdg_output;
+use crate::core::wayland::xdg::xdg_output;
 #[allow(unused_imports)]
-use crate::core::wayland::viewporter;
+use crate::core::wayland::ext::viewporter;
 #[allow(unused_imports)]
-use crate::core::wayland::presentation_time;
+use crate::core::wayland::ext::presentation_time;
 #[allow(unused_imports)]
-use crate::core::wayland::relative_pointer;
+use crate::core::wayland::ext::relative_pointer;
 #[allow(unused_imports)]
-use crate::core::wayland::pointer_constraints;
+use crate::core::wayland::ext::pointer_constraints;
 #[allow(unused_imports)]
-use crate::core::wayland::pointer_gestures;
+use crate::core::wayland::ext::pointer_gestures;
 #[allow(unused_imports)]
-use crate::core::wayland::idle_inhibit;
+use crate::core::wayland::ext::idle_inhibit;
 #[allow(unused_imports)]
-use crate::core::wayland::text_input;
+use crate::core::wayland::ext::text_input;
 #[allow(unused_imports)]
-use crate::core::wayland::keyboard_shortcuts_inhibit;
+use crate::core::wayland::ext::keyboard_shortcuts_inhibit;
 #[allow(unused_imports)]
-use crate::core::wayland::linux_dmabuf;
+use crate::core::wayland::ext::linux_dmabuf;
 #[allow(unused_imports)]
-use crate::core::wayland::linux_explicit_sync;
+use crate::core::wayland::ext::linux_explicit_sync;
 #[allow(unused_imports)]
-use crate::core::wayland::xdg_foreign;
+use crate::core::wayland::xdg::xdg_foreign;
 #[allow(unused_imports)]
-use crate::core::wayland::wlroots::{layer_shell, output_management, output_power_management, foreign_toplevel_management, screencopy, gamma_control, data_control, export_dmabuf};
+use crate::core::wayland::wlr::{layer_shell, output_management, output_power_management, foreign_toplevel_management, screencopy, gamma_control, data_control, export_dmabuf};
 
 // ============================================================================
 // Client Data
@@ -144,7 +145,15 @@ pub enum CompositorEvent {
     /// A client disconnected
     ClientDisconnected { client_id: u32 },
     /// A new window was created
-    WindowCreated { window_id: u32, surface_id: u32, title: String, width: u32, height: u32 },
+    WindowCreated {
+        window_id: u32,
+        surface_id: u32,
+        title: String,
+        width: u32,
+        height: u32,
+        decoration_mode: DecorationMode,
+        fullscreen_shell: bool,
+    },
     /// A new popup was created
     PopupCreated { window_id: u32, surface_id: u32, parent_id: u32, x: i32, y: i32, width: u32, height: u32 },
     /// A popup was repositioned
@@ -155,14 +164,28 @@ pub enum CompositorEvent {
     WindowTitleChanged { window_id: u32, title: String },
     /// Window size changed
     WindowSizeChanged { window_id: u32, width: u32, height: u32 },
+    /// Window decoration mode changed (CSD/SSD)
+    DecorationModeChanged { window_id: u32, mode: DecorationMode },
     /// Window requests activation
     WindowActivationRequested { window_id: u32 },
     /// Window requests close
     WindowCloseRequested { window_id: u32 },
+    /// Window was minimized or unminimized
+    WindowMinimized { window_id: u32, minimized: bool },
+    /// Window requests interactive move
+    WindowMoveRequested { window_id: u32, seat_id: u32, serial: u32 },
+    /// Window requests interactive resize
+    WindowResizeRequested { window_id: u32, seat_id: u32, serial: u32, edges: u32 },
     /// Surface committed with new buffer
     SurfaceCommitted { surface_id: u32, buffer_id: Option<u64> },
     /// Layer surface committed with new buffer (for wlr-layer-shell)
     LayerSurfaceCommitted { surface_id: u32, buffer_id: Option<u64> },
+    /// Cursor surface committed with hotspot info
+    CursorCommitted { surface_id: u32, buffer_id: Option<u64>, hotspot_x: i32, hotspot_y: i32 },
+    /// Cursor shape changed via wp_cursor_shape protocol
+    CursorShapeChanged { shape: u32 },
+    /// System bell / notification requested by client
+    SystemBell { surface_id: u32 },
     /// Redraw needed
     RedrawNeeded { window_id: u32 },
 }
@@ -320,7 +343,7 @@ impl Compositor {
     /// Start the compositor
     /// 
     /// This registers all protocol globals and prepares for client connections.
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self, state: &mut CompositorState) -> Result<()> {
         if self.running {
             return Err(CoreError::state_error("Compositor already running").into());
         }
@@ -328,7 +351,7 @@ impl Compositor {
         tracing::info!("Starting compositor");
         
         // Register protocol globals
-        self.register_globals()?;
+        self.register_globals(state)?;
         
         self.running = true;
         self.last_frame = Instant::now();
@@ -372,356 +395,16 @@ impl Compositor {
     }
     
     /// Register all Wayland protocol globals
-    fn register_globals(&mut self) -> Result<()> {
-        use wayland_server::protocol::{
-            wl_compositor, wl_shm, wl_seat, wl_output, wl_subcompositor
-        };
-        use wayland_protocols::xdg::shell::server::xdg_wm_base;
-        
-        use crate::core::wayland::seat::SeatGlobal;
-
-        
-        use crate::core::wayland::output::OutputGlobal;
-        
+    fn register_globals(&mut self, state: &mut CompositorState) -> Result<()> {
         let dh = self.display.handle();
-        
-        // 1. Core protocols (must be first)
-        dh.create_global::<CompositorState, wl_compositor::WlCompositor, _>(6, ());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered wl_compositor v6");
-        
-        dh.create_global::<CompositorState, wl_shm::WlShm, _>(1, ());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered wl_shm v1");
-        
-        // 2. Output and Input (essential for clients to start rendering)
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registering wl_output global version 3");
-        dh.create_global::<CompositorState, wl_output::WlOutput, OutputGlobal>(3, OutputGlobal::new(0));
-        
-        dh.create_global::<CompositorState, wl_seat::WlSeat, SeatGlobal>(8, SeatGlobal::default());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered wl_seat v8");
-        
-        // 3. Shell and extensions
-        dh.create_global::<CompositorState, xdg_wm_base::XdgWmBase, _>(5, ());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered xdg_wm_base v5");
-        
-        dh.create_global::<CompositorState, wl_subcompositor::WlSubcompositor, _>(1, ());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered wl_subcompositor v1");
-        
-        use wayland_server::protocol::wl_data_device_manager;
-        dh.create_global::<CompositorState, wl_data_device_manager::WlDataDeviceManager, _>(3, ());
-        crate::wlog!(crate::util::logging::COMPOSITOR, "Registered wl_data_device_manager v3");
-        
-        // XDG decoration - CSD/SSD negotiation
-        use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
-        dh.create_global::<CompositorState, ZxdgDecorationManagerV1, _>(1, ());
-        tracing::debug!("Registered zxdg_decoration_manager_v1");
-        
-        // XDG output - extended output info
-        use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1;
-        dh.create_global::<CompositorState, ZxdgOutputManagerV1, _>(3, ());
-        tracing::debug!("Registered zxdg_output_manager_v1 v3");
-        
-        // WP viewporter - surface cropping/scaling
-        use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
-        dh.create_global::<CompositorState, WpViewporter, _>(1, ());
-        tracing::debug!("Registered wp_viewporter v1");
-        
-        // WP presentation time - frame timing feedback
-        use wayland_protocols::wp::presentation_time::server::wp_presentation::WpPresentation;
-        dh.create_global::<CompositorState, WpPresentation, _>(1, ());
-        tracing::debug!("Registered wp_presentation v1");
-        
-        // WP relative pointer - relative motion for games
-        use wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
-        dh.create_global::<CompositorState, ZwpRelativePointerManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_relative_pointer_manager_v1");
-        
-        // WP pointer constraints - pointer lock/confine
-        use wayland_protocols::wp::pointer_constraints::zv1::server::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
-        dh.create_global::<CompositorState, ZwpPointerConstraintsV1, _>(1, ());
-        tracing::debug!("Registered zwp_pointer_constraints_v1");
-        
-        // WP pointer gestures - swipe/pinch gestures
-        use wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
-        dh.create_global::<CompositorState, ZwpPointerGesturesV1, _>(1, ());
-        tracing::debug!("Registered zwp_pointer_gestures_v1");
-        
-        // WP idle inhibit - prevent system idle
-        use wayland_protocols::wp::idle_inhibit::zv1::server::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1;
-        dh.create_global::<CompositorState, ZwpIdleInhibitManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_idle_inhibit_manager_v1");
-        
-        // WP text input - IME support (available in wayland-protocols 0.31)
-        use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
-        dh.create_global::<CompositorState, ZwpTextInputManagerV3, _>(1, ());
-        tracing::debug!("Registered zwp_text_input_manager_v3");
-        
-        // WP keyboard shortcuts inhibit - disable compositor shortcuts (available)
-        use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::server::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
-        dh.create_global::<CompositorState, ZwpKeyboardShortcutsInhibitManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_keyboard_shortcuts_inhibit_manager_v1");
-        
-        // WP linux DMA-BUF - GPU buffer sharing (Stub/Emulated)
-        use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
-        dh.create_global::<CompositorState, ZwpLinuxDmabufV1, _>(4, ());
-        tracing::debug!("Registered zwp_linux_dmabuf_v1 v4");
-        
-        // WP linux explicit sync - buffer synchronization (available)
-        use wayland_protocols::wp::linux_explicit_synchronization::zv1::server::zwp_linux_explicit_synchronization_v1::ZwpLinuxExplicitSynchronizationV1;
-        dh.create_global::<CompositorState, ZwpLinuxExplicitSynchronizationV1, _>(1, ());
-        tracing::debug!("Registered zwp_linux_explicit_synchronization_v1");
-        
-        // XDG foreign - cross-client window embedding
-        use wayland_protocols::xdg::foreign::zv2::server::{
-            zxdg_exporter_v2::ZxdgExporterV2,
-            zxdg_importer_v2::ZxdgImporterV2,
-        };
-        self.display.handle().create_global::<CompositorState, ZxdgExporterV2, _>(1, ());
-        tracing::debug!("Registered zxdg_exporter_v2");
-        self.display.handle().create_global::<CompositorState, ZxdgImporterV2, _>(1, ());
-        tracing::debug!("Registered zxdg_importer_v2");
-        
-        // =====================================================================
-        // New protocols available in wayland-protocols 0.32.10
-        // =====================================================================
-        
-        // XDG activation - focus stealing prevention
-        use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
-        dh.create_global::<CompositorState, XdgActivationV1, _>(1, ());
-        tracing::debug!("Registered xdg_activation_v1");
-        
-        // Fractional scale - HiDPI scaling
-        use wayland_protocols::wp::fractional_scale::v1::server::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
-        dh.create_global::<CompositorState, WpFractionalScaleManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_fractional_scale_manager_v1");
-        
-        // Tablet - graphics tablet support
-        use wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::ZwpTabletManagerV2;
-        dh.create_global::<CompositorState, ZwpTabletManagerV2, _>(1, ());
-        tracing::debug!("Registered zwp_tablet_manager_v2");
-        
-        // Cursor shape - predefined cursor shapes
-        use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
-        dh.create_global::<CompositorState, WpCursorShapeManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_cursor_shape_manager_v1");
-        
-        // Content type - content type hints
-        use wayland_protocols::wp::content_type::v1::server::wp_content_type_manager_v1::WpContentTypeManagerV1;
-        dh.create_global::<CompositorState, WpContentTypeManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_content_type_manager_v1");
-        
-        // Single pixel buffer - solid color surfaces
-        use wayland_protocols::wp::single_pixel_buffer::v1::server::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
-        dh.create_global::<CompositorState, WpSinglePixelBufferManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_single_pixel_buffer_manager_v1");
-        
-        // Primary selection - middle-click paste
-        use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
-        dh.create_global::<CompositorState, ZwpPrimarySelectionDeviceManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_primary_selection_device_manager_v1");
-        
-        // Session lock - screen locking
-        use wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
-        dh.create_global::<CompositorState, ExtSessionLockManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_session_lock_manager_v1");
-        
-        // Idle notify - user idle notifications
-        use wayland_protocols::ext::idle_notify::v1::server::ext_idle_notifier_v1::ExtIdleNotifierV1;
-        dh.create_global::<CompositorState, ExtIdleNotifierV1, _>(1, ());
-        tracing::debug!("Registered ext_idle_notifier_v1");
-        
-        // XDG dialog - dialog window hints
-        use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
-        dh.create_global::<CompositorState, XdgWmDialogV1, _>(1, ());
-        tracing::debug!("Registered xdg_wm_dialog_v1");
-        
-        // XDG toplevel drag - drag entire windows
-        use wayland_protocols::xdg::toplevel_drag::v1::server::xdg_toplevel_drag_manager_v1::XdgToplevelDragManagerV1;
-        dh.create_global::<CompositorState, XdgToplevelDragManagerV1, _>(1, ());
-        tracing::debug!("Registered xdg_toplevel_drag_manager_v1");
-        
-        // XDG toplevel icon - window icons
-        use wayland_protocols::xdg::toplevel_icon::v1::server::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1;
-        dh.create_global::<CompositorState, XdgToplevelIconManagerV1, _>(1, ());
-        tracing::debug!("Registered xdg_toplevel_icon_manager_v1");
-        
-        // FIFO - presentation ordering
-        use wayland_protocols::wp::fifo::v1::server::wp_fifo_manager_v1::WpFifoManagerV1;
-        dh.create_global::<CompositorState, WpFifoManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_fifo_manager_v1");
-        
-        // Tearing control - vsync hints
-        use wayland_protocols::wp::tearing_control::v1::server::wp_tearing_control_manager_v1::WpTearingControlManagerV1;
-        dh.create_global::<CompositorState, WpTearingControlManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_tearing_control_manager_v1");
-        
-        // Commit timing - frame timing hints
-        use wayland_protocols::wp::commit_timing::v1::server::wp_commit_timing_manager_v1::WpCommitTimingManagerV1;
-        dh.create_global::<CompositorState, WpCommitTimingManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_commit_timing_manager_v1");
-        
-        // Alpha modifier - alpha blending
-        use wayland_protocols::wp::alpha_modifier::v1::server::wp_alpha_modifier_v1::WpAlphaModifierV1;
-        dh.create_global::<CompositorState, WpAlphaModifierV1, _>(1, ());
-        tracing::debug!("Registered wp_alpha_modifier_v1");
-        
-        // =====================================================================
-        // Additional protocols (all 57 from wayland-protocols 1.45)
-        // =====================================================================
-        
-        // Linux DRM syncobj - explicit GPU synchronization
-        use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
-        dh.create_global::<CompositorState, WpLinuxDrmSyncobjManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_linux_drm_syncobj_manager_v1");
-        
-        // DRM lease - VR/AR display leasing
-        use wayland_protocols::wp::drm_lease::v1::server::wp_drm_lease_device_v1::WpDrmLeaseDeviceV1;
-        dh.create_global::<CompositorState, WpDrmLeaseDeviceV1, _>(1, ());
-        tracing::debug!("Registered wp_drm_lease_device_v1");
-        
-        // Input panel - IME input surfaces
-        use wayland_protocols::wp::input_method::zv1::server::zwp_input_panel_v1::ZwpInputPanelV1;
-        dh.create_global::<CompositorState, ZwpInputPanelV1, _>(1, ());
-        tracing::debug!("Registered zwp_input_panel_v1");
-        
-        // Input timestamps - high-resolution input timing
-        use wayland_protocols::wp::input_timestamps::zv1::server::zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1;
-        dh.create_global::<CompositorState, ZwpInputTimestampsManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_input_timestamps_manager_v1");
-        
-        // Pointer warp - pointer teleportation
-        use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::WpPointerWarpV1;
-        dh.create_global::<CompositorState, WpPointerWarpV1, _>(1, ());
-        tracing::debug!("Registered wp_pointer_warp_v1");
-        
-        // Color management - HDR and color space support
-        // use wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1;
-        // dh.create_global::<CompositorState, WpColorManagerV1, _>(1, ());
-        // tracing::debug!("Registered wp_color_manager_v1");
-        
-        // Color representation - color format hints
-        use wayland_protocols::wp::color_representation::v1::server::wp_color_representation_manager_v1::WpColorRepresentationManagerV1;
-        dh.create_global::<CompositorState, WpColorRepresentationManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_color_representation_manager_v1");
-        
-        // Security context - sandboxed client connections
-        use wayland_protocols::wp::security_context::v1::server::wp_security_context_manager_v1::WpSecurityContextManagerV1;
-        dh.create_global::<CompositorState, WpSecurityContextManagerV1, _>(1, ());
-        tracing::debug!("Registered wp_security_context_manager_v1");
-        
-        // Transient seat - remote desktop input seats
-        use wayland_protocols::ext::transient_seat::v1::server::ext_transient_seat_manager_v1::ExtTransientSeatManagerV1;
-        dh.create_global::<CompositorState, ExtTransientSeatManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_transient_seat_manager_v1");
-        
-        // XDG toplevel tag - window tagging for session restore
-        use wayland_protocols::xdg::toplevel_tag::v1::server::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1;
-        dh.create_global::<CompositorState, XdgToplevelTagManagerV1, _>(1, ());
-        tracing::debug!("Registered xdg_toplevel_tag_manager_v1");
-        
-        // XDG system bell - system notification sounds
-        use wayland_protocols::xdg::system_bell::v1::server::xdg_system_bell_v1::XdgSystemBellV1;
-        dh.create_global::<CompositorState, XdgSystemBellV1, _>(1, ());
-        tracing::debug!("Registered xdg_system_bell_v1");
-        
-        // Fullscreen shell - kiosk mode shell
-        // use wayland_protocols::wp::fullscreen_shell::zv1::server::zwp_fullscreen_shell_v1::ZwpFullscreenShellV1;
-        // dh.create_global::<CompositorState, ZwpFullscreenShellV1, _>(1, ());
-        // tracing::debug!("Registered zwp_fullscreen_shell_v1");
-        
-        // Foreign toplevel list - task bar support
-        use wayland_protocols::ext::foreign_toplevel_list::v1::server::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
-        dh.create_global::<CompositorState, ExtForeignToplevelListV1, _>(1, ());
-        tracing::debug!("Registered ext_foreign_toplevel_list_v1");
-        
-        // Data control - clipboard managers
-        use wayland_protocols::ext::data_control::v1::server::ext_data_control_manager_v1::ExtDataControlManagerV1;
-        dh.create_global::<CompositorState, ExtDataControlManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_data_control_manager_v1");
-        
-        // Workspace - virtual desktop management
-        use wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
-        dh.create_global::<CompositorState, ExtWorkspaceManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_workspace_manager_v1");
-        
-        // Background effect - blur effects
-        use wayland_protocols::ext::background_effect::v1::server::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
-        dh.create_global::<CompositorState, ExtBackgroundEffectManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_background_effect_manager_v1");
-        
-        // Image capture source - screen capture sources
-        use wayland_protocols::ext::image_capture_source::v1::server::ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1;
-        dh.create_global::<CompositorState, ExtOutputImageCaptureSourceManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_output_image_capture_source_manager_v1");
-        
-        // Image copy capture - screen capture
-        use wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
-        dh.create_global::<CompositorState, ExtImageCopyCaptureManagerV1, _>(1, ());
-        tracing::debug!("Registered ext_image_copy_capture_manager_v1");
-        
-        // XWayland keyboard grab - XWayland input
-        use wayland_protocols::xwayland::keyboard_grab::zv1::server::zwp_xwayland_keyboard_grab_manager_v1::ZwpXwaylandKeyboardGrabManagerV1;
-        dh.create_global::<CompositorState, ZwpXwaylandKeyboardGrabManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_xwayland_keyboard_grab_manager_v1");
-        
-        // XWayland shell - XWayland surface integration
-        use wayland_protocols::xwayland::shell::v1::server::xwayland_shell_v1::XwaylandShellV1;
-        dh.create_global::<CompositorState, XwaylandShellV1, _>(1, ());
-        tracing::debug!("Registered xwayland_shell_v1");
-        
-        // =====================================================================
-        // wlroots protocols
-        // =====================================================================
-        
-        // Layer shell
-        use crate::core::wayland::protocol::wlroots::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1;
-        dh.create_global::<CompositorState, ZwlrLayerShellV1, _>(4, ());
-        tracing::debug!("Registered zwlr_layer_shell_v1 v4");
-        
-        // Output management
-        use crate::core::wayland::protocol::wlroots::wlr_output_management_unstable_v1::zwlr_output_manager_v1::ZwlrOutputManagerV1;
-        dh.create_global::<CompositorState, ZwlrOutputManagerV1, _>(4, ());
-        tracing::debug!("Registered zwlr_output_manager_v1 v4");
-        
-        // Output power management
-        use crate::core::wayland::protocol::wlroots::wlr_output_power_management_unstable_v1::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
-        dh.create_global::<CompositorState, ZwlrOutputPowerManagerV1, _>(1, ());
-        tracing::debug!("Registered zwlr_output_power_manager_v1 v1");
-        
-        // Foreign toplevel management
-        use crate::core::wayland::protocol::wlroots::wlr_foreign_toplevel_management_unstable_v1::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
-        dh.create_global::<CompositorState, ZwlrForeignToplevelManagerV1, _>(3, ());
-        tracing::debug!("Registered zwlr_foreign_toplevel_manager_v1 v3");
-        
-        // Screencopy
-        use crate::core::wayland::protocol::wlroots::wlr_screencopy_unstable_v1::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
-        dh.create_global::<CompositorState, ZwlrScreencopyManagerV1, _>(3, ());
-        tracing::debug!("Registered zwlr_screencopy_manager_v1 v3");
-        
-        // Gamma control
-        use crate::core::wayland::protocol::wlroots::wlr_gamma_control_unstable_v1::zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
-        dh.create_global::<CompositorState, ZwlrGammaControlManagerV1, _>(1, ());
-        tracing::debug!("Registered zwlr_gamma_control_manager_v1 v1");
-        
-        // Data control
-        use crate::core::wayland::protocol::wlroots::wlr_data_control_unstable_v1::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-        dh.create_global::<CompositorState, ZwlrDataControlManagerV1, _>(2, ());
-        tracing::debug!("Registered zwlr_data_control_manager_v1 v2");
-        
-        // Export DMABUF
-        use crate::core::wayland::protocol::wlroots::wlr_export_dmabuf_unstable_v1::zwlr_export_dmabuf_manager_v1::ZwlrExportDmabufManagerV1;
-        dh.create_global::<CompositorState, ZwlrExportDmabufManagerV1, _>(1, ());
-        tracing::debug!("Registered zwlr_export_dmabuf_manager_v1 v1");
-        
-        // Virtual pointer
-        use crate::core::wayland::protocol::wlroots::wlr_virtual_pointer_unstable_v1::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
-        dh.create_global::<CompositorState, ZwlrVirtualPointerManagerV1, _>(2, ());
-        tracing::debug!("Registered zwlr_virtual_pointer_manager_v1 v2");
-        
-        // Virtual keyboard
-        use crate::core::wayland::protocol::wlroots::zwp_virtual_keyboard_v1::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
-        dh.create_global::<CompositorState, ZwpVirtualKeyboardManagerV1, _>(1, ());
-        tracing::debug!("Registered zwp_virtual_keyboard_manager_v1 v1");
-        
+
+        // Register protocols by category
+        crate::core::wayland::wayland::register(state, &dh);
+        crate::core::wayland::xdg::register(state, &dh);
+        crate::core::wayland::wlr::register(state, &dh);
+        crate::core::wayland::plasma::register(state, &dh);
+        crate::core::wayland::ext::register(state, &dh);
+
         Ok(())
     }
     
@@ -787,10 +470,10 @@ impl Compositor {
         Ok(dispatched)
     }
     
-    /// Dispatch with timeout (for poll-based event loops)
+    /// Dispatch with timeout (for poll-based event loops).
+    /// Currently dispatches without blocking; proper epoll-based dispatch with
+    /// timeout requires platform-specific `poll(2)` / `kevent()` integration.
     pub fn dispatch_timeout(&mut self, state: &mut CompositorState, _timeout: Duration) -> Result<usize> {
-        // TODO: Implement proper poll-based dispatch with timeout
-        // For now, just dispatch without blocking
         self.dispatch(state)
     }
     
@@ -846,8 +529,9 @@ impl Compositor {
     }
     
     /// Mark frame as complete
-    pub fn mark_frame_complete(&mut self) {
+    pub fn mark_frame_complete(&mut self, state: &mut CompositorState) {
         self.last_frame = Instant::now();
+        state.flush_buffer_releases();
     }
     
     /// Get current timestamp in milliseconds (for Wayland events)
@@ -881,19 +565,32 @@ impl Compositor {
     fn ensure_runtime_dir() -> Result<String> {
         use std::os::unix::fs::PermissionsExt;
         
-        // Check if XDG_RUNTIME_DIR is already set
+        // Check if XDG_RUNTIME_DIR is already set (e.g. by the ObjC/Swift layer on iOS)
         if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
             if let Ok(metadata) = std::fs::metadata(&dir) {
                 let perms = metadata.permissions();
                 if perms.mode() & 0o777 == 0o700 {
                     return Ok(dir);
                 }
+                // On iOS, the sandbox already provides isolation — the app container
+                // tmp directory may not have 0o700 perms. Try to tighten them, but
+                // accept the directory regardless since /tmp is not writable on iOS.
+                let mut new_perms = perms.clone();
+                new_perms.set_mode(0o700);
+                if let Err(e) = std::fs::set_permissions(&dir, new_perms) {
+                    tracing::warn!(
+                        "Could not set 0700 on XDG_RUNTIME_DIR ({}): {} — using as-is",
+                        dir, e
+                    );
+                }
+                return Ok(dir);
             }
         }
         
-        // Create runtime directory: /tmp/<UID>-runtime
+        // Create runtime directory: /tmp/wawona-<UID>
+        // Must match the macosEnv path in flake.nix and the ObjC bridge
         let uid = unsafe { libc::getuid() };
-        let runtime_dir = format!("/tmp/{}-runtime", uid);
+        let runtime_dir = format!("/tmp/wawona-{}", uid);
         
         // Create directory if it doesn't exist
         std::fs::create_dir_all(&runtime_dir)?;
@@ -910,12 +607,34 @@ impl Compositor {
         Ok(runtime_dir)
     }
 
-    /// Send ping to all shell clients
+    /// Send ping to all shell clients and track for timeout
     pub fn ping_clients(&mut self, state: &mut CompositorState) {
         let serial = self.next_serial();
-        for shell in state.xdg_shell_resources.values() {
-            shell.ping(serial);
+        let now = Instant::now();
+
+        // Check for timed-out pings (>10 seconds without pong)
+        let timed_out: Vec<u32> = state.xdg.pending_pings.iter()
+            .filter(|(_, (_, ts))| now.duration_since(*ts).as_secs() > 10)
+            .map(|(serial, _)| *serial)
+            .collect();
+
+        for stale_serial in timed_out {
+            if let Some((shell_id, ts)) = state.xdg.pending_pings.remove(&stale_serial) {
+                tracing::warn!(
+                    "xdg_wm_base ping timeout: serial={}, shell={}, elapsed={:.1}s — client may be unresponsive",
+                    stale_serial, shell_id, now.duration_since(ts).as_secs_f64()
+                );
+            }
         }
+
+        // Send new pings
+        for (shell_id, shell) in state.xdg.shell_resources.iter() {
+            shell.ping(serial);
+            state.xdg.pending_pings.insert(serial, (*shell_id, now));
+        }
+
+        // Check idle timeouts and send idled/resumed events
+        state.ext.idle_notify.check_idle();
     }
 }
 

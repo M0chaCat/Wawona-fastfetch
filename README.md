@@ -2,11 +2,11 @@
 
 **Wawona** is a native Wayland Compositor for macOS, iOS, and Android.
 <div align="center">
-  <img src="gallery/preview1.png" alt="Wawona - Wayland Compositor Preview 1" width="800"/>
+  <img src="gallery/wawona_nested_plasma.png" alt="Wawona - Wayland Compositor Preview 1" width="800"/>
   <details>
     <summary>More previews</summary>
-    <img src="gallery/preview2.png" alt="Wawona - Wayland Compositor Preview 2" width="800"/>
-    <img src="gallery/preview3.png" alt="Wawona - Wayland Compositor Preview 3" width="800"/>
+    <img src="gallery/wawona_nested_xfce.png" alt="Wawona - Wayland Compositor Preview 2" width="800"/>
+    <img src="gallery/wawona_nested_cosmic.png" alt="Wawona - Wayland Compositor Preview 3" width="800"/>
   </details>
 </div>
 
@@ -99,4 +99,4 @@ https://discord.gg/wHVSV52uw5
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-This project uses dependencies that are licensed under various open source licenses (MIT, LGPL, BSD, Apache 2.0). Please refer to their respective licenses for more information.
+Third-party dependencies (Rust crates, native libs, Android) use MIT, Apache 2.0, BSD, MPL-2.0, LGPL, or GPL as applicable. For a full list and how to disclose them, see [Third-Party Licenses](docs/THIRD_PARTY_LICENSES.md). A NOTICE template is in [NOTICE.example](NOTICE.example).

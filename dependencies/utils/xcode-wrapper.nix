@@ -58,6 +58,7 @@ in
   xcodeWrapper = pkgs.writeShellScriptBin "xcode-wrapper" ''
     #!/usr/bin/env bash
     set -euo pipefail
+    NIX_TEAM_ID="${if TEAM_ID == null then "" else TEAM_ID}"
 
     XCODE_APP=$(${findXcodeScript}/bin/find-xcode)
     export XCODE_APP
@@ -65,9 +66,13 @@ in
     # Set developer directory
     export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
 
-    # Set Development Team from environment if not already set
-    if [ -z "''${DEVELOPMENT_TEAM:-}" ] && [ -n "''${TEAM_ID:-}" ]; then
-      export DEVELOPMENT_TEAM="''${TEAM_ID}"
+    # Prefer runtime TEAM_ID from shell; only fall back to Nix TEAM_ID input.
+    if [ -z "''${DEVELOPMENT_TEAM:-}" ]; then
+      if [ -n "''${TEAM_ID:-}" ]; then
+        export DEVELOPMENT_TEAM="''${TEAM_ID}"
+      elif [ -n "$NIX_TEAM_ID" ]; then
+        export DEVELOPMENT_TEAM="$NIX_TEAM_ID"
+      fi
     fi
 
     # Add Xcode tools to PATH

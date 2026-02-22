@@ -10,9 +10,9 @@
 struct wl_surface_impl;
 
 // Platform-specific renderer interface
-#import "../platform/macos/RenderingBackend.h"
+#import "RenderingBackend.h"
 
-@interface WawonaRendererApple : NSObject <RenderingBackend>
+@interface WWNRendererApple : NSObject <RenderingBackend>
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 - (instancetype)initWithView:(UIView *)view;
 #else

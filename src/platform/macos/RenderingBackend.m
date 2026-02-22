@@ -1,5 +1,5 @@
 #import "RenderingBackend.h"
-#import "../rendering/renderer_apple.h"
+#import "renderer_apple.h"
 
 @implementation RenderingBackendFactory
 
@@ -12,7 +12,7 @@
 {
   // Map requests to platform-specific renderers
   // Use the unified Apple renderer
-  return [[WawonaRendererApple alloc] initWithView:view];
+  return [[WWNRendererApple alloc] initWithView:view];
 }
 
 @end

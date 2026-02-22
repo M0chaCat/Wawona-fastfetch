@@ -74,6 +74,17 @@ impl Buffer {
     }
 }
 
+impl BufferType {
+    pub fn dimensions(&self) -> Option<(i32, i32)> {
+        match self {
+            BufferType::Shm(data) => Some((data.width, data.height)),
+            BufferType::DmaBuf(data) => Some((data.width as i32, data.height as i32)),
+            BufferType::Native(data) => Some((data.width, data.height)),
+            BufferType::None => None,
+        }
+    }
+}
+
 impl Default for BufferType {
     fn default() -> Self {
         Self::None

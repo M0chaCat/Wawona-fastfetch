@@ -1,9 +1,8 @@
 #import "input_handler.h"
 #include "../compositor_implementations/xdg_shell.h"
 #import "../input/wayland_seat.h"
-#import "../logging/WawonaLog.h"
-#import "../platform/macos/WawonaCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
-#import "../platform/macos/WawonaSurfaceManager.h"
+#import "../platform/macos/WWNCompositor.h" // For wl_get_all_surfaces and wl_surface_impl
+#import "../platform/macos/WWNSurfaceManager.h"
 #include <stdint.h>
 #include <time.h>
 #include <wayland-server-protocol.h>
@@ -434,7 +433,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
 - (struct wl_surface_impl *)pickSurfaceAt:(CGPoint)location {
   // Lookup toplevel for this window
-  WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+  WWNCompositor *compositor = (WWNCompositor *)_compositor;
   if (!compositor)
     return NULL;
 
@@ -486,7 +485,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
   // Boundary check against logical window geometry with leeway for resize
   // handles. We allow clicks within 20px of the edge to be captured for CSD
-  // resize handles (consistent with WawonaSurfaceManager.m's threshold).
+  // resize handles (consistent with WWNSurfaceManager.m's threshold).
   CGFloat leeway = 20.0;
   if (px < -leeway || px >= (double)gw + leeway || py < -leeway ||
       py >= (double)gh + leeway) {
@@ -553,7 +552,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     struct wl_surface_impl *target_surface = surface;
     struct wl_seat_impl *seat_impl_copy = seat_impl;
     int32_t touch_id = (int32_t)(intptr_t)touch;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
 
     [compositor dispatchToEventThread:^{
       wl_seat_send_touch_down(seat_impl_copy,
@@ -605,7 +604,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     // Dispatch touch motion to event thread
     struct wl_seat_impl *seat_impl_copy = seat_impl;
     int32_t touch_id = (int32_t)(intptr_t)touch;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
 
     [compositor dispatchToEventThread:^{
       wl_seat_send_touch_motion(seat_impl_copy,
@@ -619,7 +618,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     }];
 
     // Reduce log spam for motion
-    // NSLog(@"📱 Touch motion at (%.1f, %.1f)", location.x, location.y);
+    // WWNLog("INPUT", @"Touch motion at (%.1f, %.1f)", location.x, location.y);
   }
 }
 
@@ -629,7 +628,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     // Dispatch touch up to event thread
     struct wl_seat_impl *seat_impl_copy = seat_impl;
     int32_t touch_id = (int32_t)(intptr_t)touch;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
 
     [compositor dispatchToEventThread:^{
       wl_seat_send_touch_up(seat_impl_copy, wl_seat_get_serial(seat_impl_copy),
@@ -651,7 +650,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 - (void)sendTouchCancel:(UITouch *)touch {
   if (_seat) {
     struct wl_seat_impl *seat_impl = _seat;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
 
     // Dispatch touch cancel to event thread
     [compositor dispatchToEventThread:^{
@@ -822,7 +821,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     struct wl_seat_impl *seat_impl = _seat;
 
     // Dispatch pointer enter to event thread
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
     [compositor dispatchToEventThread:^{
       wl_seat_send_pointer_enter(seat_impl, target_surface->resource, serial,
                                  surface_x, surface_y);
@@ -850,7 +849,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
       struct wl_seat_impl *seat_impl = _seat;
 
       // Dispatch pointer leave to event thread
-      WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+      WWNCompositor *compositor = (WWNCompositor *)_compositor;
       [compositor dispatchToEventThread:^{
         wl_seat_send_pointer_leave(seat_impl, old_surface->resource, serial);
         wl_seat_send_pointer_frame(seat_impl);
@@ -867,7 +866,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
       struct wl_seat_impl *seat_impl = _seat;
 
       // Dispatch pointer enter to event thread
-      WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+      WWNCompositor *compositor = (WWNCompositor *)_compositor;
       [compositor dispatchToEventThread:^{
         wl_seat_send_pointer_enter(seat_impl, new_surface->resource, serial,
                                    surface_x, surface_y);
@@ -890,7 +889,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
   // Handle keyboard enter/leave when pointer enters/leaves surface
   // Keyboard focus follows pointer on macOS within the active window
-  // Note: WawonaCompositor handles window-level focus (activiation).
+  // Note: WWNCompositor handles window-level focus (activiation).
   // This logic handles sub-surface focus if applicable.
 
   if (current_surface != self.lastKeyboardSurface) {
@@ -904,7 +903,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
       struct wl_seat_impl *seat_impl = _seat;
 
       // Dispatch keyboard leave to event thread
-      WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+      WWNCompositor *compositor = (WWNCompositor *)_compositor;
       [compositor dispatchToEventThread:^{
         wl_seat_send_keyboard_leave(seat_impl, old_keyboard_surface->resource,
                                     serial);
@@ -923,7 +922,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
       struct wl_seat_impl *seat_impl = _seat;
 
       // Dispatch keyboard enter to event thread
-      WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+      WWNCompositor *compositor = (WWNCompositor *)_compositor;
       [compositor dispatchToEventThread:^{
         // Create empty keys array for keyboard enter (no pressed keys
         // initially)
@@ -955,7 +954,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
     // Dispatch pointer motion to event thread
     struct wl_seat_impl *seat_impl = _seat;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
     [compositor dispatchToEventThread:^{
       wl_seat_send_pointer_motion(seat_impl, time, surface_x, surface_y);
       wl_seat_send_pointer_frame(seat_impl);
@@ -983,7 +982,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
     // Dispatch pointer button down to event thread
     struct wl_seat_impl *seat_impl = _seat;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
     [compositor dispatchToEventThread:^{
       wl_seat_send_pointer_button(seat_impl, serial, time, button,
                                   WL_POINTER_BUTTON_STATE_PRESSED);
@@ -1011,7 +1010,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
 
     // Dispatch pointer button up to event thread
     struct wl_seat_impl *seat_impl = _seat;
-    WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+    WWNCompositor *compositor = (WWNCompositor *)_compositor;
     [compositor dispatchToEventThread:^{
       wl_seat_send_pointer_button(seat_impl, serial, time, button,
                                   WL_POINTER_BUTTON_STATE_RELEASED);
@@ -1035,7 +1034,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
           WL_POINTER_AXIS_SINCE_VERSION) {
         struct wl_seat_impl *seat_impl = _seat;
         double scroll_delta = deltaY;
-        WawonaCompositor *compositor = (WawonaCompositor *)_compositor;
+        WWNCompositor *compositor = (WWNCompositor *)_compositor;
 
         // Dispatch scroll event to event thread
         [compositor dispatchToEventThread:^{
@@ -1111,7 +1110,7 @@ pick_surface_recursive(struct wl_surface_impl *surface, double px, double py,
     return;
   }
 
-  // No need to manually enforce keyboard enter here as WawonaCompositor handles
+  // No need to manually enforce keyboard enter here as WWNCompositor handles
   // window activation focus, and handleMouseEvent handles pointer-follow focus.
   // We just proceed to send the key event.
 

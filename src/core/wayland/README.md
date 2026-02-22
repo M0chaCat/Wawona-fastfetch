@@ -1,1 +1,0 @@
-This Directory contains the wayland protocol implementation for Wawona.

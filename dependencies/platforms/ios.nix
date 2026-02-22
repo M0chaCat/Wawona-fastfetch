@@ -4,6 +4,7 @@
   buildPackages,
   common,
   buildModule,
+  simulator ? false,
 }:
 
 let
@@ -16,154 +17,169 @@ in
   buildForIOS =
     name: entry:
     if name == "libwayland" then
-      (import ../deps/libwayland/ios.nix) {
+      (import ../libs/libwayland/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "expat" then
-      (import ../deps/expat/ios.nix) {
+      (import ../libs/expat/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "libffi" then
-      (import ../deps/libffi/ios.nix) {
+      (import ../libs/libffi/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "libxml2" then
-      (import ../deps/libxml2/ios.nix) {
+      (import ../libs/libxml2/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "waypipe" then
-      (import ../deps/waypipe/ios.nix) {
+      (import ../libs/waypipe/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "kosmickrisp" then
-      (import ../deps/kosmickrisp/ios.nix) {
+      (import ../libs/kosmickrisp/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "zlib" then
-      (import ../deps/zlib/ios.nix) {
+      (import ../libs/zlib/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "zstd" then
-      (import ../deps/zstd/ios.nix) {
+      (import ../libs/zstd/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "lz4" then
-      (import ../deps/lz4/ios.nix) {
+      (import ../libs/lz4/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "ffmpeg" then
-      (import ../deps/ffmpeg/ios.nix) {
+      (import ../libs/ffmpeg/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "spirv-llvm-translator" then
-      (import ../deps/spirv-llvm-translator/ios.nix) {
+      (import ../libs/spirv-llvm-translator/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "spirv-tools" then
-      (import ../deps/spirv-tools/ios.nix) {
+      (import ../libs/spirv-tools/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "libclc" then
-      (import ../deps/libclc/ios.nix) {
+      (import ../libs/libclc/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else if name == "xkbcommon" then
-      (import ../deps/xkbcommon/ios.nix) {
+      (import ../libs/xkbcommon/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     # Note: libssh2 removed - using OpenSSH binary instead
     else if name == "mbedtls" then
-      (import ../deps/mbedtls/ios.nix) {
+      (import ../libs/mbedtls/ios.nix) {
         inherit
           lib
           pkgs
           buildPackages
           common
           buildModule
+          simulator
           ;
       }
     else
@@ -213,13 +229,13 @@ in
                           cat > ios-toolchain.cmake <<EOF
             set(CMAKE_SYSTEM_NAME iOS)
             set(CMAKE_OSX_ARCHITECTURES $SIMULATOR_ARCH)
-            set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+            set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
             set(CMAKE_C_COMPILER "$IOS_CC")
             set(CMAKE_CXX_COMPILER "$IOS_CXX")
             set(CMAKE_SYSROOT "$SDKROOT")
             set(CMAKE_OSX_SYSROOT "$SDKROOT")
-            set(CMAKE_C_FLAGS "-mios-simulator-version-min=15.0")
-            set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=15.0")
+            set(CMAKE_C_FLAGS "-mios-simulator-version-min=26.0")
+            set(CMAKE_CXX_FLAGS "-mios-simulator-version-min=26.0")
             EOF
           '';
           cmakeFlags = [
@@ -288,10 +304,10 @@ in
             endian = 'little'
 
             [built-in options]
-            c_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC']
-            cpp_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0', '-fPIC']
-            c_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0']
-            cpp_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=15.0']
+            c_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=26.0', '-fPIC']
+            cpp_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=26.0', '-fPIC']
+            c_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=26.0']
+            cpp_link_args = ['-arch', '$SIMULATOR_ARCH', '-isysroot', '$SDKROOT', '-mios-simulator-version-min=26.0']
             EOF
           '';
           configurePhase = ''
@@ -367,9 +383,9 @@ in
             fi
             export CC="$IOS_CC"
             export CXX="$IOS_CXX"
-            export CFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
-            export CXXFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0 -fPIC"
-            export LDFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=15.0"
+            export CFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0 -fPIC"
+            export CXXFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0 -fPIC"
+            export LDFLAGS="-arch $SIMULATOR_ARCH -isysroot $SDKROOT -mios-simulator-version-min=26.0"
           '';
           configurePhase = ''
             runHook preConfigure

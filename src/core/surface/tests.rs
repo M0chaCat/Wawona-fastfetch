@@ -10,28 +10,36 @@ fn test_surface_init() {
 
 #[test]
 fn test_surface_commit() {
+    use crate::core::surface::buffer::{BufferType, ShmBufferData};
+
     let mut surface = Surface::new(1, None);
     
     // Initial state
     assert_eq!(surface.current.width, 0);
     assert_eq!(surface.current.height, 0);
-    assert_eq!(surface.pending.width, 0);
     
-    // Modify pending
-    surface.pending.width = 100;
-    surface.pending.height = 200;
+    // Attach a buffer to pending (dimensions come from buffer, not from pending.width/height)
+    surface.pending.buffer = BufferType::Shm(ShmBufferData {
+        width: 100,
+        height: 200,
+        stride: 400,
+        format: 0,
+        offset: 0,
+        pool_id: 1,
+    });
+    surface.pending.buffer_id = Some(1);
     surface.pending.opaque = true;
     
     // Commit
     surface.commit();
     
-    // Check current
+    // Check current — dimensions derived from buffer at scale 1
     assert_eq!(surface.current.width, 100);
     assert_eq!(surface.current.height, 200);
     assert_eq!(surface.current.opaque, true);
     
-    // Only damage should be drained, pending values persist until changed
-    assert_eq!(surface.pending.width, 100); 
+    // Buffer should be copied to current
+    assert_eq!(surface.current.buffer_id, Some(1));
 }
 
 #[test]

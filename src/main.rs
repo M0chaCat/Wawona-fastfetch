@@ -20,16 +20,22 @@ fn main() -> Result<()> {
         println!("Wawona v{}", version);
         
         // Get OS version if on macOS
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
+            #[cfg(target_os = "macos")]
             let os_ver = std::process::Command::new("sw_vers")
                 .arg("-productVersion")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
+            
+            #[cfg(target_os = "macos")]
             println!("macOS v{}", os_ver);
+            
+            #[cfg(target_os = "ios")]
+            println!("iOS v{}", std::env::consts::OS);
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             println!("{}", std::env::consts::OS);
         }

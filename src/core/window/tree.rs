@@ -38,6 +38,9 @@ impl WindowTree {
     }
 
     /// Get the topmost window ID.
+    pub fn topmost(&self) -> Option<u32> {
+        self.stacking_order.last().copied()
+    }
 
     /// Find the top-most window under the given point
     pub fn window_under(&self, x: f64, y: f64, windows: &std::collections::HashMap<u32, std::sync::Arc<std::sync::RwLock<crate::core::window::Window>>>) -> Option<u32> {

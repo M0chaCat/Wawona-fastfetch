@@ -98,34 +98,58 @@
 			<true/>
 		</dict>
 		
-		<!-- Graphics Section -->
+		<!-- Graphics Section / Drivers -->
 		<dict>
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
 			<string>Graphics</string>
+			<key>FooterText</key>
+			<string>Driver selection takes effect after restarting Wawona.</string>
 		</dict>
-		<!-- Enable Vulkan Drivers -->
+		<!-- Vulkan Driver -->
 		<dict>
 			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<string>PSMultiValueSpecifier</string>
 			<key>Title</key>
-			<string>Enable Vulkan Drivers</string>
+			<string>Vulkan Driver</string>
 			<key>Key</key>
-			<string>VulkanDriversEnabled</string>
+			<string>VulkanDriver</string>
 			<key>DefaultValue</key>
-			<true/>
+			<string>moltenvk</string>
+			<key>Titles</key>
+			<array>
+				<string>None</string>
+				<string>MoltenVK</string>
+				<string>KosmicKrisp</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>none</string>
+				<string>moltenvk</string>
+				<string>kosmickrisp</string>
+			</array>
 		</dict>
-		<!-- Enable EGL Drivers -->
+		<!-- OpenGL Driver (base: None, ANGLE; ~mac adds MoltenGL) -->
 		<dict>
 			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<string>PSMultiValueSpecifier</string>
 			<key>Title</key>
-			<string>Enable EGL Drivers</string>
+			<string>OpenGL Driver</string>
 			<key>Key</key>
-			<string>EglDriversEnabled</string>
+			<string>OpenGLDriver</string>
 			<key>DefaultValue</key>
-			<false/>
+			<string>angle</string>
+			<key>Titles</key>
+			<array>
+				<string>None</string>
+				<string>ANGLE</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>none</string>
+				<string>angle</string>
+			</array>
 		</dict>
 		<!-- Enable DMABUF -->
 		<dict>
@@ -216,19 +240,30 @@
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
 			<key>Title</key>
-			<string>Enable Launcher</string>
+			<string>Enable Wawona Shell</string>
 			<key>Key</key>
 			<string>EnableLauncher</string>
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
+		<!-- Enable Weston Simple SHM -->
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Enable Weston Simple SHM</string>
+			<key>Key</key>
+			<string>WestonSimpleSHMEnabled</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
 		
-		<!-- OpenSSH Section -->
+		<!-- SSH Section -->
 		<dict>
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
-			<string>OpenSSH</string>
+			<string>SSH (libssh2)</string>
 		</dict>
 		<!-- SSH Host -->
 		<dict>
@@ -286,7 +321,7 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>FooterText</key>
-			<string>Password or SSH Key options are shown in the Wawona app based on your Auth Method selection. Passwords and passphrases are stored securely in Keychain.</string>
+			<string>Password or SSH Key options are shown in the Wawona app based on your Auth Method selection.</string>
 		</dict>
 		
 		<!-- Waypipe Section -->

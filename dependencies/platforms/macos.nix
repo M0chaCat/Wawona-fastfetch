@@ -14,7 +14,7 @@ in
   buildForMacOS =
     name: entry:
     if name == "libwayland" then
-      (import ../deps/libwayland/macos.nix) {
+      (import ../libs/libwayland/macos.nix) {
         inherit
           lib
           pkgs
@@ -23,13 +23,13 @@ in
           ;
       }
     else if name == "expat" then
-      (import ../deps/expat/macos.nix) { inherit lib pkgs common; }
+      (import ../libs/expat/macos.nix) { inherit lib pkgs common; }
     else if name == "libffi" then
-      (import ../deps/libffi/macos.nix) { inherit lib pkgs common; }
+      (import ../libs/libffi/macos.nix) { inherit lib pkgs common; }
     else if name == "libxml2" then
-      (import ../deps/libxml2/macos.nix) { inherit lib pkgs common; }
+      (import ../libs/libxml2/macos.nix) { inherit lib pkgs common; }
     else if name == "waypipe" then
-      (import ../deps/waypipe/macos.nix) {
+      (import ../libs/waypipe/macos.nix) {
         inherit
           lib
           pkgs
@@ -38,7 +38,7 @@ in
           ;
       }
     else if name == "kosmickrisp" then
-      (import ../deps/kosmickrisp/macos.nix) {
+      (import ../libs/kosmickrisp/macos.nix) {
         inherit
           lib
           pkgs
@@ -47,7 +47,7 @@ in
           ;
       }
     else if name == "zstd" then
-      (import ../deps/zstd/macos.nix) {
+      (import ../libs/zstd/macos.nix) {
         inherit
           lib
           pkgs
@@ -56,7 +56,7 @@ in
           ;
       }
     else if name == "lz4" then
-      (import ../deps/lz4/macos.nix) {
+      (import ../libs/lz4/macos.nix) {
         inherit
           lib
           pkgs
@@ -69,7 +69,7 @@ in
     else if name == "xkbcommon" then
       pkgs.libxkbcommon
     else if name == "ffmpeg" then
-      (import ../deps/ffmpeg/macos.nix) {
+      (import ../libs/ffmpeg/macos.nix) {
         inherit
           lib
           pkgs

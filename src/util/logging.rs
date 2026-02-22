@@ -17,6 +17,27 @@ macro_rules! wlog {
     }};
 }
 
+/// Per-frame trace logging — compiled out by default.
+/// Build with `--features verbose-logs` to enable.
+#[macro_export]
+macro_rules! wtrace {
+    ($module:expr, $($arg:tt)*) => {{
+        #[cfg(feature = "verbose-logs")]
+        {
+            let now = chrono::Local::now();
+            eprintln!("{} [{}] {}", 
+                now.format("%Y-%m-%d %H:%M:%S"),
+                $module,
+                format!($($arg)*)
+            );
+        }
+        #[cfg(not(feature = "verbose-logs"))]
+        {
+            let _ = ($module, format_args!($($arg)*));
+        }
+    }};
+}
+
 /// Standardized module identifiers
 pub const MAIN: &str = "MAIN";
 pub const CORE: &str = "CORE";

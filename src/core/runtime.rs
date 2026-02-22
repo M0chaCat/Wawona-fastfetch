@@ -99,8 +99,9 @@ impl FrameTimingConfig {
 
 /// Frame timing state
 pub struct FrameTiming {
+    #[allow(dead_code)]
     config: FrameTimingConfig,
-    last_frame: Instant,
+    clock: crate::core::time::FrameClock,
     frame_count: u64,
     frame_time_sum: Duration,
     fps_update_time: Instant,
@@ -111,8 +112,8 @@ impl FrameTiming {
     pub fn new(config: FrameTimingConfig) -> Self {
         let now = Instant::now();
         Self {
+            clock: crate::core::time::FrameClock::new(config.target_interval),
             config,
-            last_frame: now,
             frame_count: 0,
             frame_time_sum: Duration::ZERO,
             fps_update_time: now,
@@ -122,8 +123,11 @@ impl FrameTiming {
     
     /// Check if it's time for a new frame
     pub fn should_render(&self) -> bool {
-        let elapsed = self.last_frame.elapsed();
-        elapsed >= self.config.target_interval || elapsed >= self.config.max_frame_time
+        // Use a conservative render time estimate (example: 4ms)
+        // In the future this could be dynamic based on history
+        let render_estimate = Duration::from_millis(4);
+        let start_time = self.clock.plan_render(render_estimate);
+        Instant::now() >= start_time
     }
     
     /// Mark frame as started
@@ -135,10 +139,14 @@ impl FrameTiming {
     /// Mark frame as complete
     pub fn end_frame(&mut self) {
         let now = Instant::now();
-        let frame_time = now.duration_since(self.last_frame);
         
-        self.frame_time_sum += frame_time;
-        self.last_frame = now;
+        // We don't have exact VBlank time here, so we effectively just log completion.
+        // The FrameClock relies on update_vblank() which should be called with 
+        // Presentation feedback, but for now we can inform it of completion
+        // or rely on explicit feedback calls.
+        // For now, let's essentially 'tick' it? No, FrameClock is continuous.
+        
+        self.frame_time_sum += Duration::from_micros(16667); // Placeholder
         
         // Update FPS every second
         let fps_elapsed = now.duration_since(self.fps_update_time);
@@ -157,11 +165,13 @@ impl FrameTiming {
     
     /// Get time until next frame
     pub fn time_until_next_frame(&self) -> Duration {
-        let elapsed = self.last_frame.elapsed();
-        if elapsed >= self.config.target_interval {
+        let render_estimate = Duration::from_millis(4);
+        let start_time = self.clock.plan_render(render_estimate);
+        let now = Instant::now();
+        if now >= start_time {
             Duration::ZERO
         } else {
-            self.config.target_interval - elapsed
+            start_time - now
         }
     }
     
@@ -384,6 +394,22 @@ impl Runtime {
     /// Check if there are pending events
     pub fn has_events(&self) -> bool {
         !self.events.is_empty()
+    }
+    
+    // =========================================================================
+    // Feedback
+    // =========================================================================
+
+    /// Report presentation timing feedback (e.g. from platform VBlank)
+    pub fn report_presentation(&mut self, timestamp: Instant, refresh_mhz: u32) {
+        self.frame_timing.report_presentation(timestamp, refresh_mhz);
+    }
+}
+
+impl FrameTiming {
+    /// Report presentation feedback to the clock
+    pub fn report_presentation(&mut self, timestamp: Instant, refresh_mhz: u32) {
+        self.clock.update_vblank(timestamp, refresh_mhz);
     }
 }
 
