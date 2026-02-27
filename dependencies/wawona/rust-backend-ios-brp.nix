@@ -90,13 +90,15 @@ rustPlatform.buildRustPackage rec {
   '';
 
   preConfigure = ''
-    if [ -d "/Applications/Xcode.app" ]; then
-      export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-    elif [ -d "/Applications/Xcode-beta.app" ]; then
-      export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
-    else
-      export DEVELOPER_DIR=$(/usr/bin/xcode-select -p 2>/dev/null || echo "")
-    fi
+    # Find real Xcode (rejects Nix store paths / apple-sdk fallbacks).
+    XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode) || {
+      echo "Error: Xcode not found. Install Xcode 16+ from the App Store."
+      exit 1
+    }
+    export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+
+    # Ensure the iOS Simulator SDK is downloaded if missing.
+    ${xcodeUtils.ensureIosSimSDK}/bin/ensure-ios-sim-sdk
 
     export IOS_SDK="$DEVELOPER_DIR/Platforms/${if simulator then "iPhoneSimulator" else "iPhoneOS"}.platform/Developer/SDKs/${if simulator then "iPhoneSimulator" else "iPhoneOS"}.sdk"
     export SDKROOT="$IOS_SDK"
