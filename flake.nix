@@ -1,6 +1,10 @@
 {
   description = "Wawona Compositor";
 
+  nixConfig = {
+    ssl-cert-file = "/etc/ssl/cert.pem";
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 

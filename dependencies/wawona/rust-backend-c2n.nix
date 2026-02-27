@@ -80,6 +80,10 @@ let
     (import ../utils/xcode-wrapper.nix { inherit (pkgs) lib; inherit pkgs; }).findXcodeScript
   else null;
 
+  ensureIosSimSDKScript = if isIOS then
+    (import ../utils/xcode-wrapper.nix { inherit (pkgs) lib; inherit pkgs; }).ensureIosSimSDK
+  else null;
+
   # ── crate2nix: generate per-crate derivations ─────────────────────
   cargoNixDrv = crate2nix.tools.${pkgs.system}.generatedCargoNix {
     name = "wawona-${platform}${lib.optionalString (isIOS && simulator) "-sim"}";
@@ -194,6 +198,8 @@ let
     if isIOS then ''
       unset MACOSX_DEPLOYMENT_TARGET
       export IPHONEOS_DEPLOYMENT_TARGET="26.0"
+      # Ensure the iOS Simulator SDK is available on this machine.
+      ${ensureIosSimSDKScript}/bin/ensure-ios-sim-sdk || true
       export CC_${cargoTargetUnderscore}="${rawClang} -target ${linkerTarget}"
       export CFLAGS_${cargoTargetUnderscore}="-target ${linkerTarget} -fPIC"
       export CRATE_CC_NO_DEFAULTS="1"

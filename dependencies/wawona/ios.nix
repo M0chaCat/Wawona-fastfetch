@@ -15,6 +15,7 @@
 let
   common = import ./common.nix { inherit lib pkgs wawonaSrc; };
   xcodeUtils = import ../utils/xcode-wrapper.nix { inherit lib pkgs; };
+  ensureIosSimSDK = xcodeUtils.ensureIosSimSDK;
   xcodeEnv =
     platform: ''
       if [ -z "''${XCODE_APP:-}" ]; then
@@ -23,6 +24,8 @@ let
           export XCODE_APP
           export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
           export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+          # Ensure the iOS Simulator SDK is available before setting SDKROOT.
+          ${ensureIosSimSDK}/bin/ensure-ios-sim-sdk || true
           export SDKROOT="$DEVELOPER_DIR/Platforms/${if platform == "ios-sim" then "iPhoneSimulator" else if platform == "ios" then "iPhoneOS" else "MacOSX"}.platform/Developer/SDKs/${if platform == "ios-sim" then "iPhoneSimulator" else if platform == "ios" then "iPhoneOS" else "MacOSX"}.sdk"
         fi
       fi
@@ -204,6 +207,7 @@ in
     nativeBuildInputs = [ # Changed to list directly
       pkgs.pkg-config
       xcodeUtils.findXcodeScript
+      xcodeUtils.ensureIosSimSDK
       buildPackages.wayland-scanner
     ];
 

@@ -7,6 +7,7 @@ builtins.listToAttrs (map (system: let
     pkgsAndroid = null;
     pkgsIos = null;
   };
+  xcodeUtils = import ../utils/xcode-wrapper.nix { inherit (pkgs) lib pkgs; };
 in {
   name = system;
   value = {
@@ -21,7 +22,11 @@ in {
         pkgs.libffi
         pkgs.wayland-protocols
         pkgs.openssl
-      ] ++ (pkgs.lib.optional pkgs.stdenv.isDarwin (toolchains.buildForMacOS "libwayland" { }));
+      ] ++ (pkgs.lib.optional pkgs.stdenv.isDarwin (toolchains.buildForMacOS "libwayland" { }))
+        ++ (pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          xcodeUtils.ensureIosSimSDK
+          xcodeUtils.findXcodeScript
+        ]);
 
       # Read TEAM_ID from .envrc if it exists, otherwise use default
       shellHook = ''
@@ -29,6 +34,12 @@ in {
         export WAYLAND_DISPLAY="wayland-0"
         mkdir -p $XDG_RUNTIME_DIR
         chmod 700 $XDG_RUNTIME_DIR
+
+        # Declarative SSL fix for macOS
+        if [ "$(uname)" = "Darwin" ]; then
+          export NIX_SSL_CERT_FILE="/etc/ssl/cert.pem"
+          export SSL_CERT_FILE="/etc/ssl/cert.pem"
+        fi
 
         # Load TEAM_ID from .envrc if it exists
         if [ -f .envrc ]; then

@@ -10,6 +10,7 @@
 let
   fetchSource = common.fetchSource;
   xcodeUtils = import ../../utils/xcode-wrapper.nix { inherit lib pkgs; };
+  ensureIosSimSDK = xcodeUtils.ensureIosSimSDK;
   ffmpegSource = {
     source = "github";
     owner = "FFmpeg";
@@ -30,6 +31,7 @@ pkgs.stdenv.mkDerivation {
     pkg-config
     nasm
     yasm
+    ensureIosSimSDK
   ];
 
   buildInputs = [ ];
@@ -48,11 +50,14 @@ pkgs.stdenv.mkDerivation {
 
     echo "Using Developer Dir: $DEVELOPER_DIR"
 
+    # Ensure the iOS Simulator SDK is downloaded if missing.
+    ${ensureIosSimSDK}/bin/ensure-ios-sim-sdk
+
     export IOS_SDK_PATH="$DEVELOPER_DIR/Platforms/${if simulator then "iPhoneSimulator" else "iPhoneOS"}.platform/Developer/SDKs/${if simulator then "iPhoneSimulator" else "iPhoneOS"}.sdk"
     export MACOS_SDK_PATH="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
 
     if [ ! -d "$IOS_SDK_PATH" ]; then
-      echo "Error: iOS SDK not found at $IOS_SDK_PATH"
+      echo "Error: iOS SDK not found at $IOS_SDK_PATH (even after download attempt)"
       exit 1
     fi
 
