@@ -38,15 +38,12 @@ pkgs.stdenv.mkDerivation {
 
   # Configure phase to set up the environment
   preConfigure = ''
-    # Find Xcode path dynamically
-    if [ -d "/Applications/Xcode.app" ]; then
-      export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-    elif [ -d "/Applications/Xcode-beta.app" ]; then
-      export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
-    else
-      # Fallback to xcode-select
-      export DEVELOPER_DIR=$(/usr/bin/xcode-select -p)
-    fi
+    # Find real Xcode (rejects Nix store paths / apple-sdk fallbacks).
+    XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode) || {
+      echo "Error: Xcode not found. Install Xcode from the App Store."
+      exit 1
+    }
+    export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
 
     echo "Using Developer Dir: $DEVELOPER_DIR"
 

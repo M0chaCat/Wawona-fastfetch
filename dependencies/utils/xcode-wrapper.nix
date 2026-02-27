@@ -65,12 +65,33 @@ let
     #!/usr/bin/env bash
     set -euo pipefail
 
-    XCODE_APP=$(${findXcodeScript}/bin/find-xcode)
+    XCODE_APP=$(${findXcodeScript}/bin/find-xcode) || {
+      echo "[ensure-ios-sim-sdk] ERROR: Xcode not found."
+      echo "  Install Xcode from the App Store, then run:"
+      echo "    sudo xcodebuild -downloadPlatform iOS"
+      exit 1
+    }
     export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
     XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
 
-    # Accept the Xcode license non-interactively so CI/headless machines
-    # don't stall on the EULA prompt.  May require sudo the first time.
+    # Sanity check: reject Nix store paths — the Nix apple-sdk has iOS 14.x
+    # stubs but is NOT real Xcode and cannot download newer platforms.
+    case "$DEVELOPER_DIR" in
+      /nix/store/*)
+        echo "[ensure-ios-sim-sdk] ERROR: DEVELOPER_DIR is inside the Nix store ($DEVELOPER_DIR)."
+        echo "  This means real Xcode is not installed on this machine."
+        echo "  Install Xcode 16+ from the App Store, then:"
+        echo "    sudo xcodebuild -downloadPlatform iOS"
+        exit 1
+        ;;
+    esac
+
+    if [ ! -x "$XCODEBUILD" ]; then
+      echo "[ensure-ios-sim-sdk] ERROR: xcodebuild not found at $XCODEBUILD"
+      exit 1
+    fi
+
+    # Accept the Xcode license non-interactively.
     if ! "$XCODEBUILD" -license check 2>/dev/null; then
       echo "[ensure-ios-sim-sdk] Accepting Xcode license (may need sudo)..."
       sudo "$XCODEBUILD" -license accept 2>/dev/null || \
@@ -95,7 +116,6 @@ let
     echo "[ensure-ios-sim-sdk] This may take several minutes on the first run."
 
     # -downloadPlatform iOS fetches the iPhoneSimulator platform & SDK.
-    # We run it from a writable temp home to avoid permission issues.
     HOME="$(mktemp -d)" "$XCODEBUILD" -downloadPlatform iOS || {
       echo ""
       echo "[ensure-ios-sim-sdk] ERROR: xcodebuild -downloadPlatform iOS failed."
